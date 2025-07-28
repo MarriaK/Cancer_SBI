@@ -11,7 +11,6 @@ from torch.utils.data import DataLoader, Dataset, random_split
 import numpy as np
 import torch.nn as nn
 from torcheval.metrics import R2Score
-from torcheval.metrics import R2Score
 from sklearn.metrics import f1_score, precision_score, recall_score
 import torch.nn.functional as F
 from net_builder import DeepSet

@@ -32,6 +32,7 @@ All datasets are balanced to equal size before training.
 | File                     | Description                                                                                                        |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | `model.py`               | Defines the **Normalizing Flow** model architecture used for generative modeling tasks.                            |
+| `SBI_main.ipynb`         | Apply the **Normalizing Flow** model for generating the parameter distribution.                                    |
 | `net_builder.py`         | Implements the **Deep Set** encoder, shared across classification and regression models.                           |
 | `classifier.py`          | Trains a neural network to **classify simulated data** based on the underlying selection coefficient distribution. |
 | `classifier_KFold.py`    | Performs **K-Fold Cross-Validation** to evaluate classification performance across multiple data splits.           |
