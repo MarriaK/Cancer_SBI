@@ -108,7 +108,7 @@ class DeepSet(nn.Module):
         assert not torch.isnan(combined_embedding).any(), "NaNs in embedding."
 
         # add number of trials as additional input
-        return self.rho(torch.cat([combined_embedding, trial_counts], dim=1)).           
+        return self.rho(torch.cat([combined_embedding, trial_counts], dim=1))          
 
 
 #embedding_net = DeepSet(hidden_dim_phi=64, hidden_dim_rho=64, output_dim=128)
