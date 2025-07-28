@@ -3,58 +3,14 @@ import torch
 from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset, random_split
 import random
 from sklearn.model_selection import StratifiedShuffleSplit
-import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, random_split
-import numpy as np
 import torch.nn as nn
-from torcheval.metrics import R2Score
-from torcheval.metrics import R2Score
-from sklearn.metrics import f1_score, precision_score, recall_score
-import torch.nn.functional as F
-from net_builder import DeepSet
-
-
-class LabeledSimulationDataset(Dataset):
-    def __init__(self, root_dir, num_trials=25, use_bulk=False):
-        self.root_dir = root_dir
-        self.num_trials = num_trials
-        self.use_bulk = use_bulk
-        self.sim_dirs = sorted(
-            [d for d in os.listdir(root_dir) if d.startswith("sim")],
-            key=lambda x: int(''.join(filter(str.isdigit, x)))
-        )
-
-    def __len__(self):
-        return len(self.sim_dirs)
-
-    def __getitem__(self, idx):
-        sim_path = os.path.join(self.root_dir, self.sim_dirs[idx])
-        parameter = np.load(f'{sim_path}/parameters.npy')
-        parameter_mean = np.mean(parameter[2:])
-        
-        trials = []
-        for t in range(1, self.num_trials + 1):
-            trial_dir = os.path.join(sim_path, str(t))
-            file_name = "CNratios_bulk.npy" if self.use_bulk else "CNratios_largest.npy"
-            file_path = os.path.join(trial_dir, file_name)
-            if os.path.exists(file_path):
-                trial_data = np.load(file_path)
-                trials.append(torch.tensor(trial_data, dtype=torch.float32))
-            else:
-                if trials:
-                    nan_tensor = torch.full_like(trials[0], float('nan'))
-                else:
-                    nan_tensor = torch.full((44,), float('nan'))  # Default shape
-                trials.append(nan_tensor)
-        x_tensor = torch.stack(trials)  # shape: (num_trials, 44)
-        return x_tensor, torch.tensor(parameter_mean), torch.tensor(parameter[2:])
+import NN_Utils
 
 # Step 1: Load datasets with labels
-lap_dataset = LabeledSimulationDataset("numpy_data_laplace")
-glow_dataset  = LabeledSimulationDataset("numpy_data_low")
-ghigh_dataset  = LabeledSimulationDataset("numpy_data")
+lap_dataset = NN_Utils.LabeledSimulationDataset("numpy_data_laplace")
+glow_dataset  = NN_Utils.LabeledSimulationDataset("numpy_data_low")
+ghigh_dataset  = NN_Utils.LabeledSimulationDataset("numpy_data")
 
 # Step 2: Balance datasets by truncating to min length
 print(f"laplace dataset size: {len(lap_dataset)}")
@@ -79,100 +35,26 @@ for train_idx, val_idx in sss.split(np.zeros(len(combined_labels)), combined_lab
     val_dataset = Subset(combined_dataset, val_idx)
 
 train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-val_loader   = DataLoader(val_dataset, batch_size=8, shuffle=False)                                                                     import os
+val_loader   = DataLoader(val_dataset, batch_size=8, shuffle=False)                                                                     
 
-
-#embedding_net = DeepSet(hidden_dim_phi=64, hidden_dim_rho=64, output_dim=128)
-
-embedding_net = DeepSet(
-    hidden_dim_phi=128,   # increased from 64
-    hidden_dim_rho=128,   # increased from 64
-    output_dim=64,       # more expressive embedding
-)
-metric = R2Score()
-
-class DeepSetRegression(nn.Module):
-    def __init__(self, embedding_net, embedding_dim=64):
-        super().__init__()
-        self.embedding_net = embedding_net
-        self.fc1 = nn.Linear(embedding_dim, 64)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.0)
-        self.fc2 = nn.Linear(64, 1)
-    
-    def forward(self, x):
-        embedded = self.embedding_net(x)  # (B, embedding_dim)
-        x = self.fc1(embedded)
-        x = self.relu(x)
-        x = self.dropout(x)
-        logits = self.fc2(x)  # raw logits (no softmax yet)
-        
-        return logits  # return logits and last hidden layer
-        
-    
-
-# ------------------------------
-# Training Loop
-# ------------------------------
-def train(model, dataloader, optimizer, loss_fn, device):
-    model.train()
-    total_loss = 0
-    all_preds, all_labels = [], []
-    for x, labels, _ in dataloader:
-        x, labels = x.to(device), labels.to(device)
-
-        pred = model(x)  # (B, 44, 2)
-        loss = loss_fn(pred.squeeze(-1), labels)  # CrossEntropy expects (N, C) and (N,)
-        metric.update(pred.squeeze(-1), labels)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-
-        preds_class = torch.argmax(pred, dim=-1)  # predicted class labels
-        all_preds.append(preds_class.cpu())
-        all_labels.append(labels.cpu())
-
-    #all_preds = torch.cat(all_preds).view(-1).numpy()
-    #all_labels = torch.cat(all_labels).view(-1).numpy()
-
-    #f1 = f1_score(all_labels, all_preds, average='macro')
-    #precision = precision_score(all_labels, all_preds, average='macro')
-    #recall = recall_score(all_labels, all_preds, average='macro')
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss, metric.compute()
-    
-
-def evaluate(model, dataloader, loss_fn, device):
-    model.eval()
-    total_loss = 0
-    all_preds, all_labels = [], []
-    with torch.no_grad():
-        for x, labels, _ in dataloader:
-            x, labels = x.to(device), labels.to(device)
-            pred = model(x)  # (B, 44, 3)
-            loss = loss_fn(pred.squeeze(-1), labels)  # CrossEntropy expects (N, C) and (N,)
-            metric.update(pred.squeeze(-1), labels)
-            
-            total_loss += loss.item()
-            preds_class = torch.argmax(pred, dim=-1)  # predicted class labels
-            all_preds.append(preds_class.cpu())
-            all_labels.append(labels.cpu())
-    '''
-    all_preds = torch.cat(all_preds).view(-1).numpy()
-    all_labels = torch.cat(all_labels).view(-1).numpy()
-
-    f1 = f1_score(all_labels, all_preds, average='macro')
-    precision = precision_score(all_labels, all_preds, average='macro')
-    recall = recall_score(all_labels, all_preds, average='macro')
-    '''
-
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss, metric.compute()                                               
+                                           
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #model = SimpleRegressor(input_dim=25 * 44, output_dim=44).to(device)
-model = DeepSetRegression(embedding_net, embedding_dim=64).to(device)  # Using DeepSet from net_builder
+model = NN_Utils.DeepSetRegressionone(NN_Utils.embedding_net, embedding_dim=64).to(device)  # Using DeepSet from net_builder
 
 optimizer = optim.Adam(model.parameters(), lr=1e-5)
 loss_fn = nn.MSELoss()
+
+# Step 5: Training loop
+num_epochs = 200
+for epoch in range(num_epochs):
+    loss_tr, r2_tr = NN_Utils.train(model, train_loader, optimizer, loss_fn, device)
+    loss_ts, r2_ts = NN_Utils.evaluate(model, val_loader, loss_fn, device)
+    
+    print(
+        f"Epoch {epoch+1:03d} | "
+        f"Train Loss = {loss_tr:.4f}, R2 = {r2_tr:.4f} | "
+        f"Val Loss = {loss_ts:.4f}, R2 = {r2_ts:.4f}"
+    )
+    
+    
