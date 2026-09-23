@@ -30,6 +30,7 @@ Nothing here runs at import time.
 import math
 import os
 import tempfile
+from dataclasses import replace as _replace
 from typing import Any, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import torch
@@ -37,7 +38,12 @@ from sbi.inference.posteriors import DirectPosterior
 from torch.distributions import Independent, Normal
 from torch.utils.data import DataLoader
 
-from cancer_sbi.config import DatasetKind
+from cancer_sbi.config import (
+    DatasetKind,
+    ModelPreset,
+    get_preset,
+    preset_from_effective_config,
+)
 from cancer_sbi.evaluation import diagnostics
 from cancer_sbi.training import checkpoints
 
@@ -146,6 +152,133 @@ def build_posterior(density_estimator: torch.nn.Module, prior: Independent) -> D
         never happens, so sampling is a plain forward pass through the flow.
     """
     return DirectPosterior(density_estimator, prior)
+
+
+class EvalConfig(NamedTuple):
+    """What a checkpoint says it was trained with, resolved for evaluation.
+
+    Attributes:
+        preset: The :class:`~cancer_sbi.config.ModelPreset` to rebuild the
+            network from -- the checkpoint's own ``flow`` and ``encoder`` blocks
+            when it carries them, the published preset otherwise.
+        effective_config: The raw dict read from the checkpoint, or ``None`` for
+            a checkpoint written before 2026-09-24.
+        from_checkpoint: ``True`` when ``preset`` came from the checkpoint.
+    """
+
+    preset: ModelPreset
+    effective_config: Optional[dict]
+    from_checkpoint: bool
+
+
+def _disagreement(name: str, stored: Any, override: Any) -> Optional[str]:
+    """One line describing an override that contradicts the checkpoint."""
+    if override is None or override == stored:
+        return None
+    return f"  --{name.replace('_', '-')}: checkpoint says {stored!r}, you passed {override!r}"
+
+
+def resolve_eval_config(
+    ckpt_path: PathLike,
+    model: str,
+    z_score_x: Optional[str] = None,
+    input_space: Optional[str] = None,
+    freq_renorm: Optional[bool] = None,
+    device: str = "cpu",
+) -> EvalConfig:
+    """Decide which architecture to rebuild before loading ``ckpt_path``.
+
+    Evaluation used to rebuild from :func:`~cancer_sbi.config.get_preset`
+    unconditionally, which is wrong for any run that used a repair flag: a
+    ``z_score_x="structured"`` checkpoint has a standardising transform inside
+    the flow that the preset-built network does not, so ``load_state_dict``
+    raises on the keys; and a ``--input-space copy`` or ``--freq-renorm``
+    checkpoint loads *silently* into an encoder that computes something else.
+
+    Args:
+        ckpt_path: The checkpoint about to be evaluated.
+        model: ``--model``, used for the preset fallback and cross-checked
+            against the checkpoint.
+        z_score_x: ``--z-score-x`` override, or ``None``.
+        input_space: ``--input-space`` override, or ``None``.
+        freq_renorm: ``--freq-renorm`` override, or ``None``.
+        device: ``map_location`` for reading the checkpoint.
+
+    Returns:
+        An :class:`EvalConfig`.
+
+    Raises:
+        ValueError: If the checkpoint names a different model than ``--model``,
+            or if any override contradicts what the checkpoint records. An
+            override exists to describe an *old* checkpoint that carries no
+            config; silently trusting either side of a contradiction is how a
+            run gets scored as something it is not.
+
+    Note:
+        The overrides are one-directional by design: passing ``--freq-renorm``
+        for a checkpoint that stored ``False`` is a contradiction and raises,
+        while omitting it for a checkpoint that stored ``True`` is not -- the
+        checkpoint is the authority, and the flag is only how a pre-2026-09-24
+        file gets described.
+    """
+    stored = checkpoints.read_effective_config(ckpt_path, device=device)
+
+    if stored is None:
+        print(
+            f"[warn] {ckpt_path} carries no 'effective_config' (it predates "
+            f"2026-09-24). Rebuilding from the published {model!r} preset plus "
+            f"any --z-score-x / --input-space / --freq-renorm you passed. If "
+            f"this checkpoint came from a repair run, pass the flags it was "
+            f"trained with or the numbers will be wrong.",
+            flush=True,
+        )
+        preset = get_preset(model)
+        if z_score_x is not None:
+            preset = _replace(preset, flow=_replace(preset.flow, z_score_x=z_score_x))
+        encoder = preset.encoder
+        if input_space is not None:
+            encoder = _replace(encoder, input_space=input_space)
+        if freq_renorm:
+            encoder = _replace(encoder, freq_renorm=True)
+        preset = _replace(preset, encoder=encoder)
+        return EvalConfig(preset=preset, effective_config=None, from_checkpoint=False)
+
+    stored_model = stored.get("model")
+    if stored_model is not None and stored_model != model:
+        raise ValueError(
+            f"{ckpt_path} was trained as model {stored_model!r}, but --model "
+            f"says {model!r}. Evaluate it as {stored_model!r}."
+        )
+
+    flow = stored.get("flow", {})
+    encoder = stored.get("encoder", {})
+    clashes = [
+        line
+        for line in (
+            _disagreement("z_score_x", flow.get("z_score_x"), z_score_x),
+            _disagreement("input_space", encoder.get("input_space"), input_space),
+            _disagreement("freq_renorm", encoder.get("freq_renorm"), freq_renorm),
+        )
+        if line is not None
+    ]
+    if clashes:
+        raise ValueError(
+            f"{ckpt_path} records the config it was trained with, and your "
+            f"overrides contradict it:\n"
+            + "\n".join(clashes)
+            + "\nDrop the flags to use the checkpoint's own config. They exist "
+            "only to describe checkpoints written before 2026-09-24, which "
+            "carry none."
+        )
+
+    preset = preset_from_effective_config(stored)
+    print(
+        f"[config] rebuilt from the checkpoint: z_score_x="
+        f"{preset.flow.z_score_x}, input_space={preset.encoder.input_space}, "
+        f"freq_renorm={preset.encoder.freq_renorm}",
+        flush=True,
+    )
+    return EvalConfig(preset=preset, effective_config=stored, from_checkpoint=True)
 
 
 def load_checkpoint_for_eval(
@@ -380,6 +513,8 @@ def summarise_test_set(
 
 __all__ = [
     "NUM_PARAMETERS",
+    "EvalConfig",
+    "resolve_eval_config",
     "DEFAULT_NUM_POSTERIOR_SAMPLES",
     "DEFAULT_PRIOR_SD",
     "LEGACY_PRIOR_SD",

@@ -75,7 +75,7 @@ from cancer_sbi.cli import (  # noqa: E402
     require_path,
     resolve_device,
 )
-from cancer_sbi.config import PRESETS, get_preset  # noqa: E402
+from cancer_sbi.config import PRESETS, config_to_dict, get_preset  # noqa: E402
 
 N_ARMS = 44
 
@@ -85,6 +85,41 @@ EVAL_CKPT_DIRNAME = "checkpoints"
 
 #: The other directory a best.pt can live in. Only used to warn, exactly as the legacy script did.
 ALT_CKPT_DIRNAME = "checkpoints_baseline"
+
+
+def output_filename(model, limit=None, run_tag=None):
+    """Name of the .npz this run writes: ``posteriors_<model>[_<tag>].npz``.
+
+    A full run keeps the plain name, which is the only name
+    ``poster_metrics.py`` discovers (:312-323) - so per-run outputs belong in
+    per-run ``--out-dir``s, not in suffixed filenames in a shared directory.
+
+    The suffix exists for the two cases where a file must NOT be mistaken for a
+    real run:
+      * ``--limit N`` -> ``_limit<N>``. A smoke test used to overwrite the real
+        posteriors of the same model, and the partial file is then silently
+        skipped by the poster export guard (poster_metrics.py:378-380) rather
+        than flagged.
+      * ``--run-tag TAG`` -> ``_<TAG>``, for labelling a file by run (R0/R1/...)
+        when one really must share a directory.
+
+    An explicit ``--run-tag`` wins over the ``--limit`` suffix.
+
+    Args:
+        model: Preset name, e.g. ``"clonemlp"``.
+        limit: The ``--limit`` value, or None for a full run.
+        run_tag: The ``--run-tag`` value, or None.
+
+    Returns:
+        The file name (no directory).
+    """
+    if run_tag:
+        suffix = f"_{run_tag}"
+    elif limit is not None:
+        suffix = f"_limit{int(limit)}"
+    else:
+        suffix = ""
+    return f"posteriors_{model}{suffix}.npz"
 
 
 def test_sim_ids(dataset, n_expected):
@@ -130,6 +165,23 @@ def main():
     ap.add_argument("--device", default="auto", help="auto | cpu | cuda")
     ap.add_argument("--limit", type=int, default=None, help="only the first N test cases (smoke test)")
     ap.add_argument("--seed", type=int, default=0)
+    override = ap.add_argument_group(
+        "architecture overrides (old checkpoints only)",
+        "A checkpoint written since 2026-09-24 carries the config it was trained "
+        "with and the network is rebuilt from that. These flags describe a "
+        "checkpoint that carries none; passing one that contradicts a checkpoint "
+        "which does is an error, not a silent choice.")
+    override.add_argument("--z-score-x", choices=["none", "structured", "independent"],
+                          default=None, help="FlowConfig.z_score_x of the run being evaluated.")
+    override.add_argument("--input-space", choices=["log2", "copy"], default=None,
+                          help="CloneMLP encoder input space of the run being evaluated.")
+    override.add_argument("--freq-renorm", action="store_true", default=None,
+                          help="The run being evaluated used CloneAtt's frequency renormalisation.")
+    ap.add_argument("--run-tag", default=None,
+                    help="label appended to the output file: posteriors_<model>_<TAG>.npz. "
+                         "Only needed when two runs of one model share an --out-dir; the "
+                         "per-run convention is a per-run --out-dir instead, because "
+                         "poster_metrics.py only discovers the untagged name.")
     args = ap.parse_args()
 
     # Heavy imports after the arguments parse, as the rest of the package does, so that
@@ -159,11 +211,16 @@ def main():
     device = resolve_device(args.device)
     print(f"model={args.model}  origin={preset.origin}  device={device}  seed={args.seed}", flush=True)
 
-    train_ids, test_ids = load_split(split_path)
+    # load_split returns a dict; evaluation deliberately scores the TEST ids and
+    # never the validation ids, so `val_ids` is not passed to the builders and the
+    # middle element of the 3-tuple they return is always None here.
+    split = load_split(split_path)
+    train_ids = split["train_ids"]
+    test_ids = split["test_ids"]
     print(f"split: {len(train_ids)} train ids / {len(test_ids)} test ids", flush=True)
 
     if preset.data.dataset == "clone_sets":
-        train_loader, test_loader = build_clone_set_dataloaders(
+        train_loader, _val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
@@ -172,7 +229,7 @@ def main():
             pin_memory=preset.data.pin_memory,
         )
     else:
-        train_loader, test_loader = build_dominant_clone_dataloaders(
+        train_loader, _val_loader, test_loader = build_dominant_clone_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
@@ -186,6 +243,23 @@ def main():
     n = n_total if args.limit is None else min(args.limit, n_total)
     print(f"held-out cases: {n_total}" + ("" if args.limit is None else f" (using first {n})"), flush=True)
     print(f"X {tuple(x_all.shape)}  theta {tuple(theta_all.shape)}", flush=True)
+
+    if not ckpt_path.exists():
+        raise SystemExit(f"checkpoint not found: {ckpt_path}")
+
+    # The architecture comes from the checkpoint, not from get_preset: an R1
+    # checkpoint (z_score_x="structured") will not load into a preset-built flow
+    # at all, and an R2/R4 one loads silently into the wrong encoder. Resolved
+    # before the model is built, because it decides what is built.
+    eval_cfg = posterior_mod.resolve_eval_config(
+        ckpt_path,
+        args.model,
+        z_score_x=args.z_score_x,
+        input_space=args.input_space,
+        freq_renorm=args.freq_renorm,
+        device=device,
+    )
+    preset = eval_cfg.preset
 
     # The model has to be constructed before its weights can be loaded: the architecture is built
     # from a dummy batch of the train loader, exactly as each original __init__ did. The optimiser
@@ -204,9 +278,6 @@ def main():
     if others:
         print(f"[warn] another checkpoint also exists and was NOT used: {others} "
               f"(pass --ckpt to choose it)", flush=True)
-    if not ckpt_path.exists():
-        raise SystemExit(f"checkpoint not found: {ckpt_path}")
-
     resumed = posterior_mod.load_checkpoint_for_eval(
         ckpt_path,
         components.density_estimator,
@@ -266,6 +337,7 @@ def main():
     # rank in {0..S}: S+1 possible outcomes, so the quantile position divides by S+1
     sbc_ranks = (samples_out < theta_np[:, None, :]).sum(axis=1).astype(np.int32)
 
+    _as_dict = config_to_dict(preset)
     meta = {
         "model": args.model,
         "folder": preset.origin,
@@ -278,17 +350,24 @@ def main():
         "num_samples": int(s),
         "prior_sd": float(args.prior_sd),
         "seed": int(args.seed),
+        "limit": None if args.limit is None else int(args.limit),
+        "run_tag": args.run_tag,
         "device": device,
         "data_root": str(data_root),
         "split_file": str(split_path),
         "n_train_ids": int(len(train_ids)),
         "n_test_ids": int(len(test_ids)),
+        # The architecture these samples came from, so a .npz can be read back
+        # years later without the checkpoint beside it.
+        "flow_config": _as_dict["flow"],
+        "encoder_config": _as_dict["encoder"],
+        "config_from_checkpoint": bool(eval_cfg.from_checkpoint),
         "written_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "elapsed_s": round(time.time() - t0, 1),
         "built_with": "cancer_sbi",
     }
 
-    out_path = os.path.join(out_dir, f"posteriors_{args.model}.npz")
+    out_path = os.path.join(out_dir, output_filename(args.model, args.limit, args.run_tag))
     np.savez_compressed(
         out_path,
         theta_true=theta_np,

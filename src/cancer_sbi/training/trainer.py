@@ -28,6 +28,7 @@ Nothing here runs at import time.
 import logging
 import os
 import pickle as pkl
+import random
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -120,7 +121,7 @@ def quirks_for(preset_name: str) -> TrainerQuirks:
 
 
 def seed_everything(seed: Optional[int]) -> None:
-    """Seed torch, CUDA and numpy -- but only if a seed was asked for.
+    """Seed torch, CUDA, numpy and Python's ``random`` -- if a seed was asked for.
 
     Args:
         seed: The seed, or ``None`` to leave every RNG untouched.
@@ -141,6 +142,10 @@ def seed_everything(seed: Optional[int]) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     np.random.seed(seed % (2**32))
+    # Added 2026-09-24 (WP-A). Nothing in the published loop draws from Python's
+    # own RNG, so seeding it cannot change a published number; it is here so
+    # that anything added later (a shuffle, a subsample) is covered too.
+    random.seed(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +367,10 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             dropout=cfg.dropout,
             freq_as_weight=cfg.freq_as_weight,
             include_freq_in_mlp=cfg.include_freq_in_mlp,
+            # Repair T2 / run R2 (WP-A + WP-C). "log2" is the published
+            # behaviour and the default, so this argument changes nothing
+            # unless --input-space copy is passed.
+            input_space=cfg.input_space,
         ).to(device)
     elif cfg.kind == "attention":
         # SetTransformer_NPE/inference_model.py:63-71. Trap 4: `dropout` is
@@ -378,6 +387,11 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             num_inducing=cfg.num_inducing,
             dropout=cfg.dropout,
             freq_as_weight=cfg.freq_as_weight,
+            # Run R4 (WP-A + WP-C). False is the published raw-frequency
+            # multiply, so this argument changes nothing unless --freq-renorm
+            # is passed. Deliberately NOT forwarded to DeepSet below, which has
+            # no per-clone frequency weighting at all.
+            freq_renorm=cfg.freq_renorm,
         ).to(device)
     elif cfg.kind == "deepset":
         # Plain_NPE/model.py:55 passes only the three dimensions; every other
@@ -514,6 +528,7 @@ class Trainer:
         ckpt_dir: Optional[PathLike] = None,
         quirks: Optional[TrainerQuirks] = None,
         final_pickle_path: Optional[PathLike] = None,
+        effective_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Wire the loop up and try to resume.
 
@@ -541,6 +556,12 @@ class Trainer:
                 there when training ends. Only CloneAtt did this
                 (``SetTransformer_NPE/inference_model.py:246-247``, which wrote
                 ``SetTransformer_NPE_Freq_mean.pkl`` into the current directory).
+            effective_config: :func:`cancer_sbi.config.config_to_dict` of the
+                config this run is training with -- the CLI's, after the flags
+                are folded in, not ``get_preset``'s. Written into every
+                checkpoint so that evaluation rebuilds *this* network rather
+                than the preset's. ``None`` writes checkpoints in the
+                pre-2026-09-24 shape.
         """
         self.density_estimator = density_estimator
         self.embedding_net = embedding_net
@@ -553,6 +574,7 @@ class Trainer:
         self.final_pickle_path = (
             Path(final_pickle_path) if final_pickle_path is not None else None
         )
+        self.effective_config = effective_config
         self.quirks = (
             quirks
             if quirks is not None
@@ -586,7 +608,11 @@ class Trainer:
         # Preserved from Base_NPE/inference_model.py:115: the resume attempt is
         # the LAST thing the constructor does, after the optimiser exists,
         # because the optimiser state is part of the checkpoint.
-        self._try_resume()
+        #
+        # `resumed` records whether a checkpoint was actually restored, so that
+        # callers can tell a fresh run from a resumed one -- cli/train.py reads
+        # it to decide whether re-seeding would clobber the restored RNG state.
+        self.resumed: bool = self._try_resume()
 
     # -- checkpointing ----------------------------------------------------
 
@@ -630,6 +656,7 @@ class Trainer:
             best_model_state_dict=self.best_model_state_dict,
             history=self.history,
             epochs_since_last_improvement=self.epochs_since_last_improvement,
+            effective_config=self.effective_config,
         )
         return checkpoints.save_checkpoint(self.ckpt_dir, epoch, payload, is_best=is_best)
 
@@ -855,12 +882,25 @@ class Trainer:
                         )
                 converged = True
 
-        # Preserved from Plain_NPE/model.py:187: unconditional, outside the loop,
-        # and NOT guarded against None -- a run that never improved raises here,
-        # exactly as the original did. Trap 12: CloneMLP does neither of these
-        # (`"never"`), so its final weights are simply the last epoch's.
+        # Preserved from Plain_NPE/model.py:187: unconditional, outside the
+        # loop. Trap 12: CloneMLP does neither of these (`"never"`), so its
+        # final weights are simply the last epoch's.
+        #
+        # Changed 2026-09-24 (WP-A): the original was NOT guarded against None,
+        # so a run in which the validation loss never improved -- which is what
+        # a one-epoch smoke test looks like after all the compute -- crashed
+        # here with a TypeError. There are no weights to restore in that case,
+        # so the only honest thing to do is say so and keep the last epoch's.
+        # On every run that did improve this branch behaves exactly as before.
         if cfg.reload_best == "always":
-            self.density_estimator.load_state_dict(self.best_model_state_dict)
+            if self.best_model_state_dict is None:
+                print(
+                    "[warn] reload_best='always' but no epoch ever improved on "
+                    "the initial validation loss, so there is no best snapshot "
+                    "to restore. Keeping the final epoch's weights."
+                )
+            else:
+                self.density_estimator.load_state_dict(self.best_model_state_dict)
 
         if self.final_pickle_path is not None:
             self._dump_final_pickle()
@@ -880,16 +920,24 @@ class Trainer:
             ``Plain_NPE/model.py:174`` (``{k: v.detach().cpu() ...}``) versus
             ``SetTransformer_NPE/inference_model.py:229``
             (``deepcopy(state_dict())``). Issue 23 in docs/REFACTOR_NOTES.md:
-            ``.detach().cpu()`` copies only when the model is on the GPU. On a
-            CPU-only run it returns tensors that *share storage* with the live
-            parameters, so the "snapshot" keeps changing as training continues
-            and reloading it is a no-op. Every published run was on the GPU,
-            where it copies, which is why this never showed up. Preserved
-            verbatim so a GPU run is bit-for-bit the same.
+            the original ``.detach().cpu()`` copies only when the model is
+            on the GPU. On a CPU-only run it returned tensors that *shared
+            storage* with the live parameters, so the "snapshot" kept changing
+            as training continued and reloading it was a no-op. Every published
+            run was on the GPU, where ``.cpu()`` already copies.
+
+            Changed 2026-09-24 (WP-A): ``.clone()`` is appended, which makes the
+            CPU path a real copy. On a GPU run ``.cpu()`` had already produced a
+            fresh tensor, so the extra clone is a redundant memcpy and the
+            resulting values are bit-for-bit what they were -- i.e. no published
+            number moves, and the CPU path stops silently doing nothing.
         """
         if self.quirks.best_state_on_device:
             return deepcopy(self.density_estimator.state_dict())
-        return {k: v.detach().cpu() for k, v in self.density_estimator.state_dict().items()}
+        return {
+            k: v.detach().cpu().clone()
+            for k, v in self.density_estimator.state_dict().items()
+        }
 
     def _dump_final_pickle(self) -> None:
         """Pickle the whole density estimator to ``final_pickle_path``.

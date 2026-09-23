@@ -12,13 +12,26 @@ Nothing here runs at import time.
 """
 
 import gzip
+import hashlib
+import inspect
+import json
 import os
 import pickle
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+#: File names inside a clone cache directory, shared with
+#: ``src/utilities/build_clone_cache.py`` and ``verify_clone_cache.py`` so the
+#: builder, the verifier and the reader cannot drift apart.
+CACHE_X_FILENAME = "X.npy"
+CACHE_THETA_FILENAME = "theta.npy"
+CACHE_SIM_IDS_FILENAME = "sim_ids.npy"
+CACHE_MANIFEST_FILENAME = "manifest.json"
 
 
 def load_gz_pickle(filepath: str) -> Any:
@@ -177,6 +190,7 @@ class CNASimsDataset(Dataset):
         params_filename: str = "parameters.pkl",
         drop_missing: bool = True,
         sim_ids: Optional[Sequence[str]] = None,
+        cache_dir: Optional[str] = None,
     ) -> None:
         """Scan ``root_dir`` and index the usable sims.
 
@@ -194,10 +208,19 @@ class CNASimsDataset(Dataset):
                 files instead of raising.
             sim_ids: Restrict to these sim *names* (e.g. ``["sim1", "sim2"]``),
                 which is how the train/test split is applied.
+            cache_dir: Directory written by ``src/utilities/build_clone_cache.py``.
+                When given, ``__getitem__`` reads the already-summarised tensors
+                from ``X.npy`` / ``theta.npy`` instead of opening 25 gzipped
+                files and re-running :func:`top_frequent_rows_tensor`. The scan
+                below still runs, so the set of sims kept is decided by exactly
+                the same filters either way.
 
         Raises:
             RuntimeError: If no sims match, none survive the ``sim_ids`` filter,
                 or none survive the minimum-trials filter.
+            ValueError: If ``cache_dir`` was built by a different version of
+                :func:`top_frequent_rows_tensor`, or with a different ``top_k``
+                or trial count than this dataset asks for.
         """
         self.root_dir = root_dir
         self.num_trials = num_trials_per_sim
@@ -278,7 +301,114 @@ class CNASimsDataset(Dataset):
         if not self.items:
             raise RuntimeError("No valid (sim, trial) pairs found after scanning all sims.")
 
-        print(f"[CNASimsDataset] sims={len(self.items)} top_k={self.top_k}")
+        # The cache is attached after the scan, so the kept sims are chosen by
+        # the same code whether or not a cache is in use.
+        self.cache_dir = str(cache_dir) if cache_dir is not None else None
+        self._cache_rows: Dict[str, int] = {}
+        # Opened lazily in __getitem__ rather than here: a memmap opened in the
+        # parent process is inherited by every DataLoader worker after a fork
+        # and that is exactly the way to get corrupt reads.
+        self._cache_x: Optional[np.ndarray] = None
+        self._cache_theta: Optional[np.ndarray] = None
+        if self.cache_dir is not None:
+            self._attach_cache(self.cache_dir)
+
+        print(
+            f"[CNASimsDataset] sims={len(self.items)} top_k={self.top_k}"
+            + (f" cache={self.cache_dir}" if self.cache_dir else "")
+        )
+
+    def _attach_cache(self, cache_dir: str) -> None:
+        """Validate a clone cache and index it by sim name.
+
+        Args:
+            cache_dir: Directory holding ``manifest.json``, ``sim_ids.npy``,
+                ``X.npy`` and ``theta.npy``.
+
+        Raises:
+            FileNotFoundError: If the manifest is missing.
+            ValueError: If the manifest's recorded source hash of
+                :func:`top_frequent_rows_tensor` differs from the live
+                function's; if its ``top_k`` / ``num_trials`` differ from this
+                dataset's; if its ``root`` resolves to a different directory
+                than this dataset is reading; if ``sim_ids.npy`` and ``X.npy``
+                disagree on how many sims the cache holds; or if any sim this
+                dataset will serve is absent from the cache index. A stale or
+                partial cache is the one failure mode that would silently
+                change every published number, so all six raise rather than
+                falling back to the slow path.
+        """
+        manifest_path = os.path.join(cache_dir, CACHE_MANIFEST_FILENAME)
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(f"Cache manifest not found at: {manifest_path}")
+        with open(manifest_path, "r") as handle:
+            manifest = json.load(handle)
+
+        live_hash = top_frequent_rows_source_sha1()
+        cached_hash = manifest.get("top_frequent_rows_tensor_sha1")
+        if cached_hash != live_hash:
+            raise ValueError(
+                f"Clone cache at {cache_dir} was built by a different version of "
+                f"top_frequent_rows_tensor (manifest {cached_hash!r}, live "
+                f"{live_hash!r}). Rebuild the cache; do not train on it."
+            )
+        if int(manifest.get("top_k", -1)) != int(self.top_k):
+            raise ValueError(
+                f"Clone cache at {cache_dir} has top_k={manifest.get('top_k')}, "
+                f"dataset asks for top_k={self.top_k}."
+            )
+        if int(manifest.get("num_trials", -1)) != int(self.num_trials):
+            raise ValueError(
+                f"Clone cache at {cache_dir} has num_trials="
+                f"{manifest.get('num_trials')}, dataset asks for "
+                f"num_trials={self.num_trials}."
+            )
+
+        # The root is compared resolved, not as written: the builder stores an
+        # absolute path and a caller may well pass "../data/..." for the same
+        # directory. A cache built from a *different* tree would be silently
+        # served here, which is the trap this closes.
+        cached_root = manifest.get("root")
+        if cached_root is None or Path(cached_root).resolve() != Path(self.root_dir).resolve():
+            raise ValueError(
+                f"Clone cache at {cache_dir} was built from root {cached_root!r}, "
+                f"but this dataset reads {str(self.root_dir)!r}. The tensors would "
+                f"not be this tree's data; rebuild the cache."
+            )
+
+        sim_ids = np.load(os.path.join(cache_dir, CACHE_SIM_IDS_FILENAME))
+        # Header-only read: mmap_mode gives the shape without paging in 1.6 GB.
+        x_shape = np.load(
+            os.path.join(cache_dir, CACHE_X_FILENAME), mmap_mode="r"
+        ).shape
+        if len(sim_ids) != x_shape[0]:
+            raise ValueError(
+                f"Clone cache at {cache_dir} is inconsistent: "
+                f"{CACHE_SIM_IDS_FILENAME} names {len(sim_ids)} sims but "
+                f"{CACHE_X_FILENAME} has {x_shape[0]} rows. Every row would be "
+                f"served under the wrong sim's name; rebuild the cache."
+            )
+
+        self._cache_rows = {str(name): int(row) for row, name in enumerate(sim_ids)}
+
+        # Every sim this dataset will serve has to be in the cache. Checked here
+        # rather than at the first __getitem__ that misses, because a partial
+        # cache should fail before the job is queued, not four hours in -- and
+        # under a DataLoader the KeyError from a worker is a good deal harder to
+        # read than this message.
+        missing = [
+            name
+            for name in (os.path.basename(item["sim_dir"]) for item in self.items)
+            if name not in self._cache_rows
+        ]
+        if missing:
+            shown = ", ".join(missing[:10])
+            more = "" if len(missing) <= 10 else f", ... and {len(missing) - 10} more"
+            raise ValueError(
+                f"Clone cache at {cache_dir} is missing {len(missing)} of the "
+                f"{len(self.items)} sims this dataset serves: {shown}{more}. "
+                f"Rebuild the cache for this split."
+            )
 
     def __len__(self) -> int:
         """Number of sims kept.
@@ -332,6 +462,9 @@ class CNASimsDataset(Dataset):
         avail = item["available_trials"]
         y = item["y"]
 
+        if self.cache_dir is not None:
+            return self._getitem_cached(sim_dir)
+
         # Preserved from Base_NPE/utils.py:198. Trap 8 (second sentinel): missing
         # TRIALS are padded with NaN, unlike missing clone rows, which are padded
         # with zeros. The NaN sentinel is the one the encoders actually test for
@@ -353,11 +486,78 @@ class CNASimsDataset(Dataset):
         # must NOT start being used. See docs/REFACTOR_NOTES.md.
         return x_trials, trial_mask, y
 
+    def _getitem_cached(
+        self, sim_dir: str
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return one simulation out of the clone cache.
+
+        Args:
+            sim_dir: Path to the sim directory; only its basename is used.
+
+        Returns:
+            The same 3-tuple as :meth:`__getitem__`. ``trial_mask`` is all True:
+            the cache only ever contains sims that passed the "all
+            ``num_trials`` trials present" filter, so there is no NaN-padded
+            slot to mask.
+
+        Raises:
+            KeyError: If this sim is not in the cache. That means the cache was
+                built from a different sim set, and quietly falling back to the
+                slow path would hide it.
+        """
+        name = os.path.basename(sim_dir)
+        row = self._cache_rows.get(name)
+        if row is None:
+            raise KeyError(
+                f"{name} is not in the clone cache at {self.cache_dir} "
+                f"({len(self._cache_rows)} sims cached). Rebuild the cache for "
+                f"this split."
+            )
+
+        # Lazy open, once per process: a memmap opened before a DataLoader fork
+        # would be shared by every worker, so it is opened on first use inside
+        # the process that reads it.
+        if self._cache_x is None:
+            self._cache_x = np.load(
+                os.path.join(self.cache_dir, CACHE_X_FILENAME), mmap_mode="r"
+            )
+            self._cache_theta = np.load(
+                os.path.join(self.cache_dir, CACHE_THETA_FILENAME), mmap_mode="r"
+            )
+
+        # copy=True, not np.asarray: a slice of a mmap-opened array is read-only,
+        # and torch.from_numpy on it yields a non-writable tensor plus a
+        # UserWarning on every item. One copy per item is the price of a writable
+        # tensor -- the values are identical either way.
+        x_trials = torch.from_numpy(np.array(self._cache_x[row], copy=True))
+        trial_mask = torch.ones((self.num_trials,), dtype=torch.bool)
+        y = torch.from_numpy(np.array(self._cache_theta[row], copy=True))
+        return x_trials, trial_mask, y
+
+
+def top_frequent_rows_source_sha1() -> str:
+    """Hash the source of :func:`top_frequent_rows_tensor`.
+
+    Returns:
+        The SHA-1 hex digest of ``inspect.getsource(top_frequent_rows_tensor)``,
+        UTF-8 encoded. The cache builder records it and every cache reader
+        re-checks it, so editing that function -- including the trap-17 argsort
+        or the trap-18 divisor -- invalidates every cache built before the edit
+        instead of silently serving stale tensors.
+    """
+    src = inspect.getsource(top_frequent_rows_tensor)
+    return hashlib.sha1(src.encode("utf-8")).hexdigest()
+
 
 __all__ = [
     "load_gz_pickle",
     "load_pickle",
     "discover_sim_trials",
     "top_frequent_rows_tensor",
+    "top_frequent_rows_source_sha1",
     "CNASimsDataset",
+    "CACHE_X_FILENAME",
+    "CACHE_THETA_FILENAME",
+    "CACHE_SIM_IDS_FILENAME",
+    "CACHE_MANIFEST_FILENAME",
 ]

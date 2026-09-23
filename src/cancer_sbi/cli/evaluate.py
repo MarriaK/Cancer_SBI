@@ -18,6 +18,11 @@ Example:
     Add ``--kde``, ``--pairplot`` or ``--sbc`` for the other figure families.
     ``--sbc`` is slow: it draws 1000 posterior samples for every test case.
 
+The network is rebuilt from the checkpoint's own ``effective_config`` when it
+has one (every checkpoint written since 2026-09-24). Older ones carry none: the
+preset is used, a ``[warn]`` says so, and ``--z-score-x`` / ``--input-space`` /
+``--freq-renorm`` are there to describe them.
+
 What it writes (all names unchanged from the originals): the global z-score
 histogram, the three per-arm bar charts, ``zscore_summary.txt``, the two violin
 figures, the two true-versus-posterior-mean scatter grids and
@@ -106,10 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Directory the rebuilt model tries to resume from before --ckpt is "
-            "loaded over it. Defaults to the model's own training directory "
-            "name, reproducing what the original scripts did by constructing "
-            "the training class. Irrelevant to the result; it only decides "
-            "which 'no checkpoint found' message you see."
+            "loaded over it, reproducing what the original scripts did by "
+            "constructing the training class. Irrelevant to the result; it only "
+            "decides which 'no checkpoint found' message you see. Unset by "
+            "default, and then NO directory is created or read: the weights "
+            "come from --ckpt either way, and evaluating a run must not leave "
+            "an empty checkpoint directory behind it."
         ),
     )
     parser.add_argument(
@@ -145,6 +152,32 @@ def build_parser() -> argparse.ArgumentParser:
             "Evaluate only the first N test cases. For a quick smoke test; the "
             "published figures used all of them."
         ),
+    )
+
+    overrides = parser.add_argument_group(
+        "architecture overrides (old checkpoints only)",
+        "A checkpoint written since 2026-09-24 carries the config it was "
+        "trained with, and the network is rebuilt from that. These flags "
+        "describe a checkpoint that carries none. Passing one that contradicts "
+        "a checkpoint which does is an error, not a silent choice.",
+    )
+    overrides.add_argument(
+        "--z-score-x",
+        choices=["none", "structured", "independent"],
+        default=None,
+        help="FlowConfig.z_score_x of the run being evaluated.",
+    )
+    overrides.add_argument(
+        "--input-space",
+        choices=["log2", "copy"],
+        default=None,
+        help="CloneMLP encoder input space of the run being evaluated.",
+    )
+    overrides.add_argument(
+        "--freq-renorm",
+        action="store_true",
+        default=None,
+        help="The run being evaluated used CloneAtt's frequency renormalisation.",
     )
 
     extras = parser.add_argument_group("optional figure families")
@@ -214,7 +247,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     from cancer_sbi.data.splits import load_split
     from cancer_sbi.evaluation import diagnostics, figures, posterior as posterior_mod, style
-    from cancer_sbi.training.trainer import Trainer, build_training_components, quirks_for
+    from cancer_sbi.training.trainer import (
+        Trainer,
+        build_optimizer,
+        build_training_components,
+        quirks_for,
+    )
 
     data_root = require_path(args.data_root, "--data-root", DATA_ROOT_ENV)
     split_path = require_path(args.split, "--split", SPLIT_ENV)
@@ -223,16 +261,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     preset = get_preset(args.model)
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(preset.name)
     ckpt_path = Path(args.ckpt) if args.ckpt else run_dir / EVAL_CKPT_DIRNAME / "best.pt"
-    resume_dir = Path(args.resume_dir) if args.resume_dir else run_dir / preset.train.ckpt_dir
+    # None unless --resume-dir was given: see the Trainer block below for why
+    # evaluation no longer invents a directory of its own.
+    resume_dir = Path(args.resume_dir) if args.resume_dir else None
     out_dir = Path(args.out_dir) if args.out_dir else run_dir / DEFAULT_OUTPUT_DIRNAME
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Trap 11 made visible instead of silently resolved.
-    if resume_dir.name != ckpt_path.parent.name:
+    # Trap 11 made visible instead of silently resolved -- but only when there
+    # really are two directories in play. Printed unconditionally (against
+    # `run_dir/preset.train.ckpt_dir`) it fired on every run of the 2026-09-24
+    # matrix, where the checkpoint being read is the only one that exists.
+    if resume_dir is not None and resume_dir.name != ckpt_path.parent.name:
         print(
-            f"[note] {preset.name} trains into '{resume_dir.name}/' but this "
-            f"command reads '{ckpt_path.parent.name}/best.pt', which is what the "
-            f"original evaluation scripts did. Pass --ckpt to change it."
+            f"[note] resuming from '{resume_dir.name}/' but reading "
+            f"'{ckpt_path.parent.name}/{ckpt_path.name}'. The weights come from "
+            f"--ckpt; --resume-dir only decides which 'no checkpoint found' "
+            f"message you see."
         )
 
     if not args.show_backend:
@@ -241,10 +285,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     style.use_paper_style()
 
     print(f"Using device: {device}")
-    train_ids, test_ids = load_split(split_path)
+    # load_split returns a dict; evaluation deliberately scores the TEST ids and
+    # never the validation ids, so `val_ids` is not passed to the builders and the
+    # middle element of the 3-tuple they return is always None here.
+    split = load_split(split_path)
+    train_ids = split["train_ids"]
+    test_ids = split["test_ids"]
 
     if preset.data.dataset == "clone_sets":
-        train_loader, test_loader = build_clone_set_dataloaders(
+        train_loader, _val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
@@ -253,7 +302,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             pin_memory=preset.data.pin_memory,
         )
     else:
-        train_loader, test_loader = build_dominant_clone_dataloaders(
+        train_loader, _val_loader, test_loader = build_dominant_clone_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
@@ -266,36 +315,71 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     print(f"x_all shape: {tuple(x_all.shape)}, theta_all shape: {tuple(theta_all.shape)}")
 
-    # Rebuild the architecture exactly as training built it, then load the
-    # weights over it. Constructing the Trainer also attempts a resume from
-    # <resume-dir>/latest.pt, which is what the originals did by constructing
-    # their InferenceModel class (Base_NPE/z-score_violin.py:99-103).
+    # Rebuild the architecture exactly as TRAINING built it -- which means the
+    # checkpoint's own effective config, not get_preset's defaults. A
+    # z_score_x="structured" run carries a standardising transform inside the
+    # flow that a preset-built network does not have, so its state dict does not
+    # even load; a --input-space copy or --freq-renorm run loads silently into
+    # the wrong encoder. Resolved before anything is built, because it decides
+    # what gets built.
+    if ckpt_path.exists():
+        eval_cfg = posterior_mod.resolve_eval_config(
+            ckpt_path,
+            preset.name,
+            z_score_x=args.z_score_x,
+            input_space=args.input_space,
+            freq_renorm=args.freq_renorm,
+            device=device,
+        )
+        preset = eval_cfg.preset
+
     components = build_training_components(
         preset, train_loader, device=device, log_progress=True
     )
-    trainer = Trainer(
-        density_estimator=components.density_estimator,
-        train_loader=train_loader,
-        val_loader=test_loader,
-        optim_cfg=preset.optim,
-        train_cfg=preset.train,
-        embedding_net=components.embedding_net,
-        dataset=preset.data.dataset,
-        device=device,
-        ckpt_dir=resume_dir,
-        quirks=quirks_for(preset.name),
+
+    # No Trainer unless --resume-dir asks for one. Constructing it was how the
+    # originals rebuilt the model (Base_NPE/z-score_violin.py:99-103), but
+    # Trainer.__init__ creates its ckpt_dir eagerly, and the default used to be
+    # `run_dir/preset.train.ckpt_dir` -- so *evaluating* a clonemlp run created
+    # an empty, wrong `checkpoints_baseline/` next to the `checkpoints/` it was
+    # reading, on every run (B12). Only the optimiser is needed here, because
+    # the checkpoint carries its state and load_checkpoint restores it.
+    #
+    # Pointing the Trainer at the evaluated checkpoint's own directory instead
+    # would also have stopped the stray mkdir, but it would have changed the
+    # numbers: `_try_resume` would then find that run's latest.pt and restore
+    # the RNG state saved by its last training epoch, and this command seeds
+    # nothing before drawing. Not constructing the Trainer is what keeps the
+    # default path bit-identical to what it does today, where the invented
+    # directory is always empty and the resume always finds nothing.
+    optimizer = build_optimizer(
+        components.density_estimator, components.embedding_net, preset.optim
     )
+    if resume_dir is not None:
+        trainer = Trainer(
+            density_estimator=components.density_estimator,
+            train_loader=train_loader,
+            val_loader=test_loader,
+            optim_cfg=preset.optim,
+            train_cfg=preset.train,
+            embedding_net=components.embedding_net,
+            dataset=preset.data.dataset,
+            device=device,
+            ckpt_dir=resume_dir,
+            quirks=quirks_for(preset.name),
+        )
+        optimizer = trainer.optimizer
 
     resumed = posterior_mod.load_checkpoint_for_eval(
         ckpt_path,
-        trainer.density_estimator,
-        trainer.optimizer,
+        components.density_estimator,
+        optimizer,
         device=device,
         history_val_key=preset.train.history_val_key,
     )
     print(f"Best {preset.train.history_val_key}: {resumed.best_val_loss:.6f}")
 
-    density_estimator = trainer.density_estimator
+    density_estimator = components.density_estimator
     density_estimator.eval()
 
     prior_sd = args.prior_sd if args.prior_sd is not None else preset.prior_sd

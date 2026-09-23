@@ -196,6 +196,7 @@ class CloneSetEmbedding(nn.Module):
         num_inducing: int = 32,
         dropout: float = 0.1,
         freq_as_weight: bool = True,
+        freq_renorm: bool = False,
     ) -> None:
         """Build the input projection, the ISAB stack and the PMA head.
 
@@ -208,9 +209,26 @@ class CloneSetEmbedding(nn.Module):
             num_layers: Number of stacked ISABs.
             dropout: Accepted and IGNORED -- see the trap-4 note below.
             freq_as_weight: Multiply each token by its clone frequency.
+            freq_renorm: Repair R4. ``False`` is the published behaviour -- the
+                tokens are multiplied by the RAW top-K frequencies, which sum to
+                well under 1 (trap 18/19), so every token is shrunk by roughly
+                ``1/K`` before attention and the logits collapse towards uniform.
+                ``True`` renormalises the masked frequencies to sum to 1 per set
+                before the multiply, which restores the token scale while keeping
+                the relative frequency weighting. Only meaningful when
+                ``freq_as_weight`` is True.
+
+                ``ln`` stays ``False`` in both cases, deliberately: the
+                architecture review's T3 pairs this renormalisation with
+                ``ln=True``, but ``ln0`` renormalises every token to unit scale on
+                the way out of the first ISAB, which erases the frequency
+                weighting for ISABs 2-3 and the PMA -- so the two halves cancel
+                and a joint run cannot be read. See
+                ``docs/MODEL_IMPROVEMENT_PLAN.md`` §5 step 5c.
         """
         super().__init__()
         self.freq_as_weight = freq_as_weight
+        self.freq_renorm = freq_renorm
         self.input_proj = nn.Linear(44, d_model)
         self.d_model = d_model
 
@@ -278,7 +296,17 @@ class CloneSetEmbedding(nn.Module):
             # the original and are deliberately NOT restored here. This looks
             # wrong but it is what the published model does; normalising changes
             # the results. See docs/REFACTOR_NOTES.md.
-            h = h * freq_masked.unsqueeze(-1)  # (B, K, d_model)
+            #
+            # Repair R4 (freq_renorm=True) is exactly those two commented-out
+            # lines put back: divide by the masked frequency sum so the weights
+            # form a per-set distribution summing to 1. Padded rows carry
+            # frequency 0, so they add nothing to the sum and keep weight 0.
+            # clamp_min(1e-8) guards a set whose kept clones all have frequency 0.
+            if self.freq_renorm:
+                w = freq_masked / freq_masked.sum(dim=1, keepdim=True).clamp_min(1e-8)
+                h = h * w.unsqueeze(-1)  # (B, K, d_model)
+            else:
+                h = h * freq_masked.unsqueeze(-1)  # (B, K, d_model)
 
         # Note: pad_mask is not passed to the attention layers. Padded clones
         # enter attention as zero-frequency, zero-scaled tokens rather than being

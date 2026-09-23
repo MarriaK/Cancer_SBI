@@ -20,14 +20,15 @@ from, which only worked from inside that folder. Callers (the CLI) must supply
 them.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 DatasetKind = Literal["clone_sets", "dominant_clone"]
 EncoderKind = Literal["mlp", "attention", "deepset"]
 ReloadBestPolicy = Literal["never", "on_early_stop", "always"]
 ZScoreMode = Literal["none", "structured", "independent"]
+InputSpace = Literal["log2", "copy"]
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,16 @@ class DataConfig:
         use_bulk: ``SimulationDataset`` only -- pick ``CNratios_bulk`` (index 2)
             instead of ``CNratios_largest`` (index 1).
         pin_memory: Passed straight to ``DataLoader``.
+        num_workers: Worker processes per ``DataLoader``. ``0`` -- loading on
+            the main process -- is what every published run did, and is the
+            default here for that reason. Raising it only prefetches: shuffling
+            stays on the main process's generator, so the RNG stream and hence
+            the results are unchanged.
+        cache_dir: Optional path to a pre-built clone cache (see
+            ``src/utilities/build_clone_cache.py``). ``None`` -- the default and
+            the published behaviour -- reads the gzipped trial files directly.
+            Only the ``clone_sets`` path uses it; the dominant-clone builder
+            ignores it.
     """
 
     dataset: DatasetKind
@@ -79,6 +90,10 @@ class DataConfig:
     sim_regex: str = r"^sim\d+$"
     use_bulk: bool = False
     pin_memory: bool = False
+    # Added 2026-09-24 (WP-A). 0 == the published behaviour; see the docstring.
+    num_workers: int = 0
+    # Added 2026-09-24 (WP-B). None == read the gzipped trial files; see above.
+    cache_dir: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,12 @@ class EncoderConfig:
         include_freq_in_mlp: ``"mlp"`` only; ``False`` keeps the 44->d projection.
         n_heads / num_inducing: Attention encoder only.
         layer_norm_in_attention: ``False`` everywhere -- trap 5.
+        input_space: ``"mlp"`` only. ``"log2"`` feeds the encoder the raw log2
+            ratios, which is what every published run did; ``"copy"`` converts
+            them to copy-number space inside the encoder (repair T2 / run R2).
+        freq_renorm: ``"attention"`` only. ``False`` keeps CloneAtt's published
+            raw-frequency multiply; ``True`` renormalises the per-clone weights
+            so the tokens are not shrunk to ~0.003 of their scale (run R4).
         input_dim / hidden_dim_phi / hidden_dim_rho / output_dim / aggregation_fn
             / aggregation_dim / num_heads_deepset: DeepSet only.
         trials_*: The ``TrialsSBIEmbedding`` wrapper (clone-set models only);
@@ -140,6 +161,12 @@ class EncoderConfig:
     # attention stack. This looks wrong but it is what the published model does;
     # changing it changes the results. See docs/REFACTOR_NOTES.md.
     layer_norm_in_attention: bool = False
+
+    # --- repair switches, added 2026-09-24 (WP-A) ----------------------------
+    # Both defaults are the PUBLISHED behaviour, so every preset below keeps
+    # reproducing its original folder without naming them.
+    input_space: InputSpace = "log2"      # BaselineCloneEmbedding (CloneMLP)
+    freq_renorm: bool = False             # CloneSetEmbedding (CloneAtt)
 
     # --- DeepSet (DominantClone) --------------------------------------------
     input_dim: Optional[int] = None
@@ -517,6 +544,122 @@ PRESETS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Serialising an effective config into, and out of, a checkpoint.
+# ---------------------------------------------------------------------------
+
+#: Key under which a checkpoint carries the config the run was actually trained
+#: with. Checkpoints written before 2026-09-24 -- every one now on the cluster --
+#: do not have it, and every reader must fall back to the preset's defaults with
+#: a warning rather than refusing them.
+EFFECTIVE_CONFIG_KEY = "effective_config"
+
+
+def _block_to_dict(block: Any) -> Dict[str, Any]:
+    """One config dataclass as a plain, picklable, JSON-safe dict.
+
+    Args:
+        block: Any of the five frozen sub-configs.
+
+    Returns:
+        ``{field name: value}`` with ``Path`` turned into ``str`` and ``tuple``
+        into ``list``, so the result survives ``json.dumps`` as well as
+        ``torch.save``. Every value is a scalar, a string or a list of those.
+    """
+    out: Dict[str, Any] = {}
+    for item in fields(block):
+        value = getattr(block, item.name)
+        if isinstance(value, Path):
+            value = str(value)
+        elif isinstance(value, tuple):
+            value = list(value)
+        out[item.name] = value
+    return out
+
+
+def config_to_dict(preset: ModelPreset) -> Dict[str, Any]:
+    """Snapshot a preset -- normally the *effective* one -- as a dict.
+
+    This is what training stores in every checkpoint so that evaluation can
+    rebuild the same network. Without it, evaluation rebuilds from
+    :func:`get_preset` and a run trained with ``--z-score-x structured`` fails
+    to load (the flow has a standardising layer the fresh one does not), while
+    a run trained with ``--input-space copy`` or ``--freq-renorm`` loads
+    silently into the wrong encoder and reports wrong numbers.
+
+    Args:
+        preset: The config the run actually used, i.e. the output of
+            ``cli.train.build_config``, not ``get_preset(name)``.
+
+    Returns:
+        ``{"model": name, "data"/"encoder"/"flow"/"optim"/"train": {...},
+        "prior_sd": float}``.
+    """
+    return {
+        "model": preset.name,
+        "paper_name": preset.paper_name,
+        "origin": preset.origin,
+        "data": _block_to_dict(preset.data),
+        "encoder": _block_to_dict(preset.encoder),
+        "flow": _block_to_dict(preset.flow),
+        "optim": _block_to_dict(preset.optim),
+        "train": _block_to_dict(preset.train),
+        "prior_sd": preset.prior_sd,
+    }
+
+
+def _block_from_dict(cls: Any, stored: Dict[str, Any]) -> Any:
+    """Rebuild one config dataclass from :func:`_block_to_dict`'s output.
+
+    Args:
+        cls: The dataclass to build.
+        stored: Its stored fields. Unknown keys are ignored, which is what makes
+            a checkpoint written by a *newer* tree still loadable by this one;
+            missing keys keep the dataclass default.
+
+    Returns:
+        An instance of ``cls``.
+    """
+    known = {item.name: item for item in fields(cls)}
+    kwargs = {}
+    for name, value in stored.items():
+        if name not in known:
+            continue
+        if isinstance(value, list):
+            value = tuple(value)
+        kwargs[name] = value
+    return cls(**kwargs)
+
+
+def preset_from_effective_config(effective: Dict[str, Any]) -> ModelPreset:
+    """Rebuild the architecture-bearing config a checkpoint was written with.
+
+    The published preset is the base, so anything the snapshot does not carry
+    keeps its published value; the ``flow`` and ``encoder`` blocks -- the two
+    that decide the shape of the ``state_dict`` and what the encoder computes --
+    come from the snapshot.
+
+    Args:
+        effective: A dict from :func:`config_to_dict`.
+
+    Returns:
+        The :class:`ModelPreset` to hand to
+        ``cancer_sbi.training.trainer.build_training_components``.
+
+    Raises:
+        KeyError: If the snapshot names no model, or names an unknown one.
+    """
+    name = effective.get("model")
+    if name is None:
+        raise KeyError("The stored effective config carries no 'model' key.")
+    base = get_preset(name)
+    return replace(
+        base,
+        flow=_block_from_dict(FlowConfig, effective.get("flow", {})),
+        encoder=_block_from_dict(EncoderConfig, effective.get("encoder", {})),
+    )
+
+
 def get_preset(name: str) -> ModelPreset:
     """Look a preset up by its short name.
 
@@ -537,6 +680,9 @@ def get_preset(name: str) -> ModelPreset:
 
 
 __all__ = [
+    "EFFECTIVE_CONFIG_KEY",
+    "InputSpace",
+    "ZScoreMode",
     "DataConfig",
     "EncoderConfig",
     "FlowConfig",
@@ -548,4 +694,6 @@ __all__ = [
     "DOMINANTCLONE",
     "PRESETS",
     "get_preset",
+    "config_to_dict",
+    "preset_from_effective_config",
 ]

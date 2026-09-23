@@ -41,6 +41,7 @@ class BaselineCloneEmbedding(nn.Module):
         dropout: float = 0.1,
         freq_as_weight: bool = True,
         include_freq_in_mlp: bool = False,
+        input_space: str = "log2",
     ) -> None:
         """Build the per-clone MLP and the output LayerNorm.
 
@@ -58,16 +59,36 @@ class BaselineCloneEmbedding(nn.Module):
             include_freq_in_mlp: Feed the frequency column to the MLP as a 45th
                 input. ``False`` in the published model, which keeps the
                 projection at 44 inputs to match CloneAtt's ``input_proj``.
+            input_space: Representation the 44 CNA columns are fed to the MLP in.
+                ``"log2"`` is the published behaviour: the columns are passed
+                through untouched, so the forward pass is byte-identical to the
+                pre-repair model. ``"copy"`` is repair T2 / run R2 -- the columns
+                are converted from log2 ratio to a centred copy-number scale by
+                ``(clamp(2**(x+1), 0, 8) - 2) / 2`` inside :meth:`forward`. The
+                frequency column is never touched by either setting.
+
+                Why here and not in the data loader: one loader feeds both
+                CloneMLP and CloneAtt, so a loader-side transform would leak into
+                the CloneAtt R4 comparison, and the preprocessed cache stores
+                pre-transform data. See ``docs/CODEBASE_IMPROVEMENT_PLAN.md``,
+                "The T2 edit must go in the encoder, not the loader".
 
         Raises:
             AssertionError: If ``in_dim`` is smaller than 45.
+            ValueError: If ``input_space`` is not ``"log2"`` or ``"copy"``.
         """
         super().__init__()
         assert in_dim >= 45, "Expected at least 45 features (44 CNA + freq)."
 
+        if input_space not in ("log2", "copy"):
+            raise ValueError(
+                f"input_space must be 'log2' or 'copy', got {input_space!r}."
+            )
+
         self.d_model = d_model
         self.freq_as_weight = freq_as_weight
         self.include_freq_in_mlp = include_freq_in_mlp
+        self.input_space = input_space
 
         mlp_in = 44 + (1 if include_freq_in_mlp else 0)
 
@@ -109,6 +130,16 @@ class BaselineCloneEmbedding(nn.Module):
 
         feats = x_clean[..., :44]  # (B, K, 44)
         freq = x_clean[..., 44]    # (B, K)
+
+        if self.input_space == "copy":
+            # Repair T2 / run R2. The CNA columns arrive as log2 ratios against a
+            # diploid baseline, where 16-21% of the values are the single
+            # "arm completely lost" sentinel -10.966, about 15 sd from everything
+            # else. Undo the log: 2**(x+1) is the absolute copy number, clamped to
+            # [0, 8] so the sentinel lands on 0 and amplifications saturate, then
+            # recentred on diploid and halved. The sentinel therefore maps to
+            # -1.0 instead of -10.966. The frequency column is NOT converted.
+            feats = (torch.clamp(2.0 ** (feats + 1.0), 0, 8) - 2.0) / 2.0
 
         if self.include_freq_in_mlp:
             feats = torch.cat([feats, freq.unsqueeze(-1)], dim=-1)  # (B, K, 45)
