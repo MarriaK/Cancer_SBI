@@ -1,3 +1,40 @@
-.DS_Store # Add to ignore list
+# Only src/ and results/ are tracked. Everything else is local or lives on the
+# cluster (hpc2.storrs.hpc.uconn.edu:~/cancer), which mirrors this layout.
+
+# --- macOS / editor noise ---
 .DS_Store
-.DS_Store
+*.swp
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# --- Simulation data: 21 GB on the cluster, a partial subset here. Never in git.
+# Leading slash matters: a bare 'data/' would also match src/cancer_sbi/data/.
+/data/
+Guassian_Normal/
+Guassian_Normal_all/
+Laplace_pos/
+numpy_data*/
+simulation_outputs/
+*.pkl.gz
+
+# --- Model weights: 2 GB, cluster-only, backed up separately ---
+/runs/
+checkpoints*/
+*.pt
+
+# --- Posterior sample dumps: ~530 MB each, regenerate with jobs/sample.sh ---
+results/posteriors/
+
+# --- Local-only working areas ---
+/docs/
+/overview_figure/
+/logs/
+/cache/
+
+# --- Superseded, pending deletion after the 2026-10-01 poster deadline ---
+_archive_*/
+_superseded_*/
