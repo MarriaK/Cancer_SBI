@@ -34,8 +34,6 @@ From 651 held-out simulations (707 for DominantClone), 5,000 posterior draws eac
 | CloneMLP-NPE | **0.472** | 0.527 | −21.96 | 39 / 44 |
 | DominantClone-NPE | 0.170 | 0.177 | −11.65 | **0 / 44** |
 | CloneAtt-NPE | 0.049 | 0.063 | −9.12 | 21 / 44 |
-| *ridge on 4 summary statistics per arm* | **0.786** | — | — | — |
-| *returning the prior* | 0.000 | — | −8.23 | — |
 
 Two reference rows matter for reading the table. The **prior bar** is the differential entropy of
 N(0, 0.2007) in 44 dimensions, −8.23 nats: the loss a model gets by ignoring the data entirely.
