@@ -1,0 +1,2 @@
+model,n_cases,num_samples,mean_true_r2,mean_pearson_r2,mean_rmse,mean_contraction,pooled_mean_z,pooled_std_z,pct_within_2z,coverage_50,coverage_90,coverage_95,mean_coverage_gap,n_arms_ks_reject_05,n_arms_ks_reject_fdr05,mean_log_prob_true
+clonemlp,651,5000,0.325934,0.334939,0.161124,0.295538,-0.00512091,0.996724,95.4964,0.481741,0.889157,0.948541,-0.0119442,17,13,18.2769
