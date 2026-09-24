@@ -46,6 +46,15 @@ from cancer_sbi.config import (
     OptimConfig,
     TrainConfig,
 )
+from cancer_sbi.models.arm_tokens import (
+    DEFAULT_ARM_NUM_INDUCING,
+    DEFAULT_D_ARM,
+    DEFAULT_D_GLOBAL,
+    DEFAULT_D_TOKEN,
+    DEFAULT_N_ARM_LAYERS,
+    DEFAULT_N_HEADS,
+    ArmTokenEmbedding,
+)
 from cancer_sbi.models.deep_set import DeepSet
 from cancer_sbi.models.flow import build_flow
 from cancer_sbi.models.mlp_encoder import BaselineCloneEmbedding
@@ -342,7 +351,8 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
 
     Returns:
         ``TrialsSBIEmbedding`` wrapping a per-trial clone encoder (``"mlp"`` or
-        ``"attention"``), or a bare ``DeepSet`` (``"deepset"``).
+        ``"attention"``), a bare ``DeepSet`` (``"deepset"``) or a bare
+        ``ArmTokenEmbedding`` (``"armtoken"``).
 
     Raises:
         ValueError: On an unknown ``cfg.kind``.
@@ -417,6 +427,47 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             # same reason as the four above: evaluation rebuilds through this
             # function, and a missing argument would score a run as a network
             # it never was.
+            attn_scale=cfg.attn_scale,
+        ).to(device)
+    elif cfg.kind == "armtoken":
+        # Matrix 5. Returned DIRECTLY, not wrapped in TrialsSBIEmbedding: this
+        # module already pools over the T trials itself, and the wrapper's
+        # FCEmbedding is a dense MLP over the pooled vector, so running it here
+        # would mix the 44 per-arm blocks back into one another and destroy the
+        # arm-equivariance the encoder exists for. That is also why the preset's
+        # trials_* fields are all None.
+        #
+        # Every field is forwarded, for the same reason the CloneAtt branch
+        # forwards its six: evaluation rebuilds the encoder from the
+        # checkpoint's effective config through this same function, and a
+        # missing argument would silently rebuild a different network. The
+        # `if None` fallbacks name the published ArmToken values so that a
+        # checkpoint predating any one of these fields still rebuilds.
+        return ArmTokenEmbedding(
+            in_dim=cfg.in_dim,
+            d_token=cfg.d_token if cfg.d_token is not None else DEFAULT_D_TOKEN,
+            d_arm=cfg.d_arm if cfg.d_arm is not None else DEFAULT_D_ARM,
+            d_global=(
+                cfg.d_global if cfg.d_global is not None else DEFAULT_D_GLOBAL
+            ),
+            n_arm_layers=(
+                cfg.n_arm_layers
+                if cfg.n_arm_layers is not None
+                else DEFAULT_N_ARM_LAYERS
+            ),
+            n_heads=cfg.n_heads if cfg.n_heads is not None else DEFAULT_N_HEADS,
+            num_inducing=(
+                cfg.arm_num_inducing
+                if cfg.arm_num_inducing is not None
+                else DEFAULT_ARM_NUM_INDUCING
+            ),
+            trial_pool=cfg.trial_pool,
+            input_space=cfg.input_space,
+            attn_ln=cfg.attn_ln,
+            # Trap 4's shape again, opt-in: the probability alone builds no
+            # module, so both halves have to be forwarded.
+            dropout=cfg.dropout if cfg.dropout is not None else 0.2,
+            attn_dropout_active=cfg.attn_dropout_active,
             attn_scale=cfg.attn_scale,
         ).to(device)
     elif cfg.kind == "deepset":

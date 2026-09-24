@@ -928,3 +928,150 @@ def test_jobs_readme_documents_matrix_four():
     for flag in ("--attn-scale", "--tail-bound", "--trial-pool", "--d-model",
                  "--n-heads", "--num-inducing"):
         assert flag in text
+
+
+# ------------------------------------------------------------------ train5.sh
+#
+# Matrix 5: six runs of a fourth model. Same reasoning as train2/3/4.sh -- the
+# dry run is the only place the per-run flag sets can be checked without a GPU.
+
+
+def _train5_dry_run(env=None):
+    full = {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)}
+    full.update(env or {})
+    r = _run(JOBS / "train5.sh", full)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+def _train5_dry_run_lines():
+    return [
+        ln for ln in _train5_dry_run().stdout.splitlines() if ln.startswith("python ")
+    ]
+
+
+RUN5_NAMES = ("AT0", "AT0s1", "AT1", "AT2", "AT3", "AT4")
+
+
+def test_train5_sh_header_matches_the_matrix():
+    text = (JOBS / "train5.sh").read_text()
+    for run in RUN5_NAMES:
+        assert run in text
+    assert "--array=0-5" in text
+    assert "--min-epochs 1" in text
+    assert "-C a100" in text
+    assert "general-gpu" in text
+    assert "--gres=gpu:1" in text
+    assert "-t 12:00:00" in text
+    # The four earlier matrices must not have been edited into this one.
+    assert "--array=0-4" in (JOBS / "train.sh").read_text()
+    assert "--array=0-6" in (JOBS / "train2.sh").read_text()
+    assert "--array=0-13" in (JOBS / "train3.sh").read_text()
+
+
+def test_train5_sh_is_executable():
+    assert os.access(JOBS / "train5.sh", os.X_OK)
+
+
+def test_train5_sh_defaults_to_the_three_key_split():
+    text = (JOBS / "train5.sh").read_text()
+    assert "CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl" in text
+
+
+def test_train5_dry_run_reports_the_split_gate_as_ok():
+    assert "split gate: OK" in _train5_dry_run().stdout
+
+
+def test_train5_sh_hard_fails_on_a_split_without_val_ids(tmp_path):
+    r = _run(
+        JOBS / "train5.sh",
+        {
+            "CANCER": str(CODE_ROOT),
+            "CANCER_SBI_SPLIT": str(CODE_ROOT / "data" / "train_test_split.pkl"),
+            "RUNS_ROOT": str(tmp_path),
+            "SLURM_ARRAY_TASK_ID": "0",
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "val_ids" in r.stderr
+
+
+def test_train5_sh_refuses_a_non_empty_checkpoint_dir(tmp_path):
+    ckpt = tmp_path / "AT1" / "checkpoints"
+    ckpt.mkdir(parents=True)
+    (ckpt / "best.pt").write_text("not really a checkpoint")
+    r = _run(JOBS / "train5.sh",
+             {"RUNS_ROOT": str(tmp_path), "SLURM_ARRAY_TASK_ID": "2"})
+    assert r.returncode != 0
+    assert "REFUSING" in r.stderr
+
+
+def test_train5_dry_run_prints_six_commands():
+    assert len(_train5_dry_run_lines()) == 6
+
+
+def test_train5_dry_run_flags_per_run():
+    at0, at0s1, at1, at2, at3, at4 = _train5_dry_run_lines()
+
+    for cmd in (at0, at0s1, at1, at2, at3, at4):
+        assert "-m cancer_sbi.cli.train" in cmd
+        assert "--model armtoken" in cmd
+        assert "--min-epochs 1" in cmd
+        # Matrix 4 R18 showed tail_bound 3 clips the well-learned arms; every
+        # ArmToken run carries the proven value so it is not confounded.
+        assert "--tail-bound 5" in cmd
+        assert "--stop-after-epochs 15" in cmd
+        assert "--max-epochs 60" in cmd
+        assert "--num-workers 8" in cmd
+        assert "--ckpt-dir" in cmd and "/runs/2026-09-24/" in cmd
+        # The preset already carries matrices 2-4's findings, so naming them
+        # here would make a preset default look like a per-run choice.
+        for flag in ("--z-score-x", "--input-space", "--attn-ln",
+                     "--flow-num-transforms", "--freq-mode", "--d-model",
+                     "--num-inducing", "--d-arm", "--arm-num-inducing"):
+            assert flag not in cmd, cmd
+
+    # The base and its seed replicate add nothing at all.
+    for cmd in (at0, at0s1):
+        for flag in ("--trial-pool", "--attn-scale", "--arm-layers",
+                     "--embed-lr"):
+            assert flag not in cmd, cmd
+    assert _seed_of(at0) == "20260924"
+    assert _seed_of(at0s1) == "1"
+
+    # One switch each, on the matrix seed.
+    for cmd, added in ((at1, "--trial-pool attention"),
+                       (at2, "--attn-scale standard"),
+                       (at3, "--arm-layers 0"),
+                       (at4, "--embed-lr 1e-3")):
+        assert added in cmd, cmd
+        assert _seed_of(cmd) == "20260924"
+    for cmd, absent in (
+        (at1, ("--attn-scale", "--arm-layers", "--embed-lr")),
+        (at2, ("--trial-pool", "--arm-layers", "--embed-lr")),
+        (at3, ("--trial-pool", "--attn-scale", "--embed-lr")),
+        (at4, ("--trial-pool", "--attn-scale", "--arm-layers")),
+    ):
+        for flag in absent:
+            assert flag not in cmd, cmd
+
+
+def test_train5_dry_run_gives_every_run_the_clone_cache():
+    """Every run is a clone-set model; there is no DominantClone exception."""
+    lines = [
+        ln
+        for ln in _train5_dry_run({"CACHE_DIR": "/some/cache"}).stdout.splitlines()
+        if ln.startswith("python ")
+    ]
+    assert len(lines) == 6
+    assert all("--cache-dir /some/cache" in ln for ln in lines)
+
+
+def test_jobs_readme_documents_matrix_five():
+    text = (JOBS / "README.md").read_text()
+    assert "Matrix 5" in text and "train5.sh" in text
+    for run in RUN5_NAMES:
+        assert run in text
+    for flag in ("--trial-pool attention", "--attn-scale standard",
+                 "--arm-layers 0", "--embed-lr 1e-3", "--seed 1"):
+        assert flag in text

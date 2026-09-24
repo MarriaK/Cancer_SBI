@@ -204,3 +204,50 @@ pair rather than letting the attention silently drop the remainder of every toke
 attention` keeps the post-pooling MLP and therefore the flow's context width, so R20 is comparable
 with the base on everything else; it does change the `state_dict`, so its checkpoints must be
 evaluated with the config they carry (which `sample_posteriors.py` does by default).
+
+## Matrix 5 — ArmToken (`train5.sh`)
+
+A fourth model, not another switch. Every encoder so far tokenises a **clone** — a 44-vector of log2
+ratios — and pools the clones away, so the only thing the flow ever sees of arm 17 is whatever
+survived a projection that mixed all 44 arms on its first layer, and nothing ties output arm 17 to
+input arm 17. `ArmTokenEmbedding` inverts the set: the 44 **arms** are the tokens and the clones are
+summarised away by eight frequency-weighted moments per (trial, arm) — weighted mean, weighted sd,
+the weighted fractions lost / gained / deeply lost, the max, the min, and the value in the single
+most frequent clone — computed in copy space with weights renormalised to sum to 1, which is trap 19
+avoided at the source rather than repaired downstream.
+
+Those moments are pooled over the 25 trials (masked mean **and** sd, so the between-replicate spread
+survives), projected by one MLP **shared across all 44 arms**, mixed by a stack of ISABs over the
+44-element arm set, and read out to `d_arm = 8` numbers per arm; the context is the 44 blocks
+concatenated in arm order plus a 64-wide global block (a PMA over the arms, invariant, plus
+log10 of the kept frequency mass and of the largest clone frequency). Every weight is shared across
+arms, so **permuting the 44 input columns permutes the 44 output blocks exactly** — arm identity
+reaches the flow only through the concatenation order. The module is the whole embedding net and is
+*not* wrapped in `TrialsSBIEmbedding`: that wrapper's MLP would blend the per-arm blocks back
+together and destroy the property. Context width is `44 * 8 + 64 = 416`; the encoder is ~62k
+parameters, about an eighth of CloneAtt's.
+
+The `armtoken` preset already carries matrices 2–4's findings (`z_score_x = structured`,
+`input_space = copy`, LayerNorm on, a 3-transform flow, `hidden_features = 50`), so the base run
+names no repair flag at all. All six are `armtoken`, share `--min-epochs 1 --stop-after-epochs 15
+--max-epochs 60 --num-workers 8`, and use the clone cache when `CACHE_DIR` is set. The seed is
+20260924 except where the table names another.
+
+| idx | run | flags on top of the preset | what it tests |
+| --- | --- | --- | --- |
+| 0 | AT0 | *(none)* | the encoder itself — the yardstick every row below is read against |
+| 1 | AT0s1 | `--seed 1` | a brand-new architecture's own seed spread (matrices 2–4: ±0.05 on R²) |
+| 2 | AT1 | `--trial-pool attention` | pool the 25 trials with a per-arm PMA instead of the masked `[mean, sd]` |
+| 3 | AT2 | `--attn-scale standard` | trap 6's temperature, asked of the arm attention: `sqrt(d_token/n_heads)` |
+| 4 | AT3 | `--arm-layers 0` | no cross-arm mixing at all — is the ISAB worth its parameters, or is this 44 independent regressions? |
+| 5 | AT4 | `--embed-lr 1e-3` | R7's question for a 62k-parameter encoder the published 1e-4 near-freezes |
+
+`--arm-layers`, `--d-arm` and `--arm-num-inducing` are ArmToken-only; `--trial-pool`, `--attn-scale`,
+`--attn-ln`, `--n-heads`, `--input-space` and `--encoder-dropout` are shared with the other models.
+`--freq-mode`, `--freq-renorm`, `--d-model`, `--num-inducing` and `--require-all-trials` are warned
+about and ignored for `armtoken` — the moments renormalise the weights themselves, the output width
+is `44 * d_arm + d_global` rather than a `d_model`, and `--num-inducing` is deliberately a separate
+flag from `--arm-num-inducing` so that one cannot silently reshape the other model. `44 * d_arm +
+d_global` is capped at 512: beyond that the flow's first layer is again the biggest thing in the
+network, which is what this encoder exists to avoid, so `cli/train.py` refuses the `--d-arm` rather
+than letting it through.

@@ -927,3 +927,175 @@ def test_z_score_x_independent_trains_and_samples_for_cloneatt(tmp_path, monkeyp
         ).preset.flow.z_score_x
         == "independent"
     )
+
+
+# ---------------------------------------------------------------------------
+# 10. Matrix 5: ArmToken is a different *shape* of embedding net.
+#
+# Everything above rebuilds a TrialsSBIEmbedding wrapping a clone encoder.
+# ArmToken is the embedding net itself, its context is 416 wide instead of 256,
+# and `--arm-layers 0` removes an ISAB from the state_dict -- so this is the
+# section that proves the rebuild path is not quietly clone-set-only.
+# ---------------------------------------------------------------------------
+
+ARMTOKEN_RUNS = [
+    ("AT0", []),
+    ("AT1", ["--trial-pool", "attention"]),
+    ("AT3", ["--arm-layers", "0"]),
+]
+
+
+@needs_data
+@pytest.mark.parametrize(
+    "tag, extra", ARMTOKEN_RUNS, ids=[r[0] for r in ARMTOKEN_RUNS]
+)
+def test_armtoken_checkpoint_round_trips_through_the_sampler(
+    tmp_path, monkeypatch, capsys, tag, extra
+):
+    """Train one epoch, then really sample -- and load strictly, not loosely."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.models.arm_tokens import ArmTokenEmbedding
+    from cancer_sbi.training.trainer import build_embedding_net, build_training_components
+
+    ckpt_dir, split_path = _train_tiny(tmp_path, "armtoken", extra, tag)
+
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["model"] == "armtoken"
+    assert stored["encoder"]["kind"] == "armtoken"
+    assert stored["encoder"]["d_arm"] == 8
+    assert stored["encoder"]["d_global"] == 64
+    assert stored["encoder"]["d_token"] == 64
+    assert stored["encoder"]["arm_num_inducing"] == 16
+    assert stored["encoder"]["n_arm_layers"] == (0 if "--arm-layers" in extra else 1)
+    assert stored["encoder"]["trial_pool"] == (
+        "attention" if "--trial-pool" in extra else "mean"
+    )
+    # The preset's own flow, which is not CloneAtt's published one.
+    assert stored["flow"]["z_score_x"] == "structured"
+    assert stored["flow"]["num_transforms"] == 3
+    assert stored["flow"]["hidden_features"] == 50, "must stay 50"
+
+    path, meta = _sample(
+        tmp_path, "armtoken", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists()
+    assert meta["config_from_checkpoint"] is True
+    assert meta["encoder_config"]["kind"] == "armtoken"
+    # The rebuilt-config line names the kind and ArmToken's three shape fields.
+    out = capsys.readouterr().out
+    assert "[config] rebuilt" in out and "kind=armtoken" in out
+    assert "d_arm=8" in out and "n_arm_layers=" in out and "trial_pool=" in out
+
+    # The network the sampler rebuilt is the one that was trained, and it is
+    # the bare module -- not wrapped, which would have blended the arm blocks.
+    rebuilt = posterior_mod.resolve_eval_config(
+        ckpt_dir / "best.pt", "armtoken"
+    ).preset
+    net = build_embedding_net(rebuilt.encoder, "cpu")
+    assert isinstance(net, ArmTokenEmbedding)
+    assert net.d_model == 416
+    assert len(net.arm_layers) == (0 if "--arm-layers" in extra else 1)
+
+    # strict=True: no missing and no unexpected key, on the whole flow.
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    flow = build_training_components(
+        rebuilt, train_loader, device="cpu", log_progress=False
+    ).density_estimator
+    flow.load_state_dict(state, strict=True)
+
+
+@needs_data
+def test_an_arm_layers_zero_checkpoint_does_not_load_into_a_default_armtoken(tmp_path):
+    """The proof that rebuilding from the checkpoint is necessary, not tidy."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.training.trainer import build_training_components
+
+    ckpt_dir, _ = _train_tiny(tmp_path, "armtoken", ["--arm-layers", "0"], "AT3x")
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    preset_built = build_training_components(
+        get_preset("armtoken"), train_loader, device="cpu", log_progress=False
+    ).density_estimator
+
+    with pytest.raises(RuntimeError):
+        preset_built.load_state_dict(state)
+
+    rebuilt = build_training_components(
+        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "armtoken").preset,
+        train_loader,
+        device="cpu",
+        log_progress=False,
+    ).density_estimator
+    rebuilt.load_state_dict(state)
+
+
+def test_a_checkpoint_without_the_matrix_five_keys_still_rebuilds_cloneatt():
+    """Every checkpoint on the cluster predates the five ArmToken fields."""
+    from cancer_sbi.config import preset_from_effective_config
+
+    rebuilt = preset_from_effective_config(
+        {
+            "model": "cloneatt",
+            "flow": {"z_score_x": "structured"},
+            "encoder": {"kind": "attention", "d_model": 128, "n_heads": 8},
+        }
+    )
+    assert rebuilt.encoder.kind == "attention"
+    assert rebuilt.encoder.d_token is None
+    assert rebuilt.encoder.d_arm is None
+    assert rebuilt.encoder.d_global is None
+    assert rebuilt.encoder.n_arm_layers is None
+    assert rebuilt.encoder.arm_num_inducing is None
+    # ...and the published values the snapshot did not carry are still there.
+    assert rebuilt.encoder.attn_ln is False
+    assert rebuilt.encoder.trial_pool == "mean"
+
+
+@needs_data
+def test_armtoken_trains_two_epochs_and_samples_end_to_end(tmp_path, monkeypatch, capsys):
+    """The whole path in one test: two real epochs, then a real .npz.
+
+    ``_train_tiny`` stops at one epoch, which never exercises the second
+    optimiser step or the early-stopping bookkeeping for this preset (whose
+    ``enforce_min_epochs`` is False, inherited from CloneAtt).
+    """
+    names = _sim_names(6)
+    split_path = _write_split(tmp_path, names[:3], names[3:4], names[4:6])
+    ckpt_dir = tmp_path / "ATe2e" / "checkpoints"
+    rc = train_cli.main(
+        [
+            "--model", "armtoken",
+            "--data-root", str(DATA_ROOT),
+            "--split", str(split_path),
+            "--out", str(tmp_path / "ATe2e"),
+            "--ckpt-dir", str(ckpt_dir),
+            "--device", "cpu",
+            "--batch-size", "2",
+            "--max-epochs", "2",
+            "--min-epochs", "1",
+            "--stop-after-epochs", "2",
+            "--seed", "20260924",
+            "--no-final-pickle",
+        ]
+    )
+    assert rc == 0
+    history = torch.load(ckpt_dir / "best.pt", map_location="cpu")["history"]
+    assert len(history["training_loss"]) >= 1
+
+    capsys.readouterr()
+    path, meta = _sample(
+        tmp_path, "armtoken", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists() and path.suffix == ".npz"
+    assert meta["config_from_checkpoint"] is True
+    assert "kind=armtoken" in capsys.readouterr().out

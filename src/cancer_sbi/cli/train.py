@@ -484,6 +484,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    repairs.add_argument(
+        "--arm-layers",
+        type=int,
+        default=None,
+        help=(
+            "ArmToken only: number of ISABs over the 44-arm set (default: 1). "
+            "0 is a real setting -- the arms are then processed completely "
+            "independently, which is the strictest form of the equivariance "
+            "(run AT3). Ignored by the other three models."
+        ),
+    )
+    repairs.add_argument(
+        "--d-arm",
+        type=int,
+        default=None,
+        help=(
+            "ArmToken only: numbers read out per arm (default: 8), so the "
+            "flow's context is 44 * d_arm + d_global wide. Refused when that "
+            "exceeds 512. Ignored by the other three models."
+        ),
+    )
+    repairs.add_argument(
+        "--arm-num-inducing",
+        type=int,
+        default=None,
+        help=(
+            "ArmToken only: inducing points per arm ISAB (default: 16, over a "
+            "44-element set). Deliberately a separate flag from "
+            "--num-inducing, which is CloneAtt's 32 over a 100-clone set; one "
+            "flag for both would silently reshape the other model. Ignored by "
+            "the other three models."
+        ),
+    )
+
     pickling = parser.add_mutually_exclusive_group()
     pickling.add_argument(
         "--final-pickle",
@@ -619,9 +653,18 @@ def build_config(
     # Both clone-set encoders read input_space now (the same formula in both);
     # only DeepSet ignores it, and a value recorded there would describe a
     # transform nothing applied.
+    # Matrix 5: armtoken reads input_space (arm_moments takes it) and the four
+    # attention settings, so the gates below widen from "either clone-set
+    # encoder" to "either clone-set encoder or armtoken". deepset is still the
+    # only kind that reads none of them.
     if args.input_space is not None and preset.encoder.kind != "deepset":
         encoder_cfg = replace(encoder_cfg, input_space=args.input_space)
-    if args.freq_renorm:
+    # Gated on the encoder that reads it, like every switch below. Before
+    # matrix 5 this line was unconditional, so `--freq-renorm` warned "not used
+    # by clonemlp" and then rode into clonemlp's checkpoint anyway, describing
+    # a renormalisation BaselineCloneEmbedding has no argument for. Only
+    # CloneSetEmbedding takes it.
+    if args.freq_renorm and preset.encoder.kind == "attention":
         encoder_cfg = replace(encoder_cfg, freq_renorm=True)
     # The three attention-only switches, and the optimiser group overrides, are
     # applied only where they are read. A value recorded on a preset that
@@ -629,6 +672,12 @@ def build_config(
     # a network nothing built -- the same reason --require-all-trials is gated
     # on the dataset above.
     is_attention = preset.encoder.kind == "attention"
+    # Matrix 5. `attn_ln`, `attn_scale` and `n_heads` are read by
+    # ArmTokenEmbedding as well as CloneSetEmbedding, so the three flags that
+    # set them apply to both; `num_inducing`, `d_model`, `freq_mode` and
+    # `freq_renorm` are not, and stay attention-only (cli warns for armtoken).
+    is_armtoken = preset.encoder.kind == "armtoken"
+    has_attention = is_attention or is_armtoken
     # Matrix 3 widened --freq-mode to clonemlp, so the gate is "either clone-set
     # encoder", not "attention". Only DeepSet, which has no per-clone frequency
     # at all, still ignores it.
@@ -637,23 +686,24 @@ def build_config(
         and preset.encoder.kind in ("mlp", "attention")
     ):
         encoder_cfg = replace(encoder_cfg, freq_mode=args.freq_mode)
-    if getattr(args, "attn_ln", False) and is_attention:
+    if getattr(args, "attn_ln", False) and has_attention:
         encoder_cfg = replace(encoder_cfg, attn_ln=True)
     if getattr(args, "encoder_dropout", None) is not None and preset.encoder.kind != "deepset":
         encoder_cfg = replace(encoder_cfg, dropout=args.encoder_dropout)
-        if is_attention:
+        if has_attention:
             # Trap 4: CloneAtt's encoder accepts `dropout` and discards it, so
             # setting the probability is not enough -- the run has to say that
-            # the layers should exist at all. clonemlp already applies it.
+            # the layers should exist at all. clonemlp already applies it, and
+            # ArmTokenEmbedding has the same opt-in shape as CloneAtt.
             encoder_cfg = replace(encoder_cfg, attn_dropout_active=True)
     # Matrix 4. Same rule as matrix 2's attention-only switches: each one is
     # recorded only on a preset whose encoder reads it, so a checkpoint never
     # carries a value describing a network nothing built.
-    if getattr(args, "attn_scale", None) is not None and is_attention:
+    if getattr(args, "attn_scale", None) is not None and has_attention:
         encoder_cfg = replace(encoder_cfg, attn_scale=args.attn_scale)
     if (
         getattr(args, "trial_pool", None) is not None
-        and preset.encoder.kind in ("mlp", "attention")
+        and preset.encoder.kind in ("mlp", "attention", "armtoken")
     ):
         encoder_cfg = replace(encoder_cfg, trial_pool=args.trial_pool)
     # --d-model is read by BaselineCloneEmbedding as well as CloneSetEmbedding
@@ -665,10 +715,50 @@ def build_config(
         "attention",
     ):
         encoder_cfg = replace(encoder_cfg, d_model=args.d_model)
-    if getattr(args, "n_heads", None) is not None and is_attention:
+    if getattr(args, "n_heads", None) is not None and has_attention:
         encoder_cfg = replace(encoder_cfg, n_heads=args.n_heads)
     if getattr(args, "num_inducing", None) is not None and is_attention:
         encoder_cfg = replace(encoder_cfg, num_inducing=args.num_inducing)
+    # Matrix 5's three armtoken-only knobs, recorded only on armtoken for the
+    # same reason as every switch above: a value on a preset that ignores it
+    # would ride into the checkpoint describing a network nothing built.
+    if getattr(args, "arm_layers", None) is not None and is_armtoken:
+        encoder_cfg = replace(encoder_cfg, n_arm_layers=args.arm_layers)
+    if getattr(args, "d_arm", None) is not None and is_armtoken:
+        encoder_cfg = replace(encoder_cfg, d_arm=args.d_arm)
+    if getattr(args, "arm_num_inducing", None) is not None and is_armtoken:
+        encoder_cfg = replace(encoder_cfg, arm_num_inducing=args.arm_num_inducing)
+
+    # The flow's context is the embedding's output, and build_nsf puts a
+    # 50-wide residual net on it; a context much wider than the published 256
+    # makes the flow's first layer the biggest thing in the network again,
+    # which is the opposite of what this encoder is for. Refused here, where
+    # the flag is still named, rather than 20 minutes into an array task.
+    # ArmTokenEmbedding raises the same error at build time; this one names
+    # --d-arm.
+    if is_armtoken:
+        from cancer_sbi.models.arm_tokens import MAX_CONTEXT_WIDTH, N_ARMS
+
+        width = N_ARMS * encoder_cfg.d_arm + encoder_cfg.d_global
+        if width > MAX_CONTEXT_WIDTH:
+            raise ValueError(
+                f"--d-arm {encoder_cfg.d_arm} makes the flow's context "
+                f"{N_ARMS} * {encoder_cfg.d_arm} + {encoder_cfg.d_global} = "
+                f"{width} wide, over the {MAX_CONTEXT_WIDTH} cap. The flow's "
+                f"first layer would then dominate the network the per-arm "
+                f"encoder exists to shrink. Pick a smaller --d-arm."
+            )
+        # The arm attention splits d_token across the heads with an integer
+        # division, exactly as CloneAtt's splits d_model -- same refusal.
+        if encoder_cfg.d_token % encoder_cfg.n_heads:
+            raise ValueError(
+                f"--n-heads {encoder_cfg.n_heads} does not divide armtoken's "
+                f"d_token {encoder_cfg.d_token}: the attention splits the arm "
+                f"token evenly across the heads, so an indivisible pair would "
+                f"silently discard "
+                f"{encoder_cfg.d_token % encoder_cfg.n_heads} of every "
+                f"token's features."
+            )
 
     # MAB splits d_model evenly across the heads with an integer division, so
     # an indivisible pair does not raise -- it silently drops the remainder of
@@ -685,7 +775,12 @@ def build_config(
     # The pooling PMA has the same constraint, on whichever head count it will
     # actually use -- which for clonemlp is TrialsSBIEmbedding's own default,
     # its EncoderConfig carrying no n_heads at all.
-    if encoder_cfg.trial_pool == "attention":
+    if encoder_cfg.trial_pool == "attention" and encoder_cfg.kind in (
+        "mlp",
+        "attention",
+    ):
+        # armtoken is excluded: its trial pooling is ArmTokenEmbedding's own
+        # PMA over d_token, checked just above, and its `d_model` is None.
         # Local import: models.trials pulls in torch and sbi, and this module
         # keeps every heavy import inside a function so `--help` works without
         # them (see the module docstring).
@@ -717,7 +812,7 @@ def build_config(
         optim=optim_cfg,
     )
 
-    if args.input_space is not None and preset.encoder.kind not in ("mlp", "attention"):
+    if args.input_space is not None and preset.encoder.kind == "deepset":
         print(f"[warn] --input-space is not used by {preset.name}; ignoring it.")
     if args.freq_renorm and preset.encoder.kind != "attention":
         print(f"[warn] --freq-renorm is not used by {preset.name}; ignoring it.")
@@ -726,7 +821,7 @@ def build_config(
         and preset.encoder.kind not in ("mlp", "attention")
     ):
         print(f"[warn] --freq-mode is not used by {preset.name}; ignoring it.")
-    if getattr(args, "attn_ln", False) and preset.encoder.kind != "attention":
+    if getattr(args, "attn_ln", False) and not has_attention:
         print(f"[warn] --attn-ln is not used by {preset.name}; ignoring it.")
     # DeepSet builds no nn.Dropout at all (models/deep_set.py), so there is
     # nothing for the probability to reach on the dominant-clone path.
@@ -759,11 +854,11 @@ def build_config(
 
     # Matrix 4. --tail-bound is deliberately absent: every preset's flow reads
     # it, so there is no preset for which it would be decorative.
-    if getattr(args, "attn_scale", None) is not None and not is_attention:
+    if getattr(args, "attn_scale", None) is not None and not has_attention:
         print(f"[warn] --attn-scale is not used by {preset.name}; ignoring it.")
     if (
         getattr(args, "trial_pool", None) is not None
-        and preset.encoder.kind not in ("mlp", "attention")
+        and preset.encoder.kind not in ("mlp", "attention", "armtoken")
     ):
         print(f"[warn] --trial-pool is not used by {preset.name}; ignoring it.")
     if getattr(args, "d_model", None) is not None and preset.encoder.kind not in (
@@ -771,11 +866,19 @@ def build_config(
         "attention",
     ):
         print(f"[warn] --d-model is not used by {preset.name}; ignoring it.")
+    if getattr(args, "n_heads", None) is not None and not has_attention:
+        print(f"[warn] --n-heads is not used by {preset.name}; ignoring it.")
+    # --num-inducing stays CloneAtt's: armtoken has --arm-num-inducing, and one
+    # flag for both would silently reshape whichever model was not meant.
+    if getattr(args, "num_inducing", None) is not None and not is_attention:
+        print(f"[warn] --num-inducing is not used by {preset.name}; ignoring it.")
+    # Matrix 5's three knobs, the other way round.
     for flag, value in (
-        ("--n-heads", getattr(args, "n_heads", None)),
-        ("--num-inducing", getattr(args, "num_inducing", None)),
+        ("--arm-layers", getattr(args, "arm_layers", None)),
+        ("--d-arm", getattr(args, "d_arm", None)),
+        ("--arm-num-inducing", getattr(args, "arm_num_inducing", None)),
     ):
-        if value is not None and not is_attention:
+        if value is not None and not is_armtoken:
             print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
 
     if args.top_k is not None and preset.data.top_k is None:
@@ -845,6 +948,11 @@ def effective_config_payload(
         "d_model": getattr(args, "d_model", None),
         "n_heads": getattr(args, "n_heads", None),
         "num_inducing": getattr(args, "num_inducing", None),
+        # Matrix 5. n_arm_layers, d_arm and arm_num_inducing also land in the
+        # snapshotted `encoder` block; these are the flags as typed.
+        "arm_layers": getattr(args, "arm_layers", None),
+        "d_arm": getattr(args, "d_arm", None),
+        "arm_num_inducing": getattr(args, "arm_num_inducing", None),
         "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,

@@ -1236,3 +1236,162 @@ def test_a_checkpoint_without_the_matrix_four_keys_still_rebuilds():
     assert rebuilt.encoder.attn_scale == "published"
     assert rebuilt.encoder.trial_pool == "mean"
     assert rebuilt.flow.tail_bound == 3.0
+
+
+# ---------------------------------------------------------------------------
+# 13. Matrix 5: armtoken's flags, and the five that do nothing for it.
+#
+# ArmToken reads `attn_ln`, `attn_scale`, `n_heads`, `trial_pool`,
+# `input_space` and `dropout` like CloneAtt, and reads NOTHING of
+# `freq_mode`, `freq_renorm`, `d_model` or `num_inducing` -- the moments
+# renormalise their own weights, the output width is 44 * d_arm + d_global,
+# and its ISABs are sized by the separate --arm-num-inducing. Accepting any of
+# the four silently is how a run gets launched believing it carries a switch
+# it does not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv, needle",
+    [
+        (["--freq-mode", "feature"], "--freq-mode"),
+        (["--freq-renorm"], "--freq-renorm"),
+        (["--d-model", "64"], "--d-model"),
+        (["--num-inducing", "64"], "--num-inducing"),
+        (["--require-all-trials"], "--require-all-trials"),
+    ],
+)
+def test_matrix_five_flag_armtoken_ignores_is_warned_about(argv, needle, capsys):
+    cfg = config_from_argv(argv, model="armtoken")
+    assert f"[warn] {needle} is not used by armtoken" in capsys.readouterr().out
+    # And nothing is recorded: a value in the checkpoint would describe a
+    # network nothing built.
+    assert cfg.encoder == get_preset("armtoken").encoder
+    assert cfg.data.require_all_trials is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--input-space", "log2"],
+        ["--attn-ln"],
+        ["--encoder-dropout", "0.1"],
+        ["--trial-pool", "attention"],
+        ["--attn-scale", "standard"],
+        ["--n-heads", "8"],
+        ["--arm-layers", "0"],
+        ["--d-arm", "4"],
+        ["--arm-num-inducing", "8"],
+        ["--z-score-x", "independent"],
+        ["--tail-bound", "5"],
+        ["--flow-dropout", "0.1"],
+        ["--flow-num-transforms", "5"],
+        ["--embed-lr", "1e-3"],
+        ["--embed-weight-decay", "1e-4"],
+        ["--flow-weight-decay", "1e-3"],
+        ["--trial-subsample", "16"],
+        ["--seed", "1"],
+        ["--cache-dir", "/tmp/cache"],
+    ],
+)
+def test_matrix_five_flag_armtoken_uses_is_not_warned_about(argv, capsys):
+    config_from_argv(argv, model="armtoken")
+    assert "[warn]" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv, needle",
+    [
+        (["--arm-layers", "2"], "--arm-layers"),
+        (["--d-arm", "4"], "--d-arm"),
+        (["--arm-num-inducing", "8"], "--arm-num-inducing"),
+    ],
+)
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "dominantclone"])
+def test_armtoken_only_flags_warn_for_the_other_models(argv, needle, model, capsys):
+    cfg = config_from_argv(argv, model=model)
+    assert f"[warn] {needle} is not used by {model}" in capsys.readouterr().out
+    assert cfg.encoder == get_preset(model).encoder
+
+
+def test_armtoken_flags_reach_the_built_module():
+    """The flags have to reach the layers, not only the dataclass."""
+    cfg = config_from_argv(
+        [
+            "--trial-pool", "attention",
+            "--attn-scale", "standard",
+            "--arm-layers", "2",
+            "--d-arm", "4",
+            "--arm-num-inducing", "8",
+            "--n-heads", "8",
+            "--encoder-dropout", "0.1",
+            "--input-space", "log2",
+        ],
+        model="armtoken",
+    )
+    net = build_embedding_net(cfg.encoder, "cpu")
+    assert net.trial_pool == "attention"
+    assert net.attn_scale == "standard"
+    assert len(net.arm_layers) == 2
+    assert net.arm_layers[0].I.shape == (1, 8, 64)
+    assert net.arm_layers[0].mab0.num_heads == 8
+    assert net.arm_head.out_features == 4
+    assert net.input_space == "log2"
+    # --encoder-dropout must wire the layers up as well as set the probability,
+    # the same trap-4 shape CloneAtt has.
+    assert net.arm_dropout is not None and net.arm_dropout.p == 0.1
+    assert net.d_model == 44 * 4 + 64
+
+
+def test_d_arm_over_the_cap_is_refused():
+    """44 * 16 + 64 = 768 would make the flow's first layer the whole network."""
+    with pytest.raises(ValueError, match="512"):
+        config_from_argv(["--d-arm", "16"], model="armtoken")
+    with pytest.raises(ValueError, match="--d-arm"):
+        config_from_argv(["--d-arm", "16"], model="armtoken")
+    # The published value is inside it, and one step under the cap is allowed.
+    assert config_from_argv(["--d-arm", "10"], model="armtoken").encoder.d_arm == 10
+
+
+def test_indivisible_d_token_and_n_heads_is_refused_for_armtoken():
+    with pytest.raises(ValueError, match="does not divide"):
+        config_from_argv(["--n-heads", "7"], model="armtoken")
+
+
+def test_matrix_five_flags_ride_into_the_effective_config():
+    """Round trip: flags -> preset -> checkpoint dict -> preset again."""
+    from cancer_sbi.cli.train import effective_config_payload
+    from cancer_sbi.config import preset_from_effective_config
+
+    argv = ["--arm-layers", "0", "--d-arm", "4", "--arm-num-inducing", "8",
+            "--trial-pool", "attention"]
+    args = build_parser().parse_args(["--model", "armtoken"] + argv)
+    cfg = config_from_argv(argv, model="armtoken")
+    payload = effective_config_payload(cfg, args, Path("/d"), Path("/s.pkl"))
+
+    assert payload["model"] == "armtoken"
+    assert payload["encoder"]["kind"] == "armtoken"
+    assert payload["encoder"]["n_arm_layers"] == 0
+    assert payload["encoder"]["d_arm"] == 4
+    assert payload["encoder"]["arm_num_inducing"] == 8
+    assert payload["encoder"]["trial_pool"] == "attention"
+    assert payload["flow"]["hidden_features"] == 50, "must stay 50"
+    for flag, value in (
+        ("arm_layers", 0), ("d_arm", 4), ("arm_num_inducing", 8),
+        ("trial_pool", "attention"),
+    ):
+        assert payload["cli_flags"][flag] == value
+
+    rebuilt = preset_from_effective_config(payload)
+    assert rebuilt.encoder.n_arm_layers == 0
+    assert rebuilt.encoder.d_arm == 4
+    assert rebuilt.encoder.arm_num_inducing == 8
+    assert rebuilt.encoder.trial_pool == "attention"
+
+
+def test_armtoken_is_a_model_choice():
+    assert "armtoken" in build_parser().parse_args(
+        ["--model", "armtoken"]
+    ).model
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--model", "armtokens"])

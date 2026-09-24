@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
 
 DatasetKind = Literal["clone_sets", "dominant_clone"]
-EncoderKind = Literal["mlp", "attention", "deepset"]
+EncoderKind = Literal["mlp", "attention", "deepset", "armtoken"]
 ReloadBestPolicy = Literal["never", "on_early_stop", "always"]
 ZScoreMode = Literal["none", "structured", "independent"]
 InputSpace = Literal["log2", "copy"]
@@ -132,7 +132,12 @@ class EncoderConfig:
     Attributes:
         kind: ``"mlp"`` -> ``BaselineCloneEmbedding`` (CloneMLP),
             ``"attention"`` -> ``CloneSetEmbedding`` (CloneAtt),
-            ``"deepset"`` -> ``DeepSet`` (DominantClone).
+            ``"deepset"`` -> ``DeepSet`` (DominantClone),
+            ``"armtoken"`` -> ``ArmTokenEmbedding`` (ArmToken, matrix 5). The
+            last one is the whole embedding net, like DeepSet and unlike the
+            first two: its ``trials_*`` fields are ``None`` because wrapping it
+            in ``TrialsSBIEmbedding`` would blend the per-arm blocks back
+            together.
         in_dim: Declared clone-row width (44 CNA features + 1 frequency).
         d_model: Per-trial embedding width for the clone-set encoders.
         hidden_dim: Hidden width of the per-clone MLP (``"mlp"`` only).
@@ -217,6 +222,21 @@ class EncoderConfig:
     # it. `attn_ln` below is the wired one: build_embedding_net forwards it to
     # CloneSetEmbedding, which passes it as `ln` to every MAB/ISAB/PMA.
     attn_ln: bool = False
+
+    # --- ArmTokenEmbedding (ArmToken), matrix 5 ------------------------------
+    # All five are Optional with a None default so that every checkpoint
+    # written before matrix 5 round-trips through _block_from_dict unchanged:
+    # a missing key keeps the default, and None is what the other encoders'
+    # unused fields already look like. build_embedding_net substitutes the
+    # published ArmToken values (models/arm_tokens.py) for a None.
+    d_token: Optional[int] = None        # arm-token width through the stack
+    d_arm: Optional[int] = None          # numbers read out per arm
+    d_global: Optional[int] = None       # width of the global block
+    n_arm_layers: Optional[int] = None   # ISABs over the 44-arm set
+    # Named apart from `num_inducing` on purpose: that field is CloneAtt's and
+    # is published at 32, while this one is 16 over a 44-element set. Sharing
+    # one field would make --num-inducing silently reshape ArmToken's ISABs.
+    arm_num_inducing: Optional[int] = None
 
     # --- repair switches, added 2026-09-24 (WP-A) ----------------------------
     # Every default is the PUBLISHED behaviour, so every preset below keeps
@@ -623,11 +643,98 @@ DOMINANTCLONE = ModelPreset(
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Matrix 5: a fourth model, not a published one.
+# ---------------------------------------------------------------------------
+
+#: ArmToken-NPE. The first encoder in this project whose architecture is tied
+#: to the 44 per-arm coefficients the flow has to predict: the arms are the
+#: tokens, every weight is shared across them, and arm identity reaches the
+#: flow only through the order the 44 blocks are concatenated in. The data,
+#: optimiser and training blocks are copied from CLONEATT so that a matrix-5
+#: run is read against matrix 4 on everything except the encoder.
+#:
+#: NOT a published model: nothing here reproduces an original folder, so
+#: `origin` names this module rather than a directory, and none of the traps
+#: apply -- `attn_ln` is True (trap 5 has nothing to protect here; see
+#: ArmTokenEmbedding.__init__) and `z_score_x` is "structured", which matrices
+#: 2-4 established as better than the published "none" for every model.
+ARMTOKEN = ModelPreset(
+    name="armtoken",
+    paper_name="ArmToken-NPE",
+    origin="cancer_sbi/models/arm_tokens.py (new, matrix 5)",
+    data=DataConfig(
+        dataset="clone_sets",
+        top_k=100,
+        batch_size=32,
+        trial_filename="CNratios_all.pkl.gz",
+    ),
+    encoder=EncoderConfig(
+        kind="armtoken",
+        in_dim=45,
+        # d_model is CloneMLP's and CloneAtt's per-trial width and has no
+        # meaning here: ArmTokenEmbedding computes its own output width as
+        # 44 * d_arm + d_global and exposes it as `.d_model`. None -- not 128
+        # -- so that a value nothing reads cannot be mistaken for a choice,
+        # and so --d-model has nothing to overwrite (cli/train.py warns).
+        d_model=None,
+        num_layers=None,
+        d_token=64,
+        d_arm=8,
+        d_global=64,
+        n_arm_layers=1,
+        arm_num_inducing=16,
+        n_heads=4,
+        trial_pool="mean",
+        input_space="copy",
+        attn_ln=True,
+        dropout=0.2,
+        attn_dropout_active=False,
+        attn_scale="published",
+        freq_as_weight=None,     # the moments renormalise the weights themselves
+        encoder_dropout_is_used=False,   # opt-in, like CloneAtt's (trap 4 style)
+        # ArmTokenEmbedding IS the embedding net; there is no TrialsSBIEmbedding.
+        trials_aggregation_fn=None,
+        trials_num_hiddens=None,
+        trials_num_layers=None,
+        trials_output_dim=None,
+        trials_aggregation_dim=None,
+    ),
+    # z_score_x "structured" is matrix 2-4's finding, not CloneAtt's published
+    # "none"; z_score_y stays "none" as in CLONEATT, because the context is
+    # this encoder's own output and whitening it would undo the per-arm scale
+    # the blocks are meant to carry.
+    flow=FlowConfig(
+        z_score_x="structured",
+        z_score_y="none",
+        dropout_probability=0.2,
+        num_transforms=3,        # matrix 3's R12 finding, kept
+        hidden_features=50,      # the published width, in every run
+    ),
+    optim=OptimConfig(
+        use_param_groups=True,
+        grad_clip=5.0,
+        learning_rate=5e-4,
+        learning_rate_is_used=False,
+    ),
+    train=TrainConfig(
+        max_epochs=200,
+        min_epochs=50,
+        stop_after_epochs=50,
+        enforce_min_epochs=False,
+        reload_best="on_early_stop",
+        history_val_key="validation_loss",
+        ckpt_dir="checkpoints",
+    ),
+)
+
+
 #: Lookup by CLI name.
 PRESETS = {
     CLONEMLP.name: CLONEMLP,
     CLONEATT.name: CLONEATT,
     DOMINANTCLONE.name: DOMINANTCLONE,
+    ARMTOKEN.name: ARMTOKEN,
 }
 
 
@@ -751,14 +858,15 @@ def get_preset(name: str) -> ModelPreset:
     """Look a preset up by its short name.
 
     Args:
-        name: One of ``"clonemlp"``, ``"cloneatt"``, ``"dominantclone"``
-            (case-insensitive).
+        name: One of ``"clonemlp"``, ``"cloneatt"``, ``"dominantclone"`` --
+            the three published models -- or ``"armtoken"``, which is new in
+            matrix 5 and reproduces no original folder (case-insensitive).
 
     Returns:
         The frozen :class:`ModelPreset`.
 
     Raises:
-        KeyError: If ``name`` is not one of the three published models.
+        KeyError: If ``name`` is not one of the four presets.
     """
     key = name.strip().lower()
     if key not in PRESETS:
@@ -782,6 +890,7 @@ __all__ = [
     "CLONEMLP",
     "CLONEATT",
     "DOMINANTCLONE",
+    "ARMTOKEN",
     "PRESETS",
     "get_preset",
     "config_to_dict",

@@ -62,7 +62,8 @@ def add_model_argument(parser: argparse.ArgumentParser) -> None:
             "Which published model to use. "
             "clonemlp = CloneMLP-NPE (was Base_NPE/), "
             "cloneatt = CloneAtt-NPE (was SetTransformer_NPE/), "
-            "dominantclone = DominantClone-NPE (was Plain_NPE/). "
+            "dominantclone = DominantClone-NPE (was Plain_NPE/), "
+            "armtoken = ArmToken-NPE (new in matrix 5; no original folder). "
             "The choice fixes the encoder, the optimiser, the early-stopping "
             "rules and the checkpoint directory name."
         ),

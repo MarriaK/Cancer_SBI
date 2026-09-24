@@ -302,8 +302,20 @@ def resolve_eval_config(
     resolved_require = (
         stored_require if stored_require is not None else bool(require_all_trials)
     )
+    # Matrix 5. The encoder kind is printed first because it is now the thing
+    # that decides what the rest of the line even means -- armtoken reads
+    # neither freq_mode nor freq_renorm -- and its three shape-bearing fields
+    # follow it, the way flow_dropout/num_transforms follow the flow's.
+    armtoken_note = (
+        f", d_arm={preset.encoder.d_arm}, "
+        f"n_arm_layers={preset.encoder.n_arm_layers}, "
+        f"trial_pool={preset.encoder.trial_pool}"
+        if preset.encoder.kind == "armtoken"
+        else ""
+    )
     print(
-        f"[config] rebuilt from the checkpoint: z_score_x="
+        f"[config] rebuilt from the checkpoint: kind={preset.encoder.kind}"
+        f"{armtoken_note}, z_score_x="
         f"{preset.flow.z_score_x}, input_space={preset.encoder.input_space}, "
         f"freq_renorm={preset.encoder.freq_renorm}, "
         # Matrix 2. These three ride in through preset_from_effective_config's
