@@ -44,6 +44,66 @@ def list_sim_ids(root_dir: PathLike) -> List[str]:
     return sorted(d for d in os.listdir(root_dir) if d.startswith("sim"))
 
 
+def complete_sim_ids(
+    root_dir: PathLike,
+    sim_ids: Sequence[str],
+    num_trials: int = 25,
+    trial_filename: str = "CNratios_all.pkl.gz",
+    params_filename: str = "parameters.pkl",
+) -> List[str]:
+    """Keep only the sims the clone-set dataset would keep.
+
+    This is trap 10 made reusable. ``CNASimsDataset`` drops a sim whose
+    ``parameters.pkl`` cannot be read, and drops a sim that is missing even one
+    of its ``num_trials`` trial files (``clone_sets.py:256-291``);
+    ``SimulationDataset`` NaN-pads the missing trials and keeps the sim. The two
+    models therefore train, validate and test on *different* sim sets, which is
+    what makes their numbers incomparable.
+
+    This function applies the clone-set rule -- and nothing else -- to a list of
+    ids, so the dominant-clone path can opt into exactly the same set. It is the
+    single definition of "complete": the equivalence with ``CNASimsDataset`` is
+    pinned by a test, and it must stay pinned, because a rule that drifts by one
+    sim turns a fair comparison back into an unfair one.
+
+    Args:
+        root_dir: Directory containing ``sim*/``.
+        sim_ids: Simulation *names* (e.g. ``["sim1", "sim2"]``) to filter.
+        num_trials: Trials a sim must have, all of them, to be kept. The trials
+            checked are ``1..num_trials``, as the dataset checks them.
+        trial_filename: File looked for inside ``sim<N>/<t>/``. The clone-set
+            file, ``CNratios_all.pkl.gz`` -- *not* the dominant-clone path's
+            ``results.pkl``, because the point is to reproduce the other
+            model's filter, not this one's.
+        params_filename: File that must be readable inside ``sim<N>/``.
+
+    Returns:
+        The kept names, in the order they were given. Duplicates are kept as
+        given; ids with no directory on disk simply fail the parameters check.
+
+    Note:
+        Reading ``parameters.pkl`` rather than only stat-ing it is deliberate:
+        the dataset calls ``load_pickle`` and drops the sim on *any* exception,
+        so a truncated pickle is dropped there and has to be dropped here too.
+    """
+    from cancer_sbi.data.clone_sets import load_pickle  # local: keeps splits torch-free
+
+    root = Path(root_dir)
+    kept: List[str] = []
+    for name in sim_ids:
+        sim_dir = root / str(name)
+        try:
+            load_pickle(str(sim_dir / params_filename))
+        except Exception:  # noqa: BLE001 - mirrors CNASimsDataset's drop_missing
+            continue
+        if all(
+            (sim_dir / str(trial_idx) / trial_filename).exists()
+            for trial_idx in range(1, num_trials + 1)
+        ):
+            kept.append(str(name))
+    return kept
+
+
 def create_split(
     root_dir: PathLike,
     test_size: float = 0.2,
@@ -204,6 +264,7 @@ def load_split(path: PathLike) -> Dict[str, Any]:
 
 __all__ = [
     "list_sim_ids",
+    "complete_sim_ids",
     "create_split",
     "carve_val_ids",
     "save_split",

@@ -38,6 +38,10 @@ the run it produced before:
     CloneAtt only. Renormalise the per-clone frequency weights instead of
     multiplying tokens by a raw ~0.003 frequency (run R4). ``ln`` stays off.
     Default: off, the published behaviour.
+``--require-all-trials``
+    DominantClone only. Keep only the sims that have every trial file, i.e. the
+    clone-set models' sim set, so the three models are compared on the same
+    simulations. Default: off, the published NaN-pad-and-keep behaviour.
 ``--num-workers``
     ``DataLoader`` worker processes. Prefetch only -- shuffling stays on the
     main process's generator, so the RNG stream is unchanged. Default: 0.
@@ -246,6 +250,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     repairs.add_argument(
+        "--require-all-trials",
+        action="store_true",
+        help=(
+            "DominantClone only: train, validate and test on the sims that "
+            "have every trial file, i.e. exactly the clone-set models' sim "
+            "set. Default: off, the published behaviour (missing trials are "
+            "NaN-padded and the sim is kept). Ignored by the other two models, "
+            "which already apply this rule."
+        ),
+    )
+    repairs.add_argument(
         "--freq-renorm",
         action="store_true",
         default=None,
@@ -325,6 +340,13 @@ def build_config(
             if getattr(args, "cache_dir", None)
             else preset.data.cache_dir
         ),
+        # Only the dominant-clone path has anything to opt into; recording the
+        # flag on a clone-set preset would put a value in the checkpoint that
+        # nothing applied. The warning below says so.
+        require_all_trials=(
+            bool(args.require_all_trials) and preset.data.dataset == "dominant_clone"
+        )
+        or preset.data.require_all_trials,
     )
     train_cfg = replace(
         preset.train,
@@ -369,6 +391,9 @@ def build_config(
     if args.freq_renorm and preset.encoder.kind != "attention":
         print(f"[warn] --freq-renorm is not used by {preset.name}; ignoring it.")
 
+    if args.require_all_trials and preset.data.dataset != "dominant_clone":
+        print(f"[warn] --require-all-trials is not used by {preset.name}; ignoring it.")
+
     if args.top_k is not None and preset.data.top_k is None:
         print(f"[warn] --top-k is not used by {preset.name}; ignoring it.")
 
@@ -411,6 +436,7 @@ def effective_config_payload(
         "z_score_x": args.z_score_x,
         "input_space": args.input_space,
         "freq_renorm": bool(args.freq_renorm),
+        "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,
         "top_k": args.top_k,
@@ -506,6 +532,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             batch_size=cfg.data.batch_size,
             pin_memory=cfg.data.pin_memory,
             num_workers=cfg.data.num_workers,
+            require_all_trials=cfg.data.require_all_trials,
         )
 
     # Preserved from all three */main.py:33 only when there is no third split:

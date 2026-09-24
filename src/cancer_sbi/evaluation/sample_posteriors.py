@@ -177,6 +177,10 @@ def main():
                           help="CloneMLP encoder input space of the run being evaluated.")
     override.add_argument("--freq-renorm", action="store_true", default=None,
                           help="The run being evaluated used CloneAtt's frequency renormalisation.")
+    override.add_argument("--require-all-trials", action="store_true", default=None,
+                          help="The DominantClone run being evaluated was trained on the clone-set "
+                               "models' sim set (every trial file present). The test loader is then "
+                               "built with the same restriction.")
     ap.add_argument("--run-tag", default=None,
                     help="label appended to the output file: posteriors_<model>_<TAG>.npz. "
                          "Only needed when two runs of one model share an --out-dir; the "
@@ -219,6 +223,26 @@ def main():
     test_ids = split["test_ids"]
     print(f"split: {len(train_ids)} train ids / {len(test_ids)} test ids", flush=True)
 
+    if not ckpt_path.exists():
+        raise SystemExit(f"checkpoint not found: {ckpt_path}")
+
+    # The architecture comes from the checkpoint, not from get_preset: an R1
+    # checkpoint (z_score_x="structured") will not load into a preset-built flow
+    # at all, and an R2/R4 one loads silently into the wrong encoder. Resolved
+    # before the model is built, because it decides what is built -- and before
+    # the loaders, because data.require_all_trials decides which sims the test
+    # loader holds.
+    eval_cfg = posterior_mod.resolve_eval_config(
+        ckpt_path,
+        args.model,
+        z_score_x=args.z_score_x,
+        input_space=args.input_space,
+        freq_renorm=args.freq_renorm,
+        require_all_trials=args.require_all_trials,
+        device=device,
+    )
+    preset = eval_cfg.preset
+
     if preset.data.dataset == "clone_sets":
         train_loader, _val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
@@ -235,6 +259,7 @@ def main():
             test_ids=test_ids,
             batch_size=preset.data.batch_size,
             pin_memory=preset.data.pin_memory,
+            require_all_trials=eval_cfg.require_all_trials,
         )
 
     x_all, theta_all = posterior_mod.collect_test_tensors(test_loader, preset.data.dataset)
@@ -243,23 +268,6 @@ def main():
     n = n_total if args.limit is None else min(args.limit, n_total)
     print(f"held-out cases: {n_total}" + ("" if args.limit is None else f" (using first {n})"), flush=True)
     print(f"X {tuple(x_all.shape)}  theta {tuple(theta_all.shape)}", flush=True)
-
-    if not ckpt_path.exists():
-        raise SystemExit(f"checkpoint not found: {ckpt_path}")
-
-    # The architecture comes from the checkpoint, not from get_preset: an R1
-    # checkpoint (z_score_x="structured") will not load into a preset-built flow
-    # at all, and an R2/R4 one loads silently into the wrong encoder. Resolved
-    # before the model is built, because it decides what is built.
-    eval_cfg = posterior_mod.resolve_eval_config(
-        ckpt_path,
-        args.model,
-        z_score_x=args.z_score_x,
-        input_space=args.input_space,
-        freq_renorm=args.freq_renorm,
-        device=device,
-    )
-    preset = eval_cfg.preset
 
     # The model has to be constructed before its weights can be loaded: the architecture is built
     # from a dummy batch of the train loader, exactly as each original __init__ did. The optimiser
@@ -362,6 +370,7 @@ def main():
         "flow_config": _as_dict["flow"],
         "encoder_config": _as_dict["encoder"],
         "config_from_checkpoint": bool(eval_cfg.from_checkpoint),
+        "require_all_trials": bool(eval_cfg.require_all_trials),
         "written_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "elapsed_s": round(time.time() - t0, 1),
         "built_with": "cancer_sbi",

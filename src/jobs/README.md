@@ -10,7 +10,7 @@ Cluster tree: `~/cancer/{src,data,runs,results,cache,logs}` — there is no `cod
 
 | script | what it does | env overrides |
 | --- | --- | --- |
-| `train.sh` | The four-run repair matrix R0/R1/R2/R4 as a `--array=0-3` job. Refuses to start if the run's checkpoint directory is non-empty, or if the split carries no `val_ids`. 12 h, a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
+| `train.sh` | The five-run matrix R0/R1/R2/R4/D0 as a `--array=0-4` job. Refuses to start if the run's checkpoint directory is non-empty, or if the split carries no `val_ids`. 12 h, a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
 | `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. | `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `EXTRA` (extra flags, last-wins), `DRY_RUN` |
 | `analyze.sh` | Stage 2: `poster_metrics` — every metric, table and figure, from stage 1's `.npz`. CPU, minutes. | `POST` (input dir), `OUT` (results dir), `DRY_RUN` |
 | `shrink.sh` | Figure D (`fig_shrinkage`), screen and poster builds. CPU. | `POST`, `OUT`, `DRY_RUN` |
@@ -23,7 +23,17 @@ env, so it works on the laptop.
 
 `CACHE_DIR` is worth its own line: the default `sbatch` runs **uncached**, straight off the gzipped
 trial files at ~28 min/epoch, and `CACHE_DIR=$CANCER/data/cache/clone_top100_v1` points every run at
-the pre-built clone cache instead, which is roughly **13x faster per epoch**.
+the pre-built clone cache instead, which is roughly **13x faster per epoch**. It is added to the
+four clone-set runs only: the cache holds `(25, top_k, 45)` clone sets, which DominantClone does not
+read, so D0 never gets `--cache-dir`.
+
+**D0, the same-sims retrain.** Index 4 is `dominantclone --require-all-trials`: the DominantClone
+dataset normally NaN-pads a missing trial and keeps the sim (trap 10), so it trains and is scored on
+~3,506 sims where the clone-set models get 3,159. With the flag it uses exactly the clone-set sim
+set (2,261 train / 247 val / 651 test on the cluster), which is what makes the three models'
+numbers comparable. It passes no `--z-score-x`: the `dominantclone` preset is already `structured`.
+The flag is recorded in the checkpoint's `effective_config`, and `sample_posteriors.py` /
+`cli/evaluate.py` rebuild the test loader with the same restriction automatically.
 
 ## Carve the validation split before the first sbatch
 

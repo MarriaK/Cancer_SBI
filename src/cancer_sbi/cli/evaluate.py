@@ -21,7 +21,11 @@ Example:
 The network is rebuilt from the checkpoint's own ``effective_config`` when it
 has one (every checkpoint written since 2026-09-24). Older ones carry none: the
 preset is used, a ``[warn]`` says so, and ``--z-score-x`` / ``--input-space`` /
-``--freq-renorm`` are there to describe them.
+``--freq-renorm`` / ``--require-all-trials`` are there to describe them.
+
+``--require-all-trials`` is the one of those four that is not about the network:
+a DominantClone run trained on the clone-set models' sim set has to be scored on
+that same set, so the test loader is built with whatever the checkpoint records.
 
 What it writes (all names unchanged from the originals): the global z-score
 histogram, the three per-arm bar charts, ``zscore_summary.txt``, the two violin
@@ -179,6 +183,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="The run being evaluated used CloneAtt's frequency renormalisation.",
     )
+    overrides.add_argument(
+        "--require-all-trials",
+        action="store_true",
+        default=None,
+        help=(
+            "The DominantClone run being evaluated was trained on the "
+            "clone-set models' sim set (every trial file present), so its test "
+            "loader must be built with the same restriction."
+        ),
+    )
 
     extras = parser.add_argument_group("optional figure families")
     extras.add_argument(
@@ -292,6 +306,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     train_ids = split["train_ids"]
     test_ids = split["test_ids"]
 
+    # Rebuild the architecture exactly as TRAINING built it -- which means the
+    # checkpoint's own effective config, not get_preset's defaults. A
+    # z_score_x="structured" run carries a standardising transform inside the
+    # flow that a preset-built network does not have, so its state dict does not
+    # even load; a --input-space copy or --freq-renorm run loads silently into
+    # the wrong encoder. Resolved before anything is built, because it decides
+    # what gets built -- and before the loaders, because
+    # data.require_all_trials decides which sims the test loader holds.
+    if ckpt_path.exists():
+        eval_cfg = posterior_mod.resolve_eval_config(
+            ckpt_path,
+            preset.name,
+            z_score_x=args.z_score_x,
+            input_space=args.input_space,
+            freq_renorm=args.freq_renorm,
+            require_all_trials=args.require_all_trials,
+            device=device,
+        )
+        preset = eval_cfg.preset
+        require_all_trials = eval_cfg.require_all_trials
+    else:
+        require_all_trials = bool(args.require_all_trials)
+
     if preset.data.dataset == "clone_sets":
         train_loader, _val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
@@ -308,30 +345,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             test_ids=test_ids,
             batch_size=preset.data.batch_size,
             pin_memory=preset.data.pin_memory,
+            require_all_trials=require_all_trials,
         )
 
     x_all, theta_all = posterior_mod.collect_test_tensors(
         test_loader, preset.data.dataset
     )
     print(f"x_all shape: {tuple(x_all.shape)}, theta_all shape: {tuple(theta_all.shape)}")
-
-    # Rebuild the architecture exactly as TRAINING built it -- which means the
-    # checkpoint's own effective config, not get_preset's defaults. A
-    # z_score_x="structured" run carries a standardising transform inside the
-    # flow that a preset-built network does not have, so its state dict does not
-    # even load; a --input-space copy or --freq-renorm run loads silently into
-    # the wrong encoder. Resolved before anything is built, because it decides
-    # what gets built.
-    if ckpt_path.exists():
-        eval_cfg = posterior_mod.resolve_eval_config(
-            ckpt_path,
-            preset.name,
-            z_score_x=args.z_score_x,
-            input_space=args.input_space,
-            freq_renorm=args.freq_renorm,
-            device=device,
-        )
-        preset = eval_cfg.preset
 
     components = build_training_components(
         preset, train_loader, device=device, log_progress=True

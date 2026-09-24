@@ -62,6 +62,7 @@ def test_new_flags_absent_keeps_published_defaults():
     assert cfg.encoder.input_space == "log2"
     assert cfg.encoder.freq_renorm is False
     assert cfg.data.num_workers == 0
+    assert cfg.data.require_all_trials is False
     # The published runs were unseeded and the preset says so.
     assert cfg.train.seed is None
 
@@ -76,6 +77,7 @@ def test_new_flags_absent_keeps_published_defaults_for_every_preset():
         assert cfg.encoder.input_space == "log2", model
         assert cfg.encoder.freq_renorm is False, model
         assert cfg.data.num_workers == 0, model
+        assert cfg.data.require_all_trials is False, model
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +118,16 @@ def test_freq_renorm_flag_reaches_the_encoder():
 @pytest.mark.parametrize("n", [0, 4, 8])
 def test_num_workers_flag_reaches_the_data_config(n):
     assert config_from_argv(["--num-workers", str(n)]).data.num_workers == n
+
+
+def test_require_all_trials_flag_reaches_the_data_config():
+    """DominantClone's opt-in to the clone-set models' sim set (trap 10)."""
+    assert config_from_argv([], model="dominantclone").data.require_all_trials is False
+    cfg = config_from_argv(["--require-all-trials"], model="dominantclone")
+    assert cfg.data.require_all_trials is True
+    # A one-value change: nothing else in the data block moves.
+    assert cfg.data.dataset == "dominant_clone"
+    assert cfg.data.num_trials == 25 and cfg.data.top_k is None
 
 
 def test_deterministic_flag_parses_and_is_off_by_default():
@@ -513,6 +525,8 @@ def test_two_key_split_falls_back_to_the_test_loader_and_says_so(
         (["--freq-renorm"], "clonemlp", "--freq-renorm"),
         (["--freq-renorm"], "dominantclone", "--freq-renorm"),
         (["--top-k", "50"], "dominantclone", "--top-k"),
+        (["--require-all-trials"], "clonemlp", "--require-all-trials"),
+        (["--require-all-trials"], "cloneatt", "--require-all-trials"),
     ],
 )
 def test_flag_that_the_preset_ignores_is_warned_about(argv, model, needle, capsys):
@@ -527,6 +541,7 @@ def test_flag_that_the_preset_ignores_is_warned_about(argv, model, needle, capsy
         (["--input-space", "copy"], "clonemlp"),
         (["--freq-renorm"], "cloneatt"),
         (["--top-k", "50"], "clonemlp"),
+        (["--require-all-trials"], "dominantclone"),
     ],
 )
 def test_the_preset_that_does_use_the_flag_is_not_warned_about(argv, model, capsys):
@@ -543,6 +558,12 @@ def test_an_ignored_flag_does_not_change_the_config():
     assert warned.encoder.kind == plain.encoder.kind
     assert warned.flow == plain.flow
     assert config_from_argv(["--top-k", "50"], model="dominantclone").data.top_k is None
+    # The clone-set path already applies the rule, so the flag must not land in
+    # its config (and hence not in its checkpoint) pretending it was applied.
+    assert (
+        config_from_argv(["--require-all-trials"], model="cloneatt").data.require_all_trials
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------

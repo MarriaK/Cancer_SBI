@@ -122,12 +122,12 @@ def test_scripts_use_the_cluster_tree(script):
 
 
 # ------------------------------------------------------------------- train.sh
-def test_train_sh_mentions_all_four_runs_and_min_epochs():
+def test_train_sh_mentions_all_five_runs_and_min_epochs():
     text = (JOBS / "train.sh").read_text()
-    for run in ("R0", "R1", "R2", "R4"):
+    for run in ("R0", "R1", "R2", "R4", "D0"):
         assert run in text
     assert "--min-epochs 1" in text, "without it --stop-after-epochs is a no-op (A2)"
-    assert "--array=0-3" in text
+    assert "--array=0-4" in text
     assert "-C a100" in text
     assert "general-gpu" in text
     assert "--gres=gpu:1" in text
@@ -221,15 +221,15 @@ def test_allow_test_as_val_waives_the_gate(tmp_path):
     assert "split gate: WAIVED" in r.stdout
 
 
-def test_train_dry_run_prints_four_commands():
+def test_train_dry_run_prints_five_commands():
     cmds = _train_dry_run_lines()
-    assert len(cmds) == 4
+    assert len(cmds) == 5
 
 
 def test_train_dry_run_flags_per_run():
-    r0, r1, r2, r4 = _train_dry_run_lines()
+    r0, r1, r2, r4, d0 = _train_dry_run_lines()
 
-    for cmd in (r0, r1, r2, r4):
+    for cmd in (r0, r1, r2, r4, d0):
         assert "-m cancer_sbi.cli.train" in cmd
         assert "--seed 20260924" in cmd
         assert "--min-epochs 1" in cmd
@@ -243,19 +243,40 @@ def test_train_dry_run_flags_per_run():
     assert "--model clonemlp" in r1 and "--z-score-x structured" in r1
     assert "--model clonemlp" in r2 and "--input-space copy" in r2
     assert "--model cloneatt" in r4 and "--freq-renorm" in r4
+    assert "--model dominantclone" in d0 and "--require-all-trials" in d0
 
     # copy space is R2 only; the frequency repair is R4 only
-    assert sum("--input-space copy" in c for c in (r0, r1, r2, r4)) == 1
-    assert sum("--freq-renorm" in c for c in (r0, r1, r2, r4)) == 1
+    runs = (r0, r1, r2, r4, d0)
+    assert sum("--input-space copy" in c for c in runs) == 1
+    assert sum("--freq-renorm" in c for c in runs) == 1
+    assert sum("--require-all-trials" in c for c in runs) == 1
+
+    # D0 carries none of the clone-set-only flags, and no --z-score-x at all:
+    # the dominantclone preset is already "structured", and naming it here
+    # would make a preset default look like a per-run choice.
+    for flag in ("--input-space", "--freq-renorm", "--z-score-x"):
+        assert flag not in d0, d0
 
     # each run gets its own checkpoint directory
     dirs = []
-    for name, cmd in zip(("R0", "R1", "R2", "R4"), (r0, r1, r2, r4)):
+    for name, cmd in zip(("R0", "R1", "R2", "R4", "D0"), runs):
         parts = cmd.split()
         d = parts[parts.index("--ckpt-dir") + 1]
         assert d.endswith(f"/{name}/checkpoints")
         dirs.append(d)
-    assert len(set(dirs)) == 4
+    assert len(set(dirs)) == 5
+
+
+def test_train_dry_run_never_gives_the_clone_cache_to_dominantclone():
+    """The cache holds (25, top_k, 45) clone sets; DominantClone reads none."""
+    cmds = [
+        ln
+        for ln in _train_dry_run({"CACHE_DIR": "/some/cache"}).stdout.splitlines()
+        if ln.startswith("python ")
+    ]
+    assert len(cmds) == 5
+    assert sum("--cache-dir /some/cache" in c for c in cmds) == 4
+    assert "--cache-dir" not in cmds[4], cmds[4]
 
 
 # ------------------------------------------------------- sample / analyze / shrink

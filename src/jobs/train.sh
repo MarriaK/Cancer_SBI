@@ -5,14 +5,14 @@
 #SBATCH -C a100
 #SBATCH -n 10 -N 1
 #SBATCH -t 12:00:00
-#SBATCH --array=0-3
+#SBATCH --array=0-4
 #SBATCH -o /home/mak23055/cancer/logs/%x_%A_%a.out
 #SBATCH -e /home/mak23055/cancer/logs/%x_%A_%a.err
 #
-# The four-run repair matrix (R0 / R1 / R2 / R4). One array task per run.
-#   sbatch jobs/train.sh                 # all four
+# The five-run matrix (R0 / R1 / R2 / R4 / D0). One array task per run.
+#   sbatch jobs/train.sh                 # all five
 #   sbatch --array=1 jobs/train.sh       # R1 only (highest priority)
-#   DRY_RUN=1 bash jobs/train.sh         # print all four commands, run nothing
+#   DRY_RUN=1 bash jobs/train.sh         # print all five commands, run nothing
 #
 # Env overrides: CANCER_SBI_DATA_ROOT, CANCER_SBI_SPLIT, RUNS_ROOT, SEED,
 # NUM_WORKERS, CACHE_DIR, ALLOW_TEST_AS_VAL, DRY_RUN.
@@ -29,6 +29,10 @@
 #
 # R0 is the control (z_score_x unchanged). R1 adds theta whitening. R2 is R1 plus
 # the copy-space input. R4 is CloneAtt with the frequency renormalisation, ln off.
+# D0 retrains DominantClone with --require-all-trials, i.e. on the same sims the
+# clone-set models see (trap 10), so the three models can be compared honestly.
+# D0 passes no --z-score-x: its preset is already "structured", and naming the
+# value here would make the preset's default look like a per-run choice.
 set -euo pipefail
 CANCER="${CANCER:-$HOME/cancer}"
 export CANCER_SBI_DATA_ROOT="${CANCER_SBI_DATA_ROOT:-$CANCER/data/Guassian_Normal/simulation_outputs}"
@@ -71,13 +75,16 @@ refuse_without_val_ids() {
   echo "Set ALLOW_TEST_AS_VAL=1 to train on the test set as validation anyway." >&2
 }
 
-# array index -> run.  Index:      0         1          2            3
-RUNNAME=(R0 R1 R2 R4)
-MODEL=(clonemlp clonemlp clonemlp cloneatt)
-ZSCORE=(none structured structured structured)
-INPUT_SPACE=(log2 log2 copy "")       # copy-space input is R2 only; --input-space is
-                                      # clonemlp-only, so R4 leaves it unset (empty)
-FREQ_RENORM=(0 0 0 1)                 # CloneAtt frequency repair is R4 only
+# array index -> run.  Index:      0         1          2            3          4
+RUNNAME=(R0 R1 R2 R4 D0)
+MODEL=(clonemlp clonemlp clonemlp cloneatt dominantclone)
+ZSCORE=(none structured structured structured "")   # D0 keeps the preset's "structured"
+INPUT_SPACE=(log2 log2 copy "" "")    # copy-space input is R2 only; --input-space is
+                                      # clonemlp-only, so R4 and D0 leave it unset
+FREQ_RENORM=(0 0 0 1 0)               # CloneAtt frequency repair is R4 only
+REQUIRE_ALL_TRIALS=(0 0 0 0 1)        # the same-sims retrain is D0 only
+USES_CACHE=(1 1 1 1 0)                # the clone cache holds (25, top_k, 45) clone
+                                      # sets, which DominantClone does not read
 
 # Build the full command for one run index into the global array CMD.
 build_cmd() {
@@ -92,9 +99,11 @@ build_cmd() {
        --min-epochs 1
        --stop-after-epochs 15
        --max-epochs 60
-       --z-score-x "${ZSCORE[$i]}"
        --num-workers "$NUM_WORKERS")
-  if [ -n "$CACHE_DIR" ]; then
+  if [ -n "${ZSCORE[$i]}" ]; then
+    CMD+=(--z-score-x "${ZSCORE[$i]}")
+  fi
+  if [ -n "$CACHE_DIR" ] && [ "${USES_CACHE[$i]}" = "1" ]; then
     CMD+=(--cache-dir "$CACHE_DIR")
   fi
   if [ -n "${INPUT_SPACE[$i]}" ]; then
@@ -103,16 +112,19 @@ build_cmd() {
   if [ "${FREQ_RENORM[$i]}" = "1" ]; then
     CMD+=(--freq-renorm)
   fi
+  if [ "${REQUIRE_ALL_TRIALS[$i]}" = "1" ]; then
+    CMD+=(--require-all-trials)
+  fi
 }
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  for i in 0 1 2 3; do
+  for i in 0 1 2 3 4; do
     build_cmd "$i"
     echo "# ${RUNNAME[$i]}  model=${MODEL[$i]}  ckpt=$RUNS/${RUNNAME[$i]}/checkpoints"
     echo "${CMD[@]}"
   done
   # A dry run reports the split gate rather than failing on it: the point of the
-  # dry run is to read the four command lines, and it is usually done on a
+  # dry run is to read the five command lines, and it is usually done on a
   # machine that does not have the cluster's split file at all.
   if [ "${ALLOW_TEST_AS_VAL:-0}" = "1" ]; then
     echo "# split gate: WAIVED by ALLOW_TEST_AS_VAL=1 ($CANCER_SBI_SPLIT)"
@@ -141,7 +153,7 @@ if [ -d "$CKPT_DIR" ] && [ -n "$(ls -A "$CKPT_DIR" 2>/dev/null)" ]; then
 fi
 mkdir -p "$CKPT_DIR"
 
-echo "host=$(hostname)  run=${RUNNAME[$i]}  model=${MODEL[$i]}  z_score_x=${ZSCORE[$i]}  input_space=${INPUT_SPACE[$i]}  freq_renorm=${FREQ_RENORM[$i]}  seed=$SEED"
+echo "host=$(hostname)  run=${RUNNAME[$i]}  model=${MODEL[$i]}  z_score_x=${ZSCORE[$i]:-<preset>}  input_space=${INPUT_SPACE[$i]}  freq_renorm=${FREQ_RENORM[$i]}  require_all_trials=${REQUIRE_ALL_TRIALS[$i]}  seed=$SEED"
 # Everything below actually runs.
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate cancer-sbi

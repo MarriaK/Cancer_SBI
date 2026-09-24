@@ -454,3 +454,153 @@ def test_explicit_resume_dir_still_resumes_and_still_notes(tmp_path, capsys):
     # Only the directory the caller named, and only because they named it.
     assert resume_dir.is_dir()
     assert not (run_dir / "checkpoints_baseline").exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. --require-all-trials: DominantClone on the clone-set models' sim set.
+#
+# The flag lives in DataConfig, so it rides in the checkpoint's effective
+# config for free -- but nothing *used* it at evaluation time until the test
+# loader was built from it too. Without that, a run trained on 2,261 sims is
+# scored on a test set of 707 instead of 651, and the comparison it exists for
+# is wrong again.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_dominant_split(tmp_path):
+    """A split whose test set mixes complete and incomplete sims.
+
+    Returns:
+        ``(split_path, complete_test_ids, all_test_ids)``.
+    """
+    from cancer_sbi.data.splits import complete_sim_ids
+
+    names = sorted(
+        (p.name for p in DATA_ROOT.iterdir() if p.name.startswith("sim")),
+        key=lambda name: int(name[3:]),
+    )
+    complete = complete_sim_ids(str(DATA_ROOT), names)
+    incomplete = [
+        name
+        for name in names
+        if name not in set(complete)
+        # Only the ones the dominant-clone dataset itself keeps: a sim whose
+        # every trial is missing is dropped by both paths and would prove
+        # nothing here.
+        and _dominant_keeps(name)
+    ]
+    if len(complete) < 6 or not incomplete:
+        pytest.skip("local tree has no mix of complete and incomplete sims")
+
+    test_ids = sorted(complete[4:6] + incomplete[:1], key=lambda n: int(n[3:]))
+    path = _write_split(tmp_path, complete[:3], complete[3:4], test_ids)
+    return path, complete[4:6], test_ids
+
+
+def _dominant_keeps(name):
+    """True when ``SimulationDataset`` returns a sample for this sim."""
+    from cancer_sbi.data.dominant_clone import SimulationDataset
+
+    return SimulationDataset(str(DATA_ROOT), sim_ids=[name])[0] is not None
+
+
+def _train_tiny_dominant(tmp_path, split_path, extra, tag):
+    """One epoch of dominantclone on the given split."""
+    ckpt_dir = tmp_path / tag / "checkpoints"
+    rc = train_cli.main(
+        [
+            "--model", "dominantclone",
+            "--data-root", str(DATA_ROOT),
+            "--split", str(split_path),
+            "--out", str(tmp_path / tag),
+            "--ckpt-dir", str(ckpt_dir),
+            "--device", "cpu",
+            "--batch-size", "2",
+            "--max-epochs", "1",
+            "--min-epochs", "1",
+            "--stop-after-epochs", "1",
+            "--seed", "20260924",
+            "--no-final-pickle",
+            *extra,
+        ]
+    )
+    assert rc == 0
+    return ckpt_dir
+
+
+@needs_data
+def test_require_all_trials_reaches_the_checkpoints_effective_config(tmp_path):
+    """It lives in DataConfig, so config_to_dict carries it -- pinned, not assumed."""
+    split_path, _, _ = _mixed_dominant_split(tmp_path)
+
+    on = _train_tiny_dominant(tmp_path, split_path, ["--require-all-trials"], "D0")
+    off = _train_tiny_dominant(tmp_path, split_path, [], "Dpub")
+
+    for name in ("best.pt", "latest.pt"):
+        stored = torch.load(on / name, map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+        assert stored["data"]["require_all_trials"] is True
+        assert stored["cli_flags"]["require_all_trials"] is True
+    stored = torch.load(off / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["data"]["require_all_trials"] is False
+
+
+@needs_data
+def test_sample_posteriors_uses_the_restricted_test_set(tmp_path, monkeypatch):
+    """The whole point: the checkpoint's own flag rebuilds the same test set."""
+    split_path, complete_test, all_test = _mixed_dominant_split(tmp_path)
+    assert len(all_test) > len(complete_test)
+
+    ckpt_dir = _train_tiny_dominant(tmp_path, split_path, ["--require-all-trials"], "D0")
+    _, meta = _sample(
+        tmp_path, "dominantclone", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert meta["require_all_trials"] is True
+    assert meta["n_cases_available"] == len(complete_test)
+
+
+@needs_data
+def test_sample_posteriors_keeps_the_published_test_set_without_the_flag(
+    tmp_path, monkeypatch
+):
+    """Default off is byte-for-byte the published behaviour: every sim is scored."""
+    split_path, complete_test, all_test = _mixed_dominant_split(tmp_path)
+
+    ckpt_dir = _train_tiny_dominant(tmp_path, split_path, [], "Dpub")
+    _, meta = _sample(
+        tmp_path, "dominantclone", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert meta["require_all_trials"] is False
+    assert meta["n_cases_available"] == len(all_test)
+
+
+@needs_data
+def test_require_all_trials_override_contradicting_the_checkpoint_raises(tmp_path):
+    """Same rule as the architecture flags: neither side is trusted silently."""
+    split_path, _, _ = _mixed_dominant_split(tmp_path)
+    ckpt_dir = _train_tiny_dominant(tmp_path, split_path, [], "Dpub")
+
+    with pytest.raises(ValueError, match="contradict") as excinfo:
+        posterior_mod.resolve_eval_config(
+            ckpt_dir / "best.pt", "dominantclone", require_all_trials=True
+        )
+    assert "--require-all-trials" in str(excinfo.value)
+
+
+@needs_data
+def test_require_all_trials_override_describes_an_old_checkpoint(tmp_path):
+    """A checkpoint that predates the flag carries no key, so the flag is allowed."""
+    split_path, _, _ = _mixed_dominant_split(tmp_path)
+    ckpt_dir = _train_tiny_dominant(tmp_path, split_path, [], "Dold")
+
+    old_style = ckpt_dir / "old_best.pt"
+    payload = torch.load(ckpt_dir / "best.pt", map_location="cpu")
+    payload.pop(EFFECTIVE_CONFIG_KEY)
+    torch.save(payload, old_style)
+
+    resolved = posterior_mod.resolve_eval_config(
+        old_style, "dominantclone", require_all_trials=True
+    )
+    assert resolved.from_checkpoint is False
+    assert resolved.require_all_trials is True

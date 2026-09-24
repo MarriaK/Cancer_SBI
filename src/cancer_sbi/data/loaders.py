@@ -31,6 +31,7 @@ from torch.utils.data import DataLoader
 
 from cancer_sbi.data.clone_sets import CNASimsDataset
 from cancer_sbi.data.dominant_clone import SimulationDataset, collate_skip_none
+from cancer_sbi.data.splits import complete_sim_ids
 
 
 def _worker_kwargs(num_workers: int) -> dict:
@@ -59,6 +60,30 @@ def _worker_kwargs(num_workers: int) -> dict:
     if num_workers < 0:
         raise ValueError(f"num_workers must be >= 0, got {num_workers}")
     return {"num_workers": num_workers}
+
+
+def _restrict_to_complete(
+    root_dir: str, sim_ids: Optional[Sequence[str]], partition: str
+) -> Optional[Sequence[str]]:
+    """Apply the clone-set completeness rule to one partition and say so.
+
+    Args:
+        root_dir: Directory containing ``sim*/``.
+        sim_ids: The partition's simulation names, or ``None`` (no such
+            partition, e.g. an absent validation set).
+        partition: ``"train"``, ``"val"`` or ``"test"``, for the printed line.
+
+    Returns:
+        The kept names, or ``None`` when ``sim_ids`` was ``None``.
+    """
+    if sim_ids is None:
+        return None
+    kept = complete_sim_ids(root_dir, sim_ids)
+    print(
+        f"[dominant_clone] require_all_trials: {partition} "
+        f"{len(sim_ids)} -> {len(kept)}"
+    )
+    return kept
 
 
 def build_clone_set_dataloaders(
@@ -113,6 +138,11 @@ def build_clone_set_dataloaders(
         ``DataLoader``. Construct
         :class:`~cancer_sbi.data.clone_sets.CNASimsDataset` directly if you need
         non-default dataset options.
+
+        There is deliberately no ``require_all_trials`` parameter here:
+        ``CNASimsDataset`` already drops every sim that is missing a trial file,
+        so this family's sim set *is* the restricted one. The flag exists only
+        on the dominant-clone builder, which is the side that has to opt in.
     """
     # Preserved from Base_NPE/utils.py:232-233: only root_dir, top_k and sim_ids
     # are given, so every other dataset option keeps its class default --
@@ -167,6 +197,7 @@ def build_dominant_clone_dataloaders(
     val_ids: Optional[Sequence[str]] = None,
     num_workers: int = 0,
     cache_dir: Optional[str] = None,
+    require_all_trials: bool = False,
 ) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
     """Build the train, validation and test loaders for DominantClone-NPE.
 
@@ -184,6 +215,14 @@ def build_dominant_clone_dataloaders(
             ``(25, top_k, 45)`` clone sets, not the dominant clone's
             ``(25, 44)`` -- so a non-``None`` value is reported and ignored
             rather than silently pretending to help. Keyword-only.
+        require_all_trials: Keep only the sims the clone-set models keep, i.e.
+            those with all 25 ``CNratios_all.pkl.gz`` files and a readable
+            ``parameters.pkl`` (:func:`cancer_sbi.data.splits.complete_sim_ids`).
+            ``False``, the default, is the published behaviour: trap 10 stands,
+            the missing trials are NaN-padded and the sim is kept. ``True`` is
+            what makes this model's train/val/test sets identical to
+            CloneMLP's and CloneAtt's, and one line per partition says how many
+            sims it dropped. Keyword-only.
 
     Returns:
         ``(train_loader, val_loader, test_loader)``; ``val_loader`` is ``None``
@@ -206,6 +245,11 @@ def build_dominant_clone_dataloaders(
             f"{cache_dir}: the clone cache holds (25, top_k, 45) clone sets, "
             "which this dataset does not read."
         )
+
+    if require_all_trials:
+        train_ids = _restrict_to_complete(root_dir, train_ids, "train")
+        val_ids = _restrict_to_complete(root_dir, val_ids, "val")
+        test_ids = _restrict_to_complete(root_dir, test_ids, "test")
 
     # Preserved from Plain_NPE/utils.py:129-130: only root_dir and sim_ids are
     # given, so num_trials keeps its class default of 25 and use_bulk stays

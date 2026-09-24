@@ -27,7 +27,13 @@ from cancer_sbi.data.loaders import (
     build_clone_set_dataloaders,
     build_dominant_clone_dataloaders,
 )
-from cancer_sbi.data.splits import create_split, list_sim_ids, load_split, save_split
+from cancer_sbi.data.splits import (
+    complete_sim_ids,
+    create_split,
+    list_sim_ids,
+    load_split,
+    save_split,
+)
 
 __all__ = [
     "CNASimsDataset",
@@ -39,6 +45,7 @@ __all__ = [
     "top_frequent_rows_tensor",
     "build_clone_set_dataloaders",
     "build_dominant_clone_dataloaders",
+    "complete_sim_ids",
     "create_split",
     "list_sim_ids",
     "load_split",

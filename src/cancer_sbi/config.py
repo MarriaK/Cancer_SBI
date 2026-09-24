@@ -67,6 +67,11 @@ class DataConfig:
             the published behaviour -- reads the gzipped trial files directly.
             Only the ``clone_sets`` path uses it; the dominant-clone builder
             ignores it.
+        require_all_trials: Restrict DominantClone to sims with every trial file
+            present, i.e. the clone-set models' sim set. Off (the default) is
+            the published behaviour: NaN-pad the missing trials and keep the
+            sim. The ``clone_sets`` path already applies this rule and ignores
+            the field.
     """
 
     dataset: DatasetKind
@@ -94,6 +99,10 @@ class DataConfig:
     num_workers: int = 0
     # Added 2026-09-24 (WP-B). None == read the gzipped trial files; see above.
     cache_dir: Optional[str] = None
+    # Added 2026-09-24. False == the published trap-10 behaviour; True makes the
+    # dominant-clone path use the clone-set models' sim set, so that the three
+    # models can be compared on the same simulations.
+    require_all_trials: bool = False
 
 
 @dataclass(frozen=True)

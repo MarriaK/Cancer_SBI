@@ -164,11 +164,18 @@ class EvalConfig(NamedTuple):
         effective_config: The raw dict read from the checkpoint, or ``None`` for
             a checkpoint written before 2026-09-24.
         from_checkpoint: ``True`` when ``preset`` came from the checkpoint.
+        require_all_trials: ``DataConfig.require_all_trials`` of the run being
+            evaluated. It is not part of ``preset`` -- ``preset_from_effective_
+            config`` deliberately restores only the two architecture blocks --
+            but the dominant-clone test loader has to be built with it, or a
+            run trained on the clone-set models' sim set gets scored on a
+            larger test set than it was trained for.
     """
 
     preset: ModelPreset
     effective_config: Optional[dict]
     from_checkpoint: bool
+    require_all_trials: bool = False
 
 
 def _disagreement(name: str, stored: Any, override: Any) -> Optional[str]:
@@ -184,6 +191,7 @@ def resolve_eval_config(
     z_score_x: Optional[str] = None,
     input_space: Optional[str] = None,
     freq_renorm: Optional[bool] = None,
+    require_all_trials: Optional[bool] = None,
     device: str = "cpu",
 ) -> EvalConfig:
     """Decide which architecture to rebuild before loading ``ckpt_path``.
@@ -202,6 +210,10 @@ def resolve_eval_config(
         z_score_x: ``--z-score-x`` override, or ``None``.
         input_space: ``--input-space`` override, or ``None``.
         freq_renorm: ``--freq-renorm`` override, or ``None``.
+        require_all_trials: ``--require-all-trials`` override, or ``None``. Only
+            consulted when the checkpoint does not record the key; when it does,
+            the checkpoint wins and an explicit disagreement raises like the
+            others.
         device: ``map_location`` for reading the checkpoint.
 
     Returns:
@@ -241,7 +253,12 @@ def resolve_eval_config(
         if freq_renorm:
             encoder = _replace(encoder, freq_renorm=True)
         preset = _replace(preset, encoder=encoder)
-        return EvalConfig(preset=preset, effective_config=None, from_checkpoint=False)
+        return EvalConfig(
+            preset=preset,
+            effective_config=None,
+            from_checkpoint=False,
+            require_all_trials=bool(require_all_trials),
+        )
 
     stored_model = stored.get("model")
     if stored_model is not None and stored_model != model:
@@ -252,12 +269,22 @@ def resolve_eval_config(
 
     flow = stored.get("flow", {})
     encoder = stored.get("encoder", {})
+    data = stored.get("data", {})
+    # A checkpoint that predates the flag has no "require_all_trials" key at
+    # all, and an override is then the only description of the run -- so the
+    # clash is only checked when the key is actually there.
+    stored_require = (
+        bool(data["require_all_trials"]) if "require_all_trials" in data else None
+    )
     clashes = [
         line
         for line in (
             _disagreement("z_score_x", flow.get("z_score_x"), z_score_x),
             _disagreement("input_space", encoder.get("input_space"), input_space),
             _disagreement("freq_renorm", encoder.get("freq_renorm"), freq_renorm),
+            None
+            if stored_require is None
+            else _disagreement("require_all_trials", stored_require, require_all_trials),
         )
         if line is not None
     ]
@@ -272,13 +299,22 @@ def resolve_eval_config(
         )
 
     preset = preset_from_effective_config(stored)
+    resolved_require = (
+        stored_require if stored_require is not None else bool(require_all_trials)
+    )
     print(
         f"[config] rebuilt from the checkpoint: z_score_x="
         f"{preset.flow.z_score_x}, input_space={preset.encoder.input_space}, "
-        f"freq_renorm={preset.encoder.freq_renorm}",
+        f"freq_renorm={preset.encoder.freq_renorm}, "
+        f"require_all_trials={resolved_require}",
         flush=True,
     )
-    return EvalConfig(preset=preset, effective_config=stored, from_checkpoint=True)
+    return EvalConfig(
+        preset=preset,
+        effective_config=stored,
+        from_checkpoint=True,
+        require_all_trials=resolved_require,
+    )
 
 
 def load_checkpoint_for_eval(

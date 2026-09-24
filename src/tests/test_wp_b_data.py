@@ -35,7 +35,12 @@ from cancer_sbi.data.loaders import (  # noqa: E402
     build_clone_set_dataloaders,
     build_dominant_clone_dataloaders,
 )
-from cancer_sbi.data.splits import carve_val_ids, load_split, save_split  # noqa: E402
+from cancer_sbi.data.splits import (  # noqa: E402
+    carve_val_ids,
+    complete_sim_ids,
+    load_split,
+    save_split,
+)
 
 DATA_ROOT = SRC.parent / "data" / "Guassian_Normal" / "simulation_outputs"
 SPLIT_PATH = SRC.parent / "data" / "train_test_split.pkl"
@@ -589,3 +594,98 @@ def test_make_split_keeps_its_two_seeds_separate():
 
     args = build_parser().parse_args(["--seed", "7"])
     assert args.seed == 7 and args.random_state == 123
+
+
+# ---------------------------------------------------------------------------
+# require_all_trials: the DominantClone path opting into the clone-set sim set.
+#
+# Trap 10 is the reason the three models' numbers were not comparable:
+# CNASimsDataset drops a sim that is missing even one trial file, while
+# SimulationDataset NaN-pads it and keeps it. ``complete_sim_ids`` is the one
+# definition of the clone-set rule, and the first test below is what keeps it
+# honest -- if it ever drifts from CNASimsDataset by a single sim, the "same
+# simulations" claim is false.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_ids(n_complete=6, n_incomplete=3):
+    """Sim names that exist on disk: some complete, some missing trial files."""
+    names = sorted(
+        (d for d in os.listdir(DATA_ROOT) if d.startswith("sim")),
+        key=lambda n: int(n[3:]),
+    )
+    complete = set(complete_sim_ids(str(DATA_ROOT), names))
+    good = [n for n in names if n in complete][:n_complete]
+    bad = [n for n in names if n not in complete][:n_incomplete]
+    if len(good) < n_complete or len(bad) < n_incomplete:
+        pytest.skip("local tree has no mix of complete and incomplete sims")
+    # Interleaved, so an implementation that only ever drops a suffix fails.
+    return sorted(good + bad, key=lambda n: int(n[3:])), good
+
+
+@needs_data
+def test_complete_sim_ids_matches_the_clone_set_dataset():
+    """The rule is *exactly* CNASimsDataset's, not a re-derivation of it."""
+    ids, _ = _mixed_ids(n_complete=12, n_incomplete=6)
+    dataset = CNASimsDataset(str(DATA_ROOT), sim_ids=ids)
+    kept_by_dataset = {os.path.basename(item["sim_dir"]) for item in dataset.items}
+    assert set(complete_sim_ids(str(DATA_ROOT), ids)) == kept_by_dataset
+    # And the filter really does something on this tree.
+    assert len(kept_by_dataset) < len(ids)
+
+
+@needs_data
+def test_complete_sim_ids_keeps_the_input_order():
+    ids, _ = _mixed_ids()
+    kept = complete_sim_ids(str(DATA_ROOT), ids)
+    assert kept == [name for name in ids if name in set(kept)]
+
+
+@needs_data
+def test_complete_sim_ids_drops_an_id_with_no_directory(tmp_path):
+    """An id that is not on disk fails the parameters check, it does not raise."""
+    ids, good = _mixed_ids()
+    assert complete_sim_ids(str(DATA_ROOT), ["sim999999"]) == []
+    assert complete_sim_ids(str(DATA_ROOT), good) == good
+
+
+@needs_data
+def test_dominant_builder_default_keeps_the_published_sim_set():
+    """Off by default: trap 10 stands, incomplete sims are NaN-padded and kept."""
+    ids, _ = _mixed_ids()
+    train, _v, test = build_dominant_clone_dataloaders(
+        str(DATA_ROOT), ids, ids, batch_size=2
+    )
+    assert len(train.dataset.sim_dirs) == len(ids)
+    assert len(test.dataset.sim_dirs) == len(ids)
+
+
+@needs_data
+def test_dominant_builder_require_all_trials_restricts_every_partition(capsys):
+    """Each of train/val/test is filtered, and each reports its own counts."""
+    ids, good = _mixed_ids()
+    train, val, test = build_dominant_clone_dataloaders(
+        str(DATA_ROOT), ids, ids, batch_size=2, val_ids=ids, require_all_trials=True
+    )
+    for loader in (train, val, test):
+        assert list(loader.dataset.sim_dirs) == good
+
+    out = capsys.readouterr().out
+    for partition in ("train", "val", "test"):
+        assert (
+            f"[dominant_clone] require_all_trials: {partition} "
+            f"{len(ids)} -> {len(good)}" in out
+        ), out
+
+
+@needs_data
+def test_dominant_builder_restricted_set_is_the_clone_set_models_set():
+    """The point of the flag: the two families end up on the same sims."""
+    ids, _ = _mixed_ids()
+    _t, _v, test = build_dominant_clone_dataloaders(
+        str(DATA_ROOT), ids, ids, batch_size=2, require_all_trials=True
+    )
+    clone_set = CNASimsDataset(str(DATA_ROOT), sim_ids=ids)
+    assert set(test.dataset.sim_dirs) == {
+        os.path.basename(item["sim_dir"]) for item in clone_set.items
+    }
