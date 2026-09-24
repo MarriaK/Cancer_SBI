@@ -68,6 +68,16 @@ class DataConfig:
             the published behaviour -- reads the gzipped trial files directly.
             Only the ``clone_sets`` path uses it; the dominant-clone builder
             ignores it.
+        trial_subsample: Augmentation switch, matrix 3. ``None`` -- the default
+            and the published behaviour -- serves every one of ``num_trials``
+            trials. An int ``K < num_trials`` makes the *training* dataset draw
+            a fresh random subset of ``K`` trials on every ``__getitem__``, so
+            each epoch sees a different view of the same sim; the item is then
+            ``(K, top_k, 45)`` with a ``(K,)`` mask. Validation and test
+            datasets never subsample -- 25 trials is the published evaluation
+            condition and the number every reported score is on. Read by the
+            ``clone_sets`` path only; the dominant-clone builder ignores it
+            (``cli/train.py`` warns).
         require_all_trials: Restrict DominantClone to sims with every trial file
             present, i.e. the clone-set models' sim set. Off (the default) is
             the published behaviour: NaN-pad the missing trials and keep the
@@ -104,6 +114,9 @@ class DataConfig:
     # dominant-clone path use the clone-set models' sim set, so that the three
     # models can be compared on the same simulations.
     require_all_trials: bool = False
+    # Added 2026-09-24 (matrix 3). None == every trial, the published
+    # behaviour; see the docstring. TRAINING loaders only.
+    trial_subsample: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -137,10 +150,17 @@ class EncoderConfig:
         freq_renorm: ``"attention"`` only. ``False`` keeps CloneAtt's published
             raw-frequency multiply; ``True`` renormalises the per-clone weights
             so the tokens are not shrunk to ~0.003 of their scale (run R4).
-        freq_mode: ``"attention"`` only. ``"weight"`` is the published multiply
-            (modulated by ``freq_renorm``); ``"feature"`` drops the multiply and
-            feeds ``log10(freq)`` to the input projection as a 45th column
-            instead (runs R5-R8).
+        freq_mode: Both clone-set encoders. ``"weight"`` is the published
+            behaviour for either one; ``"feature"`` feeds
+            ``log10(clamp(freq, 1e-6))`` to the per-clone projection as a 45th
+            input column. For ``"attention"`` that also *drops* the token
+            multiply (runs R5-R8, modulated by ``freq_renorm``). For ``"mlp"``
+            (matrix 3, run R10) there is no token multiply to drop: CloneMLP's
+            frequency use is the normalised weighted mean in the pooling step,
+            which is kept -- ``"feature"`` only widens the MLP's input from 44
+            to 45. Note this is a *different* column from
+            ``include_freq_in_mlp``, which appends the RAW frequency; the two
+            are refused together by ``BaselineCloneEmbedding``.
         attn_ln: ``"attention"`` only. ``True`` builds every MAB/ISAB/PMA with
             ``ln=True`` (runs R5-R8). ``False`` -- the default -- is trap 5.
         attn_dropout_active: ``"attention"`` only. ``True`` makes
@@ -199,7 +219,9 @@ class EncoderConfig:
     # log10(freq) to the input projection instead (runs R5-R8). `freq_renorm`
     # has nothing to renormalise in "feature" mode -- cli/train.py refuses the
     # pair rather than silently ignoring one of them.
-    freq_mode: FreqMode = "weight"        # CloneSetEmbedding (CloneAtt)
+    # Matrix 3 widened this from CloneAtt-only to both clone-set encoders; the
+    # default is still the published behaviour for either of them.
+    freq_mode: FreqMode = "weight"        # both clone-set encoders
     # Trap 4 made opt-out: True wires `dropout` into CloneSetEmbedding, which
     # published CloneAtt never did. False keeps the value decorative (run R8).
     attn_dropout_active: bool = False     # CloneSetEmbedding (CloneAtt)
@@ -234,7 +256,9 @@ class FlowConfig:
         z_score_x: sbi's whitening mode for theta. Differs per model -- trap 1.
         z_score_y: sbi's whitening mode for the context. Differs per model.
         dropout_probability: Dropout inside the flow's residual blocks. All three
-            mains pass 0.2 (``*/main.py:35``).
+            mains pass 0.2 (``*/main.py:35``), so 0.2 -- not 0.0 -- is the
+            published value every preset below carries. ``--flow-dropout``
+            (matrix 3, runs R11/R14) overrides it.
         exclude_invalid_y: ``False`` in all three originals; NaN-padded trials
             must survive into the embedding net, which handles them itself.
     """
@@ -252,6 +276,9 @@ class FlowConfig:
 
     # sbi defaults, pinned. Identical in sbi 0.23.3 and 0.25.0.
     hidden_features: int = 50
+    # 5 is sbi's default and the published value; --flow-num-transforms
+    # (matrix 3, runs R12/R16) shrinks the flow by lowering it. hidden_features
+    # deliberately has no flag: 50 is the published width in every run.
     num_transforms: int = 5
     num_bins: int = 10
     num_blocks: int = 2

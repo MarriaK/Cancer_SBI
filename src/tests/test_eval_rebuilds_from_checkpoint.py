@@ -697,3 +697,107 @@ def test_an_attn_ln_checkpoint_does_not_load_into_a_default_cloneatt(tmp_path):
         log_progress=False,
     ).density_estimator
     rebuilt.load_state_dict(state)
+
+
+# ---------------------------------------------------------------------------
+# 8. Matrix 3: a smaller flow, a 45-input MLP, and an augmented TRAIN loader.
+#
+# `--flow-num-transforms 3` changes the flow's state_dict shape and
+# `--freq-mode feature` changes the MLP's, so both have to be rebuilt from the
+# checkpoint -- the same argument as section 7, on the other model.
+# `--trial-subsample` is the opposite case: it must reach the training loader
+# and must NOT reach the test loader, because 25 trials is the condition every
+# reported number is measured under.
+# ---------------------------------------------------------------------------
+
+
+@needs_data
+def test_matrix_three_clonemlp_checkpoint_round_trips_through_the_sampler(
+    tmp_path, monkeypatch
+):
+    """Train all four matrix-3 switches for one epoch, then really sample."""
+    from cancer_sbi.data import loaders as loaders_mod
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    seen = []
+    real_builder = loaders_mod.build_clone_set_dataloaders
+
+    def _spy(*args, **kwargs):
+        seen.append(kwargs.get("trial_subsample"))
+        return real_builder(*args, **kwargs)
+
+    monkeypatch.setattr(loaders_mod, "build_clone_set_dataloaders", _spy)
+
+    extra = [
+        "--z-score-x", "structured",
+        "--input-space", "copy",
+        "--freq-mode", "feature",
+        "--flow-dropout", "0.1",
+        "--flow-num-transforms", "3",
+        "--trial-subsample", "3",
+    ]
+    ckpt_dir, split_path = _train_tiny(tmp_path, "clonemlp", extra, "M3")
+
+    # Training asked for the augmentation...
+    assert seen == [3]
+
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["flow"]["dropout_probability"] == 0.1
+    assert stored["flow"]["num_transforms"] == 3
+    assert stored["flow"]["hidden_features"] == 50, "must stay 50"
+    assert stored["encoder"]["freq_mode"] == "feature"
+    assert stored["data"]["trial_subsample"] == 3
+    assert stored["cli_flags"]["trial_subsample"] == 3
+
+    seen.clear()
+    path, meta = _sample(
+        tmp_path, "clonemlp", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists()
+    assert meta["config_from_checkpoint"] is True
+    # ...and evaluation did not: the test loader keeps all 25 trials.
+    assert seen == [None]
+
+    rebuilt = posterior_mod.resolve_eval_config(
+        ckpt_dir / "best.pt", "clonemlp"
+    ).preset
+    assert rebuilt.flow.num_transforms == 3
+    assert rebuilt.flow.dropout_probability == 0.1
+    assert rebuilt.data.trial_subsample is None
+    encoder = build_embedding_net(rebuilt.encoder, "cpu").trial_encoder
+    assert encoder.freq_mode == "feature"
+    assert encoder.mlp[0].in_features == 45
+
+
+@needs_data
+def test_a_three_transform_checkpoint_does_not_load_into_a_preset_built_flow(
+    tmp_path,
+):
+    """The proof that the flow size has to come from the checkpoint."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.training.trainer import build_training_components
+
+    ckpt_dir, _ = _train_tiny(
+        tmp_path, "clonemlp", ["--flow-num-transforms", "3"], "M3nt"
+    )
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    preset_built = build_training_components(
+        get_preset("clonemlp"), train_loader, device="cpu", log_progress=False
+    ).density_estimator
+
+    with pytest.raises(RuntimeError):
+        preset_built.load_state_dict(state)
+
+    rebuilt = build_training_components(
+        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "clonemlp").preset,
+        train_loader,
+        device="cpu",
+        log_progress=False,
+    ).density_estimator
+    rebuilt.load_state_dict(state)

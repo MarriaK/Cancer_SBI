@@ -312,6 +312,11 @@ def resolve_eval_config(
         f"freq_mode={preset.encoder.freq_mode}, "
         f"attn_ln={preset.encoder.attn_ln}, "
         f"attn_dropout_active={preset.encoder.attn_dropout_active}, "
+        # Matrix 3. Both ride in through preset_from_effective_config's flow
+        # block and both change the state_dict's shape, so a log that did not
+        # name them would leave the one thing a load failure turns on unsaid.
+        f"flow_dropout={preset.flow.dropout_probability}, "
+        f"num_transforms={preset.flow.num_transforms}, "
         f"require_all_trials={resolved_require}",
         flush=True,
     )

@@ -191,6 +191,7 @@ class CNASimsDataset(Dataset):
         drop_missing: bool = True,
         sim_ids: Optional[Sequence[str]] = None,
         cache_dir: Optional[str] = None,
+        trial_subsample: Optional[int] = None,
     ) -> None:
         """Scan ``root_dir`` and index the usable sims.
 
@@ -214,13 +215,35 @@ class CNASimsDataset(Dataset):
                 files and re-running :func:`top_frequent_rows_tensor`. The scan
                 below still runs, so the set of sims kept is decided by exactly
                 the same filters either way.
+            trial_subsample: Matrix-3 augmentation. ``None`` -- the default and
+                the published behaviour -- returns all ``num_trials_per_sim``
+                trials, in order. An int ``K`` returns a fresh random subset of
+                ``K`` trials on every ``__getitem__``, so every epoch sees a
+                different view of the same sim. ``K >= num_trials_per_sim`` is
+                recorded but inert: there is nothing to choose, so the item is
+                bit-identical to the ``None`` one and no random number is drawn.
+
+                **Give this to the training dataset only.** The validation and
+                test sets are the published evaluation condition -- 25 trials --
+                and the loader builder enforces that (``data/loaders.py``).
+
+                The draw comes from the ambient ``torch`` RNG
+                (:func:`torch.randperm`), not from a per-dataset or per-index
+                generator. That is what makes it *fresh each epoch* rather than
+                a fixed function of the index, and it stays reproducible under
+                ``num_workers > 0`` because torch derives each worker's seed,
+                every epoch, from the main process's generator -- the same
+                property ``_worker_kwargs`` dropped ``persistent_workers`` to
+                protect. Two runs with the same ``--seed`` therefore draw the
+                same subsets; two different seeds do not.
 
         Raises:
             RuntimeError: If no sims match, none survive the ``sim_ids`` filter,
                 or none survive the minimum-trials filter.
             ValueError: If ``cache_dir`` was built by a different version of
                 :func:`top_frequent_rows_tensor`, or with a different ``top_k``
-                or trial count than this dataset asks for.
+                or trial count than this dataset asks for; or if
+                ``trial_subsample`` is less than 1.
         """
         self.root_dir = root_dir
         self.num_trials = num_trials_per_sim
@@ -234,6 +257,25 @@ class CNASimsDataset(Dataset):
         self.trial_filename = trial_filename
         self.params_filename = params_filename
         self.drop_missing = drop_missing
+
+        if trial_subsample is not None and int(trial_subsample) < 1:
+            raise ValueError(
+                f"trial_subsample must be >= 1, got {trial_subsample!r}."
+            )
+        # Recorded as given, so a caller can read back what it asked for...
+        self.trial_subsample = (
+            int(trial_subsample) if trial_subsample is not None else None
+        )
+        # ...but K >= num_trials selects every trial, and "select every trial in
+        # order" is exactly the published path. Collapsing it here rather than
+        # in __getitem__ keeps that case bit-identical AND free of an RNG draw,
+        # which is what makes a K=25 run comparable with a K=None one.
+        self._subsample_k: Optional[int] = (
+            self.trial_subsample
+            if self.trial_subsample is not None
+            and self.trial_subsample < self.num_trials
+            else None
+        )
 
         all_sims = discover_sim_trials(root_dir, sim_regex)
         if not all_sims:
@@ -316,6 +358,11 @@ class CNASimsDataset(Dataset):
         print(
             f"[CNASimsDataset] sims={len(self.items)} top_k={self.top_k}"
             + (f" cache={self.cache_dir}" if self.cache_dir else "")
+            + (
+                f" trial_subsample={self._subsample_k}/{self.num_trials}"
+                if self._subsample_k is not None
+                else ""
+            )
         )
 
     def _attach_cache(self, cache_dir: str) -> None:
@@ -451,10 +498,11 @@ class CNASimsDataset(Dataset):
             A 3-tuple, and the arity is part of the contract -- every training
             and evaluation loop unpacks it as ``for X, _, theta in loader``:
 
-            * ``X_trials``: ``(num_trials, top_k, 45)`` float32. Slots for trials
-              that were not loaded stay NaN.
-            * ``trial_mask``: ``(num_trials,)`` bool, True where a trial was
-              loaded. See the trap comment below.
+            * ``X_trials``: ``(num_trials, top_k, 45)`` float32, or
+              ``(trial_subsample, top_k, 45)`` when subsampling is on. Slots for
+              trials that were not loaded stay NaN.
+            * ``trial_mask``: ``(num_trials,)`` bool (or ``(trial_subsample,)``),
+              True where a trial was loaded. See the trap comment below.
             * ``y``: ``(44,)`` float32 selection coefficients.
         """
         item = self.items[i]
@@ -462,8 +510,29 @@ class CNASimsDataset(Dataset):
         avail = item["available_trials"]
         y = item["y"]
 
+        # Drawn here, above the cache branch, so the cached and the uncached
+        # path consume the same one draw at the same point in the RNG stream and
+        # therefore return the SAME subset for the same seed. With subsampling
+        # off this is None and draws nothing at all.
+        selection = self._draw_trial_indices()
+
         if self.cache_dir is not None:
-            return self._getitem_cached(sim_dir)
+            return self._getitem_cached(sim_dir, selection)
+
+        if selection is not None:
+            x_trials = torch.full(
+                (len(selection), self.top_k, 45), float("nan"), dtype=torch.float32
+            )
+            trial_mask = torch.zeros((len(selection),), dtype=torch.bool)
+            for out_slot, slot in enumerate(selection):
+                # Only the chosen trials are read: with K=16 that is 16 gzipped
+                # files per item instead of 25, which is the one place this
+                # augmentation is also cheaper than the published path.
+                x_trials[out_slot] = self._load_and_process_trial(
+                    sim_dir, avail[slot]
+                )
+                trial_mask[out_slot] = 1.0
+            return x_trials, trial_mask, y
 
         # Preserved from Base_NPE/utils.py:198. Trap 8 (second sentinel): missing
         # TRIALS are padded with NaN, unlike missing clone rows, which are padded
@@ -486,13 +555,41 @@ class CNASimsDataset(Dataset):
         # must NOT start being used. See docs/REFACTOR_NOTES.md.
         return x_trials, trial_mask, y
 
+    def _draw_trial_indices(self) -> Optional[List[int]]:
+        """Pick which trial slots this item should carry, or ``None`` for all.
+
+        Returns:
+            ``None`` when subsampling is off -- the caller then takes the
+            published all-trials path and no random number is drawn. Otherwise a
+            sorted list of ``self._subsample_k`` distinct slot indices in
+            ``[0, num_trials)``.
+
+        Note:
+            The indices are drawn with :func:`torch.randperm` on the **ambient**
+            torch RNG, so the subset is fresh on every call (hence every epoch)
+            and is reproducible from ``--seed`` alone -- including under
+            ``num_workers > 0``, where torch re-derives each worker's seed from
+            the main generator once per epoch.
+
+            They are then **sorted**. Pooling over the trial dimension is a mean
+            (``models/trials.py``), so the order cannot matter to the model;
+            sorting makes a printed item readable and makes the cached and the
+            uncached path comparable slot by slot.
+        """
+        if self._subsample_k is None:
+            return None
+        picks = torch.randperm(self.num_trials)[: self._subsample_k]
+        return sorted(int(p) for p in picks)
+
     def _getitem_cached(
-        self, sim_dir: str
+        self, sim_dir: str, selection: Optional[List[int]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return one simulation out of the clone cache.
 
         Args:
             sim_dir: Path to the sim directory; only its basename is used.
+            selection: Trial slots to keep, from :meth:`_draw_trial_indices`, or
+                ``None`` for every trial (the published path).
 
         Returns:
             The same 3-tuple as :meth:`__getitem__`. ``trial_mask`` is all True:
@@ -529,8 +626,16 @@ class CNASimsDataset(Dataset):
         # and torch.from_numpy on it yields a non-writable tensor plus a
         # UserWarning on every item. One copy per item is the price of a writable
         # tensor -- the values are identical either way.
-        x_trials = torch.from_numpy(np.array(self._cache_x[row], copy=True))
-        trial_mask = torch.ones((self.num_trials,), dtype=torch.bool)
+        if selection is None:
+            x_trials = torch.from_numpy(np.array(self._cache_x[row], copy=True))
+            trial_mask = torch.ones((self.num_trials,), dtype=torch.bool)
+        else:
+            # Fancy-indexing the memmap reads only the chosen trial planes, and
+            # the result is already a fresh array -- hence no second copy.
+            x_trials = torch.from_numpy(
+                np.asarray(self._cache_x[row][selection], dtype=np.float32)
+            )
+            trial_mask = torch.ones((len(selection),), dtype=torch.bool)
         y = torch.from_numpy(np.array(self._cache_theta[row], copy=True))
         return x_trials, trial_mask, y
 

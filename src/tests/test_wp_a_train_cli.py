@@ -723,8 +723,10 @@ def test_two_key_split_falls_back_to_the_test_loader_and_says_so(
         (["--require-all-trials"], "clonemlp", "--require-all-trials"),
         (["--require-all-trials"], "cloneatt", "--require-all-trials"),
         # Matrix 2: the three attention-only switches and the three
-        # two-group-optimiser overrides.
-        (["--freq-mode", "feature"], "clonemlp", "--freq-mode"),
+        # two-group-optimiser overrides. --freq-mode has since stopped being
+        # one of them: matrix 3 gave clonemlp its own "feature" mode (a 45th
+        # log10 input column), so dominantclone is the only preset left that
+        # ignores it -- see test_freq_mode_no_longer_warns_for_clonemlp.
         (["--freq-mode", "feature"], "dominantclone", "--freq-mode"),
         (["--attn-ln"], "clonemlp", "--attn-ln"),
         (["--attn-ln"], "dominantclone", "--attn-ln"),
@@ -879,3 +881,142 @@ def test_without_deterministic_neither_happens(tmp_path, monkeypatch):
 
     assert "CUBLAS_WORKSPACE_CONFIG" not in os.environ
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# 7. Matrix 3: --flow-dropout, --flow-num-transforms, --trial-subsample, and
+#    --freq-mode for clonemlp.
+# ---------------------------------------------------------------------------
+
+
+def test_matrix_three_flags_absent_keeps_published_defaults():
+    """Omit all three and every preset keeps the run it produced before."""
+    for model in ("clonemlp", "cloneatt", "dominantclone"):
+        cfg = config_from_argv([], model=model)
+        # 0.2, from */main.py:35 -- the published value, not 0.
+        assert cfg.flow.dropout_probability == 0.2, model
+        assert cfg.flow.num_transforms == 5, model
+        assert cfg.flow.hidden_features == 50, model
+        assert cfg.data.trial_subsample is None, model
+        assert cfg.encoder.freq_mode == "weight", model
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "dominantclone"])
+def test_flow_dropout_reaches_every_preset(model):
+    cfg = config_from_argv(["--flow-dropout", "0.1"], model=model)
+    assert cfg.flow.dropout_probability == 0.1
+    # Nothing else in the flow block moves with it.
+    assert cfg.flow.num_transforms == 5
+    assert cfg.flow.hidden_features == 50
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "dominantclone"])
+def test_flow_num_transforms_reaches_every_preset(model):
+    cfg = config_from_argv(["--flow-num-transforms", "3"], model=model)
+    assert cfg.flow.num_transforms == 3
+    assert cfg.flow.dropout_probability == 0.2
+    # hidden_features has no flag on purpose: 50 is the published width.
+    assert cfg.flow.hidden_features == 50
+
+
+def test_flow_overrides_compose_with_z_score_x():
+    """All three land in one FlowConfig; none of them drops the others."""
+    cfg = config_from_argv(
+        ["--z-score-x", "structured", "--flow-dropout", "0.1",
+         "--flow-num-transforms", "3"]
+    )
+    assert cfg.flow.z_score_x == "structured"
+    assert cfg.flow.dropout_probability == 0.1
+    assert cfg.flow.num_transforms == 3
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt"])
+def test_trial_subsample_reaches_the_clone_set_presets(model):
+    cfg = config_from_argv(["--trial-subsample", "16"], model=model)
+    assert cfg.data.trial_subsample == 16
+
+
+def test_trial_subsample_is_warned_and_ignored_for_dominantclone(capsys):
+    """SimulationDataset NaN-pads instead of dropping; see cli/train.py."""
+    cfg = config_from_argv(["--trial-subsample", "16"], model="dominantclone")
+    assert cfg.data.trial_subsample is None
+    assert "--trial-subsample is not used by dominantclone" in capsys.readouterr().out
+
+
+def test_freq_mode_feature_now_reaches_clonemlp():
+    """Matrix 3 item 4: the flag stopped being cloneatt-only."""
+    cfg = config_from_argv(["--freq-mode", "feature"], model="clonemlp")
+    assert cfg.encoder.freq_mode == "feature"
+    # The raw-frequency column stays off: it is a different column, and the
+    # published default.
+    assert cfg.encoder.include_freq_in_mlp is False
+
+
+def test_freq_mode_no_longer_warns_for_clonemlp(capsys):
+    config_from_argv(["--freq-mode", "feature"], model="clonemlp")
+    assert "--freq-mode is not used" not in capsys.readouterr().out
+
+
+def test_freq_mode_still_warns_for_dominantclone(capsys):
+    cfg = config_from_argv(["--freq-mode", "feature"], model="dominantclone")
+    assert cfg.encoder.freq_mode == "weight"
+    assert "--freq-mode is not used by dominantclone" in capsys.readouterr().out
+
+
+def test_clonemlp_feature_mode_builds_a_45_input_mlp():
+    """The flag has to reach the layer, not only the dataclass."""
+    cfg = config_from_argv(["--freq-mode", "feature"], model="clonemlp")
+    encoder = build_embedding_net(cfg.encoder, device="cpu").trial_encoder
+    assert encoder.freq_mode == "feature"
+    assert encoder.mlp[0].in_features == 45
+    # And the published build is still 44 wide.
+    published = build_embedding_net(get_preset("clonemlp").encoder, "cpu").trial_encoder
+    assert published.mlp[0].in_features == 44
+
+
+def test_matrix_three_flags_ride_into_the_effective_config():
+    """Round trip: flags -> preset -> checkpoint dict -> preset again."""
+    from cancer_sbi.cli.train import effective_config_payload
+    from cancer_sbi.config import preset_from_effective_config
+
+    argv = [
+        "--input-space", "copy", "--freq-mode", "feature",
+        "--flow-dropout", "0.1", "--flow-num-transforms", "3",
+        "--trial-subsample", "16",
+    ]
+    args = build_parser().parse_args(["--model", "clonemlp"] + argv)
+    cfg = config_from_argv(argv, model="clonemlp")
+    payload = effective_config_payload(cfg, args, Path("/d"), Path("/s.pkl"))
+
+    assert payload["flow"]["dropout_probability"] == 0.1
+    assert payload["flow"]["num_transforms"] == 3
+    assert payload["encoder"]["freq_mode"] == "feature"
+    assert payload["data"]["trial_subsample"] == 16
+    assert payload["cli_flags"]["flow_dropout"] == 0.1
+    assert payload["cli_flags"]["flow_num_transforms"] == 3
+    assert payload["cli_flags"]["trial_subsample"] == 16
+
+    # What evaluation rebuilds: the flow's shape and the encoder's input width.
+    # `data` is deliberately not part of preset_from_effective_config, so the
+    # rebuilt test loader keeps all 25 trials -- which is the intent.
+    rebuilt = preset_from_effective_config(payload)
+    assert rebuilt.flow.dropout_probability == 0.1
+    assert rebuilt.flow.num_transforms == 3
+    assert rebuilt.encoder.freq_mode == "feature"
+    assert rebuilt.data.trial_subsample is None
+
+
+def test_a_checkpoint_without_the_matrix_three_keys_still_rebuilds():
+    """Every checkpoint on the cluster predates these fields."""
+    from cancer_sbi.config import preset_from_effective_config
+
+    rebuilt = preset_from_effective_config(
+        {
+            "model": "clonemlp",
+            "flow": {"z_score_x": "structured"},
+            "encoder": {"kind": "mlp"},
+        }
+    )
+    assert rebuilt.flow.dropout_probability == 0.2
+    assert rebuilt.flow.num_transforms == 5
+    assert rebuilt.encoder.freq_mode == "weight"

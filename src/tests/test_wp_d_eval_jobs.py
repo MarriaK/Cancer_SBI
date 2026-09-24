@@ -78,7 +78,7 @@ def test_sample_posteriors_help_runs_without_torch():
 # ------------------------------------------------------------------ job scripts
 def test_jobs_dir_has_the_expected_scripts():
     names = {p.name for p in SHELL_SCRIPTS}
-    assert {"train.sh", "train2.sh", "sample.sh", "analyze.sh", "shrink.sh",
+    assert {"train.sh", "train2.sh", "train3.sh", "sample.sh", "analyze.sh", "shrink.sh",
             "treetest.sh", "finaltest.sh", "verify.sh"} <= names
     assert (JOBS / "README.md").exists()
 
@@ -538,3 +538,208 @@ def test_verify_sh_points_at_the_moved_script_and_the_archive():
     assert "/src" in text
     assert "_archive_2026-09-23" in text
     assert "--legacy-root" in text
+
+
+# ------------------------------------------------------------------ train3.sh
+#
+# Matrix 3: fourteen runs, three new switches plus --freq-mode for clonemlp.
+# Same reasoning as train2.sh -- the dry run is the only place the per-run flag
+# sets can be checked without a GPU.
+
+
+def _train3_dry_run(env=None):
+    full = {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)}
+    full.update(env or {})
+    r = _run(JOBS / "train3.sh", full)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+def _train3_dry_run_lines():
+    return [
+        ln for ln in _train3_dry_run().stdout.splitlines() if ln.startswith("python ")
+    ]
+
+
+RUN3_NAMES = ("R3s1", "R3s2", "R6s1", "R6s2", "D0s1", "D0s2",
+              "R9", "R10", "R11", "R12", "R13", "R14", "R15", "R16")
+
+
+def test_train3_sh_header_matches_the_matrix():
+    text = (JOBS / "train3.sh").read_text()
+    for run in RUN3_NAMES:
+        assert run in text
+    assert "--array=0-13" in text
+    assert "--min-epochs 1" in text
+    assert "-C a100" in text
+    assert "general-gpu" in text
+    assert "--gres=gpu:1" in text
+    assert "-t 12:00:00" in text
+    # The two earlier matrices must not have been edited into this one.
+    assert "--array=0-4" in (JOBS / "train.sh").read_text()
+    assert "--array=0-6" in (JOBS / "train2.sh").read_text()
+
+
+def test_train3_sh_is_executable():
+    assert os.access(JOBS / "train3.sh", os.X_OK)
+
+
+def test_train3_sh_defaults_to_the_three_key_split():
+    text = (JOBS / "train3.sh").read_text()
+    assert "CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl" in text
+
+
+def test_train3_dry_run_reports_the_split_gate_as_ok():
+    assert "split gate: OK" in _train3_dry_run().stdout
+
+
+def test_train3_sh_hard_fails_on_a_split_without_val_ids(tmp_path):
+    r = _run(
+        JOBS / "train3.sh",
+        {
+            "CANCER": str(CODE_ROOT),
+            "CANCER_SBI_SPLIT": str(CODE_ROOT / "data" / "train_test_split.pkl"),
+            "RUNS_ROOT": str(tmp_path),
+            "SLURM_ARRAY_TASK_ID": "0",
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "val_ids" in r.stderr
+
+
+def test_train3_sh_refuses_a_non_empty_checkpoint_dir(tmp_path):
+    ckpt = tmp_path / "R11" / "checkpoints"
+    ckpt.mkdir(parents=True)
+    (ckpt / "best.pt").write_text("not really a checkpoint")
+    r = _run(JOBS / "train3.sh",
+             {"RUNS_ROOT": str(tmp_path), "SLURM_ARRAY_TASK_ID": "8"})
+    assert r.returncode != 0
+    assert "REFUSING" in r.stderr
+
+
+def test_train3_dry_run_prints_fourteen_commands():
+    assert len(_train3_dry_run_lines()) == 14
+
+
+def test_train3_dry_run_flags_per_run():
+    lines = _train3_dry_run_lines()
+    (r3s1, r3s2, r6s1, r6s2, d0s1, d0s2,
+     r9, r10, r11, r12, r13, r14, r15, r16) = lines
+
+    for cmd in lines:
+        assert "-m cancer_sbi.cli.train" in cmd
+        assert "--min-epochs 1" in cmd
+        assert "--stop-after-epochs 15" in cmd
+        assert "--max-epochs 60" in cmd
+        assert "--num-workers 8" in cmd
+        assert "--ckpt-dir" in cmd and "/runs/2026-09-24/" in cmd
+
+    base_r3 = ("--z-score-x structured", "--input-space copy",
+               "--flow-weight-decay 1e-3", "--embed-weight-decay 1e-4")
+    base_r6 = ("--z-score-x structured", "--input-space copy",
+               "--freq-mode feature", "--attn-ln")
+
+    # 0-1: R3 on two seeds, nothing else added.
+    for cmd, seed in ((r3s1, "1"), (r3s2, "2")):
+        assert "--model clonemlp" in cmd
+        for flag in base_r3:
+            assert flag in cmd, cmd
+        assert _seed_of(cmd) == seed
+        for flag in ("--flow-dropout", "--flow-num-transforms",
+                     "--trial-subsample", "--freq-mode"):
+            assert flag not in cmd, cmd
+
+    # 2-3: R6 on two seeds.
+    for cmd, seed in ((r6s1, "1"), (r6s2, "2")):
+        assert "--model cloneatt" in cmd
+        for flag in base_r6:
+            assert flag in cmd, cmd
+        assert _seed_of(cmd) == seed
+        for flag in ("--flow-dropout", "--flow-num-transforms",
+                     "--trial-subsample", "--flow-weight-decay"):
+            assert flag not in cmd, cmd
+
+    # 4-5: the DominantClone replicates. No --z-score-x (the preset is already
+    # structured) and no cache -- asserted separately below.
+    for cmd, seed in ((d0s1, "1"), (d0s2, "2")):
+        assert "--model dominantclone" in cmd
+        assert "--require-all-trials" in cmd
+        assert _seed_of(cmd) == seed
+        for flag in ("--z-score-x", "--input-space", "--freq-mode",
+                     "--attn-ln", "--trial-subsample"):
+            assert flag not in cmd, cmd
+
+    # 6-13: the matrix seed, one switch added to a base each time.
+    for cmd in (r9, r10, r11, r12, r13, r14, r15, r16):
+        assert _seed_of(cmd) == "20260924"
+
+    assert "--model cloneatt" in r9
+    for flag in base_r6 + ("--flow-weight-decay 1e-3", "--embed-weight-decay 1e-4"):
+        assert flag in r9, r9
+
+    # R10: BASE_R3 plus the log10-frequency feature, on clonemlp.
+    assert "--model clonemlp" in r10
+    for flag in base_r3 + ("--freq-mode feature",):
+        assert flag in r10, r10
+    assert "--attn-ln" not in r10
+
+    # R11/R12/R13: BASE_R6 plus exactly one new switch each.
+    for cmd, added in ((r11, "--flow-dropout 0.3"),
+                       (r12, "--flow-num-transforms 3"),
+                       (r13, "--trial-subsample 16")):
+        assert "--model cloneatt" in cmd
+        for flag in base_r6:
+            assert flag in cmd, cmd
+        assert added in cmd, cmd
+    assert "--flow-num-transforms" not in r11 and "--trial-subsample" not in r11
+    assert "--flow-dropout" not in r12 and "--trial-subsample" not in r12
+    assert "--flow-dropout" not in r13 and "--flow-num-transforms" not in r13
+
+    # R14/R15/R16: the same three on BASE_R3 / clonemlp.
+    for cmd, added in ((r14, "--flow-dropout 0.3"),
+                       (r15, "--trial-subsample 16"),
+                       (r16, "--flow-num-transforms 3")):
+        assert "--model clonemlp" in cmd
+        for flag in base_r3:
+            assert flag in cmd, cmd
+        assert added in cmd, cmd
+        assert "--freq-mode" not in cmd, cmd
+    assert "--flow-num-transforms" not in r14 and "--trial-subsample" not in r14
+    assert "--flow-dropout" not in r15 and "--flow-num-transforms" not in r15
+    assert "--flow-dropout" not in r16 and "--trial-subsample" not in r16
+
+    # The two runs that carry the augmentation, and only those two.
+    assert sum("--trial-subsample 16" in c for c in lines) == 2
+    assert [c for c in lines if "--trial-subsample 16" in c] == [r13, r15]
+
+    # Each run gets its own checkpoint directory.
+    dirs = []
+    for name, cmd in zip(RUN3_NAMES, lines):
+        parts = cmd.split()
+        d = parts[parts.index("--ckpt-dir") + 1]
+        assert d.endswith(f"/{name}/checkpoints")
+        dirs.append(d)
+    assert len(set(dirs)) == 14
+
+
+def test_train3_never_gives_the_clone_cache_to_dominantclone():
+    """The cache holds (25, top_k, 45) clone sets; DominantClone reads none."""
+    cmds = [
+        ln
+        for ln in _train3_dry_run({"CACHE_DIR": "/some/cache"}).stdout.splitlines()
+        if ln.startswith("python ")
+    ]
+    assert len(cmds) == 14
+    assert sum("--cache-dir /some/cache" in c for c in cmds) == 12
+    for cmd in (cmds[4], cmds[5]):
+        assert "--cache-dir" not in cmd, cmd
+
+
+def test_jobs_readme_documents_matrix_three():
+    text = (JOBS / "README.md").read_text()
+    assert "train3.sh" in text
+    assert "Matrix 3" in text
+    for run in RUN3_NAMES:
+        assert run in text
+    for flag in ("--flow-dropout", "--flow-num-transforms", "--trial-subsample"):
+        assert flag in text

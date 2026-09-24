@@ -689,3 +689,167 @@ def test_dominant_builder_restricted_set_is_the_clone_set_models_set():
     assert set(test.dataset.sim_dirs) == {
         os.path.basename(item["sim_dir"]) for item in clone_set.items
     }
+
+
+# --------------------------------------------------------------------------
+# 7. Trial subsampling (matrix 3): training only, fresh each epoch, seeded
+# --------------------------------------------------------------------------
+
+
+@needs_data
+def test_trial_subsample_shapes_the_item(small_ids):
+    """K trials instead of 25, with a mask of matching length."""
+    train, _, _ = small_ids
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train, trial_subsample=4)
+    x, mask, y = ds[0]
+    assert x.shape == (4, 100, 45)
+    assert mask.shape == (4,)
+    assert bool(mask.all())
+    assert y.shape == (44,)
+    # A chosen trial is a real one, so nothing in the item is NaN-padded.
+    assert not bool(torch.isnan(x).any())
+
+
+@needs_data
+def test_trial_subsample_of_all_25_is_the_published_item(small_ids):
+    """K >= num_trials has nothing to choose, so it must not change a thing."""
+    train, _, _ = small_ids
+    plain = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train)
+    full = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train, trial_subsample=25)
+    # Recorded as asked for, but inert -- the flag is not silently dropped.
+    assert full.trial_subsample == 25
+    assert full._subsample_k is None
+    for i in range(len(plain)):
+        xa, ma, ya = plain[i]
+        xb, mb, yb = full[i]
+        assert torch.equal(xa, xb) and torch.equal(ma, mb) and torch.equal(ya, yb)
+
+
+@needs_data
+def test_trial_subsample_of_25_leaves_the_encoder_output_bitwise_equal(small_ids):
+    """The end the identity is for: the same context vector, bit for bit."""
+    from cancer_sbi.config import get_preset
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    train, _, _ = small_ids
+    plain = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train)
+    full = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train, trial_subsample=25)
+
+    torch.manual_seed(1234)
+    net = build_embedding_net(get_preset("clonemlp").encoder, "cpu")
+    net.eval()
+    with torch.no_grad():
+        out_plain = net(plain[0][0].unsqueeze(0))
+        out_full = net(full[0][0].unsqueeze(0))
+    assert torch.equal(out_plain, out_full)
+
+
+@needs_data
+def test_trial_subsample_pooling_accepts_any_k(small_ids):
+    """models/trials.py means over the T dimension, so K=4 is as good as 25."""
+    from cancer_sbi.config import get_preset
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    train, _, _ = small_ids
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train, trial_subsample=4)
+
+    torch.manual_seed(1234)
+    net = build_embedding_net(get_preset("clonemlp").encoder, "cpu")
+    net.eval()
+    torch.manual_seed(0)
+    with torch.no_grad():
+        out = net(ds[0][0].unsqueeze(0))
+    assert out.shape == (1, get_preset("clonemlp").encoder.trials_output_dim)
+    assert bool(torch.isfinite(out).all())
+
+
+@needs_data
+def test_trial_subsample_is_reproducible_from_the_global_seed(small_ids):
+    """Two seeded runs draw the same subsets; a different seed does not."""
+    train, _, _ = small_ids
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train, trial_subsample=6)
+
+    def draw(seed):
+        torch.manual_seed(seed)
+        return [ds._draw_trial_indices() for _ in range(6)]
+
+    assert draw(20260924) == draw(20260924)
+    assert draw(1) != draw(2)
+    # A fresh draw per call, i.e. per epoch -- not a fixed function of the item.
+    torch.manual_seed(7)
+    repeated = [ds._draw_trial_indices() for _ in range(6)]
+    assert len({tuple(d) for d in repeated}) > 1
+
+
+@needs_data
+def test_trial_subsample_indices_are_distinct_and_in_range(small_ids):
+    train, _, _ = small_ids
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=train, trial_subsample=6)
+    torch.manual_seed(3)
+    for _ in range(20):
+        picks = ds._draw_trial_indices()
+        assert len(picks) == len(set(picks)) == 6
+        assert picks == sorted(picks)
+        assert all(0 <= p < 25 for p in picks)
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_trial_subsample_rejects_a_non_positive_k(bad):
+    with pytest.raises(ValueError, match="trial_subsample"):
+        CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=["sim1"], trial_subsample=bad)
+
+
+@needs_data
+@needs_cache
+def test_trial_subsample_agrees_between_the_cached_and_uncached_paths(tiny_cache):
+    """Same seed, same subset, same tensors -- whichever path served them."""
+    cache_dir, cached, _ = tiny_cache
+    sims = cached[:3]
+
+    plain = CNASimsDataset(
+        str(DATA_ROOT), top_k=100, sim_ids=sims, trial_subsample=5
+    )
+    fast = CNASimsDataset(
+        str(DATA_ROOT),
+        top_k=100,
+        sim_ids=sims,
+        cache_dir=str(cache_dir),
+        trial_subsample=5,
+    )
+    for i in range(len(plain)):
+        torch.manual_seed(20260924)
+        xa, ma, ya = plain[i]
+        torch.manual_seed(20260924)
+        xb, mb, yb = fast[i]
+        assert xa.shape == xb.shape == (5, 100, 45)
+        assert torch.equal(xa, xb), i
+        assert torch.equal(ma, mb) and torch.equal(ya, yb)
+
+
+@needs_data
+def test_clone_set_builder_subsamples_training_only(small_ids):
+    """Validation and test are the published condition: all 25 trials."""
+    train, val, test = small_ids
+    train_loader, val_loader, test_loader = build_clone_set_dataloaders(
+        str(DATA_ROOT), train, test, val_ids=val, batch_size=2, trial_subsample=16
+    )
+    assert train_loader.dataset.trial_subsample == 16
+    assert val_loader.dataset.trial_subsample is None
+    assert test_loader.dataset.trial_subsample is None
+
+    torch.manual_seed(0)
+    assert next(iter(train_loader))[0].shape[1] == 16
+    assert next(iter(val_loader))[0].shape[1] == 25
+    assert next(iter(test_loader))[0].shape[1] == 25
+
+
+@needs_data
+def test_clone_set_builder_defaults_to_no_subsampling(small_ids):
+    """The published default: every loader serves all 25 trials."""
+    train, val, test = small_ids
+    loaders = build_clone_set_dataloaders(
+        str(DATA_ROOT), train, test, val_ids=val, batch_size=2
+    )
+    for loader in loaders:
+        assert loader.dataset.trial_subsample is None
+        assert next(iter(loader))[0].shape[1] == 25

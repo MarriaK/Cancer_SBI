@@ -39,6 +39,16 @@ the run it produced before:
     CloneAtt only. Renormalise the per-clone frequency weights instead of
     multiplying tokens by a raw ~0.003 frequency (run R4). ``ln`` stays off.
     Default: off, the published behaviour.
+``--flow-dropout P``
+    All three models. ``FlowConfig.dropout_probability``; the published value
+    is 0.2, not 0. Runs R11 and R14. Default: the preset's.
+``--flow-num-transforms N``
+    All three models. ``FlowConfig.num_transforms``; published 5.
+    ``hidden_features`` stays 50. Runs R12 and R16. Default: the preset's.
+``--trial-subsample K``
+    Clone-set models only. The TRAINING dataset draws K of the 25 trials per
+    sim, fresh every epoch; validation and test keep all 25. Runs R13 and R15.
+    Default: unset, i.e. all 25 everywhere.
 ``--freq-mode {weight,feature}``
     CloneAtt only. ``feature`` drops the frequency multiply altogether and
     feeds ``log10(freq)`` to the input projection as a 45th column (runs
@@ -272,11 +282,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["weight", "feature"],
         default=None,
         help=(
-            "CloneAtt only: what the clone frequency is for. 'weight' is the "
-            "published token multiply; 'feature' drops it and feeds "
-            "log10(freq) to the input projection as a 45th column instead "
-            "(runs R5-R8). Cannot be combined with --freq-renorm, which then "
-            "has nothing to renormalise. Default: weight."
+            "Both clone-set models: what the clone frequency is for. 'weight' "
+            "is the published behaviour; 'feature' feeds log10(freq) to the "
+            "per-clone projection as a 45th column. For cloneatt that also "
+            "drops the token multiply (runs R5-R8); for clonemlp there is no "
+            "multiply to drop -- the frequency-weighted mean pooling stays "
+            "(run R10). Cannot be combined with --freq-renorm, which then has "
+            "nothing to renormalise. Default: weight. Ignored by "
+            "dominantclone."
         ),
     )
     repairs.add_argument(
@@ -340,6 +353,40 @@ def build_parser() -> argparse.ArgumentParser:
             "set. Default: off, the published behaviour (missing trials are "
             "NaN-padded and the sim is kept). Ignored by the other two models, "
             "which already apply this rule."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-dropout",
+        type=float,
+        default=None,
+        help=(
+            "Dropout probability inside the flow's residual blocks, all three "
+            "models (published: 0.2, from */main.py:35 -- not 0). Matrix 3 "
+            "runs R11 and R14 raise it against the epoch-10-to-25 overfit. "
+            "Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-num-transforms",
+        type=int,
+        default=None,
+        help=(
+            "Number of spline transforms in the flow, all three models "
+            "(published: 5, sbi's default). Lowering it is the direct way to "
+            "shrink a 421k-parameter flow fitted on 2,261 sims (runs R12, "
+            "R16). hidden_features stays 50. Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--trial-subsample",
+        type=int,
+        default=None,
+        help=(
+            "Clone-set models only: draw this many of the 25 trials at random "
+            "on every training item, fresh each epoch (runs R13, R15). "
+            "Validation and test always keep all 25, which is the published "
+            "evaluation condition. Default: unset, i.e. all 25 everywhere. "
+            "Ignored by dominantclone."
         ),
     )
     repairs.add_argument(
@@ -429,6 +476,16 @@ def build_config(
             bool(args.require_all_trials) and preset.data.dataset == "dominant_clone"
         )
         or preset.data.require_all_trials,
+        # Matrix 3. Only the clone-set datasets implement it, so recording it on
+        # a dominant-clone preset would put a value in the checkpoint that
+        # nothing applied -- the same rule as require_all_trials above, pointing
+        # the other way. The warning below says so.
+        trial_subsample=(
+            args.trial_subsample
+            if getattr(args, "trial_subsample", None) is not None
+            and preset.data.dataset == "clone_sets"
+            else preset.data.trial_subsample
+        ),
     )
     train_cfg = replace(
         preset.train,
@@ -450,11 +507,16 @@ def build_config(
     # one value the R0-vs-R1 comparison turns on -- could previously only be
     # changed by editing config.py. Replaced only when the flag is given, so
     # the preset's value is still the default.
-    flow_cfg = (
-        replace(preset.flow, z_score_x=args.z_score_x)
-        if args.z_score_x is not None
-        else preset.flow
-    )
+    # Matrix 3 adds two more flow overrides beside it; each one is applied only
+    # when its flag is given, so an untouched command line still yields the
+    # preset's own FlowConfig object.
+    flow_cfg = preset.flow
+    if args.z_score_x is not None:
+        flow_cfg = replace(flow_cfg, z_score_x=args.z_score_x)
+    if getattr(args, "flow_dropout", None) is not None:
+        flow_cfg = replace(flow_cfg, dropout_probability=args.flow_dropout)
+    if getattr(args, "flow_num_transforms", None) is not None:
+        flow_cfg = replace(flow_cfg, num_transforms=args.flow_num_transforms)
     # --freq-renorm scales the weights of a multiply that --freq-mode feature
     # removes, so the pair describes no network at all. Refused rather than
     # resolved: silently dropping either half is how a run gets launched
@@ -480,7 +542,13 @@ def build_config(
     # a network nothing built -- the same reason --require-all-trials is gated
     # on the dataset above.
     is_attention = preset.encoder.kind == "attention"
-    if getattr(args, "freq_mode", None) is not None and is_attention:
+    # Matrix 3 widened --freq-mode to clonemlp, so the gate is "either clone-set
+    # encoder", not "attention". Only DeepSet, which has no per-clone frequency
+    # at all, still ignores it.
+    if (
+        getattr(args, "freq_mode", None) is not None
+        and preset.encoder.kind in ("mlp", "attention")
+    ):
         encoder_cfg = replace(encoder_cfg, freq_mode=args.freq_mode)
     if getattr(args, "attn_ln", False) and is_attention:
         encoder_cfg = replace(encoder_cfg, attn_ln=True)
@@ -512,7 +580,10 @@ def build_config(
         print(f"[warn] --input-space is not used by {preset.name}; ignoring it.")
     if args.freq_renorm and preset.encoder.kind != "attention":
         print(f"[warn] --freq-renorm is not used by {preset.name}; ignoring it.")
-    if getattr(args, "freq_mode", None) is not None and preset.encoder.kind != "attention":
+    if (
+        getattr(args, "freq_mode", None) is not None
+        and preset.encoder.kind not in ("mlp", "attention")
+    ):
         print(f"[warn] --freq-mode is not used by {preset.name}; ignoring it.")
     if getattr(args, "attn_ln", False) and preset.encoder.kind != "attention":
         print(f"[warn] --attn-ln is not used by {preset.name}; ignoring it.")
@@ -532,6 +603,18 @@ def build_config(
 
     if args.require_all_trials and preset.data.dataset != "dominant_clone":
         print(f"[warn] --require-all-trials is not used by {preset.name}; ignoring it.")
+
+    # Matrix 3: subsampling is implemented in CNASimsDataset only. It would be
+    # three lines in SimulationDataset too, but that class NaN-pads missing
+    # trials and drops a sim only when EVERY trial is missing -- a random 16 of
+    # 25 rows could be all-NaN for a sim the published path keeps, so the
+    # augmentation would silently change which sims train the model. Not worth
+    # it for a matrix with no dominantclone subsample run; warn and ignore.
+    if (
+        getattr(args, "trial_subsample", None) is not None
+        and preset.data.dataset != "clone_sets"
+    ):
+        print(f"[warn] --trial-subsample is not used by {preset.name}; ignoring it.")
 
     if args.top_k is not None and preset.data.top_k is None:
         print(f"[warn] --top-k is not used by {preset.name}; ignoring it.")
@@ -584,6 +667,13 @@ def effective_config_payload(
         "embed_lr": getattr(args, "embed_lr", None),
         "embed_weight_decay": getattr(args, "embed_weight_decay", None),
         "flow_weight_decay": getattr(args, "flow_weight_decay", None),
+        # Matrix 3. flow_dropout and flow_num_transforms also land in the
+        # snapshotted `flow` block, and trial_subsample in `data`; these are the
+        # flags as typed, which is what says whether a value was asked for or
+        # inherited from the preset.
+        "flow_dropout": getattr(args, "flow_dropout", None),
+        "flow_num_transforms": getattr(args, "flow_num_transforms", None),
+        "trial_subsample": getattr(args, "trial_subsample", None),
         "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,
@@ -670,6 +760,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             pin_memory=cfg.data.pin_memory,
             num_workers=cfg.data.num_workers,
             cache_dir=cfg.data.cache_dir,
+            # Training only -- the builder gives it to the train dataset alone.
+            trial_subsample=cfg.data.trial_subsample,
         )
     else:
         train_loader, val_loader, test_loader = build_dominant_clone_dataloaders(

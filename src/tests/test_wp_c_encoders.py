@@ -648,3 +648,139 @@ def test_the_r5_stack_runs_end_to_end(real_batch):
     # The LayerNorms have something to work with: R4's complaint was that the
     # pooled embedding sat at ~1e-3 of the scale the flow expects.
     assert out.abs().mean().item() > 1e-2
+
+
+# --------------------------------------------------------------------------- #
+# Matrix 3: the CloneMLP log-frequency feature, and the two flow-size switches
+# --------------------------------------------------------------------------- #
+
+
+def test_mlp_freq_mode_default_is_weight():
+    """The published encoder, and therefore every run that names no flag."""
+    enc = BaselineCloneEmbedding()
+    assert enc.freq_mode == "weight"
+    assert enc.mlp[0].in_features == 44
+
+
+def test_mlp_feature_mode_widens_the_first_layer_to_45():
+    enc = BaselineCloneEmbedding(freq_mode="feature")
+    assert enc.mlp[0].in_features == 45
+
+
+def test_mlp_feature_mode_rejects_include_freq_in_mlp():
+    """Both append a frequency column; together they would make it 46 wide."""
+    with pytest.raises(ValueError, match="include_freq_in_mlp"):
+        BaselineCloneEmbedding(freq_mode="feature", include_freq_in_mlp=True)
+
+
+def test_mlp_rejects_an_unknown_freq_mode():
+    with pytest.raises(ValueError, match="freq_mode"):
+        BaselineCloneEmbedding(freq_mode="renorm")
+
+
+def test_mlp_feature_mode_changes_the_output(real_batch):
+    """R10 is a different network, not a differently-spelled default."""
+    default = _seeded(BaselineCloneEmbedding)
+    feature = _seeded(lambda: BaselineCloneEmbedding(freq_mode="feature"))
+    with torch.no_grad():
+        out_default = default(real_batch)
+        out_feature = feature(real_batch)
+    assert out_default.shape == out_feature.shape
+    assert not torch.allclose(out_default, out_feature)
+
+
+def test_mlp_feature_column_is_log10_not_the_raw_frequency(real_batch):
+    """Scale every frequency by 10 and the 45th input column shifts by +1.
+
+    That is the signature of ``log10``: a multiplicative change in the data is
+    an additive shift in the column. The raw column ``include_freq_in_mlp``
+    appends would have been multiplied by 10 instead.
+    """
+    captured = []
+
+    class _Spy(torch.nn.Module):
+        def forward(self, x):
+            captured.append(x.detach().clone())
+            return x
+
+    enc = _seeded(lambda: BaselineCloneEmbedding(freq_mode="feature"))
+    # Intercept the MLP's input without changing anything the encoder computes
+    # before it.
+    enc.mlp = torch.nn.Sequential(_Spy(), *list(enc.mlp))
+
+    scaled = real_batch.clone()
+    scaled[..., 44] = scaled[..., 44] * 10.0
+
+    with torch.no_grad():
+        enc(real_batch)
+        enc(scaled)
+
+    base, shifted = captured
+    assert base.shape[-1] == 45
+    # Rows at the 1e-6 clamp floor cannot shift, and zero-padded clone rows
+    # (trap 8) are all at it, so the comparison is on the real clones.
+    live = base[..., 44] > math.log10(1e-6) + 1.0
+    assert live.any(), "no clone frequency above the clamp floor in this batch"
+    assert torch.allclose(
+        shifted[..., 44][live], base[..., 44][live] + 1.0, atol=1e-5
+    )
+    # The 44 CNA columns are untouched by the frequency scaling.
+    assert torch.equal(base[..., :44], shifted[..., :44])
+
+
+def test_mlp_feature_mode_keeps_the_frequency_weighted_pooling():
+    """Matrix 3 changes the MLP's input, not the pooling step."""
+    enc = BaselineCloneEmbedding(freq_mode="feature")
+    assert enc.freq_as_weight is True
+
+
+def _flow_with(**overrides):
+    """A flow built on the clonemlp preset, with an identity embedding net."""
+    from dataclasses import replace
+
+    from cancer_sbi.config import get_preset
+    from cancer_sbi.models.flow import build_flow
+
+    cfg = replace(get_preset("clonemlp").flow, **overrides)
+    torch.manual_seed(1234)
+    return build_flow(
+        torch.randn(8, 44), torch.randn(8, 256), torch.nn.Identity(), cfg
+    )
+
+
+def test_flow_dropout_reaches_every_residual_block():
+    """--flow-dropout is a real override, and 0.2 is the published value."""
+    from cancer_sbi.config import get_preset
+
+    assert get_preset("clonemlp").flow.dropout_probability == 0.2
+
+    published = [
+        m
+        for m in _flow_with().net.modules()
+        if isinstance(m, torch.nn.Dropout)
+    ]
+    lowered = [
+        m
+        for m in _flow_with(dropout_probability=0.1).net.modules()
+        if isinstance(m, torch.nn.Dropout)
+    ]
+    assert published and len(published) == len(lowered)
+    assert {m.p for m in published} == {0.2}
+    assert {m.p for m in lowered} == {0.1}
+
+
+def test_fewer_transforms_is_a_smaller_flow():
+    """R12/R16: 3 transforms instead of 5, with hidden_features still 50."""
+    from cancer_sbi.config import get_preset
+
+    assert get_preset("clonemlp").flow.num_transforms == 5
+    assert get_preset("clonemlp").flow.hidden_features == 50
+
+    five = sum(p.numel() for p in _flow_with().net.parameters())
+    three = sum(
+        p.numel() for p in _flow_with(num_transforms=3).net.parameters()
+    )
+    # Counts stated so a future sbi upgrade that silently changes the
+    # architecture fails here rather than in a 12-hour array task.
+    assert (five, three) == (421840, 253104), (five, three)
+    assert three < five

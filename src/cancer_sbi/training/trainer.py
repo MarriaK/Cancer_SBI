@@ -371,6 +371,14 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             # behaviour and the default, so this argument changes nothing
             # unless --input-space copy is passed.
             input_space=cfg.input_space,
+            # Matrix 3 / run R10. "weight" is the published behaviour for this
+            # encoder too, so this argument changes nothing unless
+            # --freq-mode feature is passed. Forwarded here, not only at
+            # training time: evaluation rebuilds the encoder from the
+            # checkpoint's effective config through this same function, and a
+            # missing argument would rebuild a 44-input MLP for a 45-input
+            # state_dict.
+            freq_mode=cfg.freq_mode,
         ).to(device)
     elif cfg.kind == "attention":
         # SetTransformer_NPE/inference_model.py:63-71. Trap 4: `dropout` is

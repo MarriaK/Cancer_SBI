@@ -97,6 +97,7 @@ def build_clone_set_dataloaders(
     val_ids: Optional[Sequence[str]] = None,
     num_workers: int = 0,
     cache_dir: Optional[str] = None,
+    trial_subsample: Optional[int] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
     """Build the train, validation and test loaders for CloneMLP/CloneAtt-NPE.
 
@@ -118,6 +119,13 @@ def build_clone_set_dataloaders(
         cache_dir: Optional pre-built clone cache (see
             ``src/utilities/build_clone_cache.py``). When given, every dataset
             reads its tensors from the cache instead of the gzipped trial files.
+            Keyword-only.
+        trial_subsample: Matrix-3 augmentation, ``None`` (the published
+            behaviour) or the number of trials to draw per item. **It is given
+            to the training dataset only.** Validation and test keep all 25
+            trials, because that is the condition every reported number is
+            measured under and because early stopping on a randomly-thinned
+            validation set would compare each epoch against a different target.
             Keyword-only.
 
     Returns:
@@ -148,7 +156,12 @@ def build_clone_set_dataloaders(
     # are given, so every other dataset option keeps its class default --
     # in particular num_trials_per_sim=25, which drives the trap-10 filtering.
     train_dataset = CNASimsDataset(
-        root_dir, top_k=top_k, sim_ids=train_ids, cache_dir=cache_dir
+        root_dir,
+        top_k=top_k,
+        sim_ids=train_ids,
+        cache_dir=cache_dir,
+        # The ONLY dataset that gets it -- see the argument's docstring.
+        trial_subsample=trial_subsample,
     )
     test_dataset = CNASimsDataset(
         root_dir, top_k=top_k, sim_ids=test_ids, cache_dir=cache_dir
