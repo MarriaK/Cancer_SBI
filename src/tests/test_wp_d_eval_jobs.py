@@ -1075,3 +1075,15 @@ def test_jobs_readme_documents_matrix_five():
     for flag in ("--trial-pool attention", "--attn-scale standard",
                  "--arm-layers 0", "--embed-lr 1e-3", "--seed 1"):
         assert flag in text
+
+
+def test_metric_scripts_know_every_preset_model():
+    """A posteriors_<model>_<tag>.npz for a model missing from MODEL_ORDER is
+    silently skipped and the run is never measured (this happened to ArmToken
+    on 2026-09-24). Every preset name must be in both scripts' tables."""
+    from cancer_sbi.config import PRESETS
+    from cancer_sbi.evaluation import fig_shrinkage, poster_metrics
+    for mod in (poster_metrics, fig_shrinkage):
+        for name in PRESETS:
+            assert name in mod.MODEL_ORDER, (mod.__name__, name)
+            assert name in mod.LABEL and name in mod.COLOUR, (mod.__name__, name)
