@@ -517,3 +517,208 @@ def test_cloneatt_forward_is_byte_identical_to_head(tmp_path):
     x = _synthetic_batch(batch=2, trials=1, clones=9).reshape(2, 9, 45)
     with torch.no_grad():
         assert torch.equal(new_enc(x), old_enc(x))
+
+
+# --------------------------------------------------------------------------- #
+# 6. Matrix 8: the two normalisation switches.
+#
+# ArmToken fed its eight moments -- four different scales -- into `arm_mlp`
+# raw, and handed the flow a 416-wide context with `z_score_y="none"`. Both
+# were declared accepted risks in matrix 5 and never tested. The two switches
+# below test them, and every test here is in one of two families: the DEFAULT
+# must be byte for byte what AT0 measured, and each switch must preserve the
+# equivariance the whole encoder exists for while actually changing the output.
+# --------------------------------------------------------------------------- #
+
+
+#: ``(id, kwargs)`` for the three networks matrix 8 builds.
+NORM_VARIANTS = [
+    ("layernorm", {"arm_feature_norm": "layernorm"}),
+    ("batchnorm", {"arm_feature_norm": "batchnorm"}),
+    ("context", {"arm_context_norm": True}),
+]
+
+
+def _warmed(**kwargs):
+    """A seeded variant in eval mode, with BatchNorm's running stats populated.
+
+    A freshly constructed ``BatchNorm1d`` has ``running_mean == 0`` and
+    ``running_var == 1``, so in eval mode it is the identity up to ``eps`` and
+    would look indistinguishable from the default network. One training-mode
+    pass gives it the statistics a trained checkpoint would carry, which is the
+    state every eval-time assertion below is actually about.
+    """
+    enc = _seeded(lambda: ArmTokenEmbedding(**kwargs))
+    enc.train()
+    with torch.no_grad():
+        enc(_synthetic_batch(seed=99))
+    enc.eval()
+    return enc
+
+
+def test_default_armtoken_builds_neither_module():
+    """The default must add nothing to the graph -- not one parameter."""
+    enc = ArmTokenEmbedding()
+    assert enc.arm_feature_norm == "none"
+    assert enc.arm_context_norm is False
+    assert enc.arm_norm is None
+    assert enc.context_norm is None
+    assert build_embedding_net(ARMTOKEN.encoder, "cpu").arm_norm is None
+    assert build_embedding_net(ARMTOKEN.encoder, "cpu").context_norm is None
+
+
+def test_default_state_dict_keys_are_identical_to_head(tmp_path):
+    """Every ArmToken checkpoint on the cluster must still load into this."""
+    old = _load_pre_edit_module(
+        "src/cancer_sbi/models/arm_tokens.py",
+        "_wpe_old_arm_tokens",
+        tmp_path,
+    )
+    for kwargs in ({}, {"trial_pool": "attention"}, {"n_arm_layers": 0}):
+        new_keys = set(ArmTokenEmbedding(**kwargs).state_dict())
+        old_keys = set(old.ArmTokenEmbedding(**kwargs).state_dict())
+        assert new_keys == old_keys, (kwargs, new_keys ^ old_keys)
+
+
+def test_default_forward_is_bitwise_identical_to_head(tmp_path, real_batch_4d):
+    """Same weights, same real batch, same numbers -- AT0 is not perturbed."""
+    old = _load_pre_edit_module(
+        "src/cancer_sbi/models/arm_tokens.py",
+        "_wpe_old_arm_tokens_fwd",
+        tmp_path,
+    )
+    new_enc = _seeded(lambda: ArmTokenEmbedding(input_space="copy"))
+    old_enc = _seeded(lambda: old.ArmTokenEmbedding(input_space="copy"))
+    with torch.no_grad():
+        assert torch.equal(new_enc(real_batch_4d), old_enc(real_batch_4d))
+
+
+@pytest.mark.parametrize(
+    "kwargs", [v[1] for v in NORM_VARIANTS], ids=[v[0] for v in NORM_VARIANTS]
+)
+def test_a_norm_variant_is_finite_and_the_right_shape(kwargs, real_batch_4d):
+    enc = _warmed(**kwargs)
+    with torch.no_grad():
+        out = enc(real_batch_4d)
+    assert out.shape == (real_batch_4d.shape[0], EXPECTED_D_MODEL)
+    assert torch.isfinite(out).all()
+
+
+@pytest.mark.parametrize(
+    "kwargs", [v[1] for v in NORM_VARIANTS], ids=[v[0] for v in NORM_VARIANTS]
+)
+def test_a_norm_variant_changes_the_output(kwargs, real_batch_4d):
+    """A switch that changed nothing would make the whole matrix unreadable."""
+    default = _warmed()
+    variant = _warmed(**kwargs)
+    with torch.no_grad():
+        assert not torch.allclose(
+            variant(real_batch_4d), default(real_batch_4d), atol=1e-4
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs", [v[1] for v in NORM_VARIANTS], ids=[v[0] for v in NORM_VARIANTS]
+)
+def test_a_norm_variant_is_still_arm_equivariant(kwargs):
+    """The property the encoder exists for, asserted for each new module.
+
+    LayerNorm over an arm token's own features never looks at another arm.
+    BatchNorm's statistics are taken over the whole ``(B * 44, P)`` view, which
+    a permutation of the arms reorders without changing, so they are identical
+    in either order. The context LayerNorm is over all 416 entries at once, and
+    a permutation of the 44 blocks is a permutation of those entries.
+    """
+    enc = _warmed(**kwargs)
+    x = _synthetic_batch()
+    perm = torch.randperm(44, generator=torch.Generator().manual_seed(7))
+
+    with torch.no_grad():
+        out = enc(x)
+        out_p = enc(_permute_arms(x, perm))
+
+    arms, glob = _blocks(out)
+    arms_p, glob_p = _blocks(out_p)
+    assert torch.allclose(arms_p, arms[:, perm], atol=1e-5)
+    assert torch.allclose(glob_p, glob, atol=1e-5)
+    # Not vacuous: the blocks must not all be the same vector.
+    assert not torch.allclose(arms[:, 0], arms[:, 1], atol=1e-5)
+
+
+def test_batchnorm_pools_its_statistics_over_arms_and_batch():
+    """One running mean per moment feature, shared by all 44 arms."""
+    enc = ArmTokenEmbedding(arm_feature_norm="batchnorm")
+    assert isinstance(enc.arm_norm, torch.nn.BatchNorm1d)
+    # P == 2 * N_MOMENTS on the mean trial-pool path.
+    assert enc.arm_norm.num_features == 16
+    assert enc.arm_norm.running_mean.shape == (16,)
+    # ...and d_token on the attention path, where the MLP's input is the
+    # pooled token rather than [mean, sd] of the moments.
+    attn = ArmTokenEmbedding(arm_feature_norm="batchnorm", trial_pool="attention")
+    assert attn.arm_norm.num_features == attn.d_token == 64
+
+
+def test_layernorm_is_over_the_features_of_one_arm_token():
+    enc = ArmTokenEmbedding(arm_feature_norm="layernorm")
+    assert isinstance(enc.arm_norm, torch.nn.LayerNorm)
+    assert tuple(enc.arm_norm.normalized_shape) == (16,)
+
+
+def test_context_norm_is_over_the_whole_context():
+    enc = ArmTokenEmbedding(arm_context_norm=True)
+    assert isinstance(enc.context_norm, torch.nn.LayerNorm)
+    assert tuple(enc.context_norm.normalized_shape) == (EXPECTED_D_MODEL,)
+    # It really is the last thing forward does: the output is standardised.
+    with torch.no_grad():
+        out = enc(_synthetic_batch())
+    assert torch.allclose(out.mean(dim=-1), torch.zeros(out.shape[0]), atol=1e-4)
+
+
+def test_batchnorm_train_and_eval_behave_as_batchnorm_should():
+    """Eval is deterministic and uses running stats; train updates them."""
+    enc = _seeded(lambda: ArmTokenEmbedding(arm_feature_norm="batchnorm"))
+    x = _synthetic_batch()
+
+    # Fresh running statistics are the initial ones.
+    assert torch.allclose(enc.arm_norm.running_mean, torch.zeros(16))
+    assert torch.allclose(enc.arm_norm.running_var, torch.ones(16))
+    assert int(enc.arm_norm.num_batches_tracked) == 0
+
+    enc.train()
+    with torch.no_grad():
+        enc(x)
+    assert int(enc.arm_norm.num_batches_tracked) == 1
+    moved = enc.arm_norm.running_mean.clone()
+    assert not torch.allclose(moved, torch.zeros(16))
+
+    # Eval: same numbers every call, and the statistics do not move.
+    enc.eval()
+    with torch.no_grad():
+        first, second = enc(x), enc(x)
+    assert torch.equal(first, second)
+    assert torch.equal(enc.arm_norm.running_mean, moved)
+    assert int(enc.arm_norm.num_batches_tracked) == 1
+
+    # ...and eval really reads them: overwriting the running mean moves the
+    # output, which is what makes rebuilding from a checkpoint load-bearing.
+    with torch.no_grad():
+        enc.arm_norm.running_mean.add_(1.0)
+        assert not torch.allclose(enc(x), first, atol=1e-4)
+
+
+def test_arm_feature_norm_is_validated():
+    with pytest.raises(ValueError, match="arm_feature_norm"):
+        ArmTokenEmbedding(arm_feature_norm="groupnorm")
+
+
+def test_the_norm_modules_are_the_only_new_parameters():
+    """Nothing else grew: the switches add exactly their own two tensors."""
+    base = {n for n, _ in ArmTokenEmbedding().named_parameters()}
+    ln = {n for n, _ in ArmTokenEmbedding(arm_feature_norm="layernorm").named_parameters()}
+    bn = {n for n, _ in ArmTokenEmbedding(arm_feature_norm="batchnorm").named_parameters()}
+    cn = {n for n, _ in ArmTokenEmbedding(arm_context_norm=True).named_parameters()}
+    assert ln - base == {"arm_norm.weight", "arm_norm.bias"}
+    assert bn - base == {"arm_norm.weight", "arm_norm.bias"}
+    assert cn - base == {"context_norm.weight", "context_norm.bias"}
+    for grown in (ln, bn, cn):
+        assert base - grown == set()

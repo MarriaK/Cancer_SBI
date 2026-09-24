@@ -521,6 +521,16 @@ def build_arm_token_encoder(
         dropout=cfg.dropout if cfg.dropout is not None else 0.2,
         attn_dropout_active=cfg.attn_dropout_active,
         attn_scale=cfg.attn_scale,
+        # Matrix 8. `or`-style fallbacks, like the five above: a checkpoint
+        # written before these two fields existed has no key for them, and
+        # `_block_from_dict` would then leave the dataclass default -- but a
+        # snapshot that carries an explicit None (an older tree's `None`
+        # placeholder for an unused field) must rebuild AT0 rather than raise,
+        # so the None is mapped to the published behaviour here.
+        arm_feature_norm=(
+            cfg.arm_feature_norm if cfg.arm_feature_norm is not None else "none"
+        ),
+        arm_context_norm=bool(cfg.arm_context_norm),
     ).to(device)
 
 

@@ -1436,3 +1436,139 @@ def test_min_trials_is_recorded_in_the_effective_config():
     )
     assert plain_payload["data"]["min_trials"] is None
     assert plain_payload["cli_flags"]["min_trials"] is None
+
+
+# ---------------------------------------------------------------------------
+# 15. Matrix 8: --arm-feature-norm and --arm-context-norm.
+#
+# Both are read by the armtoken encoder and by the hybrid's ARM branch, and by
+# nothing else. Both default to AT0's behaviour, which builds no module at all,
+# so the first test here is the one that matters: absence must leave the
+# published values in place on every preset.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model", ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid"]
+)
+def test_matrix_eight_flags_absent_keeps_the_at0_behaviour(model):
+    cfg = config_from_argv([], model=model)
+    assert cfg.encoder.arm_feature_norm == "none"
+    assert cfg.encoder.arm_context_norm is False
+
+
+@pytest.mark.parametrize("model", ["armtoken", "hybrid"])
+@pytest.mark.parametrize("norm", ["layernorm", "batchnorm", "none"])
+def test_arm_feature_norm_reaches_the_arm_branch_presets(model, norm):
+    cfg = config_from_argv(["--arm-feature-norm", norm], model=model)
+    assert cfg.encoder.arm_feature_norm == norm
+
+
+@pytest.mark.parametrize("model", ["armtoken", "hybrid"])
+def test_arm_context_norm_reaches_the_arm_branch_presets(model):
+    cfg = config_from_argv(["--arm-context-norm"], model=model)
+    assert cfg.encoder.arm_context_norm is True
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "dominantclone"])
+def test_arm_feature_norm_is_warned_and_ignored_elsewhere(model, capsys):
+    """A value on a preset with no arm branch would describe nothing built."""
+    cfg = config_from_argv(["--arm-feature-norm", "layernorm"], model=model)
+    assert cfg.encoder.arm_feature_norm == "none"
+    out = capsys.readouterr().out
+    assert f"--arm-feature-norm is not used by {model}" in out
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "dominantclone"])
+def test_arm_context_norm_is_warned_and_ignored_elsewhere(model, capsys):
+    cfg = config_from_argv(["--arm-context-norm"], model=model)
+    assert cfg.encoder.arm_context_norm is False
+    out = capsys.readouterr().out
+    assert f"--arm-context-norm is not used by {model}" in out
+
+
+@pytest.mark.parametrize("model", ["armtoken", "hybrid"])
+def test_the_arm_branch_presets_warn_about_neither(model, capsys):
+    config_from_argv(
+        ["--arm-feature-norm", "batchnorm", "--arm-context-norm"], model=model
+    )
+    out = capsys.readouterr().out
+    assert "--arm-feature-norm" not in out and "--arm-context-norm" not in out
+
+
+def test_an_unknown_arm_feature_norm_is_refused_by_the_parser():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["--model", "armtoken", "--arm-feature-norm", "groupnorm"]
+        )
+
+
+def test_matrix_eight_flags_reach_the_effective_config():
+    from cancer_sbi.cli.train import effective_config_payload
+
+    argv = ["--arm-feature-norm", "batchnorm", "--arm-context-norm"]
+    args = build_parser().parse_args(["--model", "armtoken"] + argv)
+    cfg = config_from_argv(argv, model="armtoken")
+    payload = effective_config_payload(cfg, args, Path("/d"), Path("/s.pkl"))
+    assert payload["encoder"]["arm_feature_norm"] == "batchnorm"
+    assert payload["encoder"]["arm_context_norm"] is True
+    assert payload["cli_flags"]["arm_feature_norm"] == "batchnorm"
+    assert payload["cli_flags"]["arm_context_norm"] is True
+
+    plain = build_parser().parse_args(["--model", "armtoken"])
+    plain_payload = effective_config_payload(
+        config_from_argv([], model="armtoken"), plain, Path("/d"), Path("/s.pkl")
+    )
+    assert plain_payload["encoder"]["arm_feature_norm"] == "none"
+    assert plain_payload["encoder"]["arm_context_norm"] is False
+    assert plain_payload["cli_flags"]["arm_feature_norm"] is None
+    assert plain_payload["cli_flags"]["arm_context_norm"] is False
+
+
+def test_the_flags_really_build_the_modules():
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    cfg = config_from_argv(
+        ["--arm-feature-norm", "layernorm", "--arm-context-norm"], model="armtoken"
+    )
+    net = build_embedding_net(cfg.encoder, "cpu")
+    assert net.arm_norm is not None and net.context_norm is not None
+    # ...and their absence really does not.
+    plain = build_embedding_net(config_from_argv([], model="armtoken").encoder, "cpu")
+    assert plain.arm_norm is None and plain.context_norm is None
+
+
+def test_a_pre_matrix_eight_checkpoint_rebuilds_as_at0():
+    """No such keys, and an explicit None, both have to mean 'AT0'."""
+    from dataclasses import replace
+
+    from cancer_sbi.config import preset_from_effective_config
+    from cancer_sbi.training.trainer import build_arm_token_encoder
+
+    rebuilt = preset_from_effective_config(
+        {"model": "armtoken", "flow": {}, "encoder": {"kind": "armtoken"}}
+    )
+    assert rebuilt.encoder.arm_feature_norm == "none"
+    assert rebuilt.encoder.arm_context_norm is False
+
+    # A snapshot that carries an explicit None -- what an older tree's unused
+    # optional fields look like -- must not reach nn.LayerNorm(None).
+    nulled = replace(
+        get_preset("armtoken").encoder, arm_feature_norm=None, arm_context_norm=None
+    )
+    net = build_arm_token_encoder(nulled, "cpu")
+    assert net.arm_norm is None and net.context_norm is None
+
+
+def test_input_space_log2_is_accepted_by_armtoken_without_a_warning(capsys):
+    """AT11: the preset's copy space, put back to the stored log2 values.
+
+    Already true before matrix 8 -- arm_moments takes input_space and the
+    warn-and-ignore gate is `!= "deepset"` -- and pinned here because AT11 is
+    the one row of the matrix that undoes a preset default instead of adding
+    to it, so a silent ignore would make it a duplicate of AT0.
+    """
+    cfg = config_from_argv(["--input-space", "log2"], model="armtoken")
+    assert cfg.encoder.input_space == "log2"
+    assert "--input-space" not in capsys.readouterr().out
+    assert get_preset("armtoken").encoder.input_space == "copy"

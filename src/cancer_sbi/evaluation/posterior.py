@@ -306,10 +306,17 @@ def resolve_eval_config(
     # that decides what the rest of the line even means -- armtoken reads
     # neither freq_mode nor freq_renorm -- and its three shape-bearing fields
     # follow it, the way flow_dropout/num_transforms follow the flow's.
+    # Matrix 8's two ride in through the same encoder block and each decides
+    # whether the state_dict carries an extra module, so they belong here for
+    # the same reason d_arm does -- a load failure turns on exactly this.
+    arm_norm_note = (
+        f", arm_feature_norm={preset.encoder.arm_feature_norm}"
+        f", arm_context_norm={preset.encoder.arm_context_norm}"
+    )
     armtoken_note = (
         f", d_arm={preset.encoder.d_arm}, "
         f"n_arm_layers={preset.encoder.n_arm_layers}, "
-        f"trial_pool={preset.encoder.trial_pool}"
+        f"trial_pool={preset.encoder.trial_pool}" + arm_norm_note
         if preset.encoder.kind == "armtoken"
         else ""
     )
@@ -326,7 +333,7 @@ def resolve_eval_config(
             f"n_heads={preset.encoder.n_heads}, "
             f"num_inducing={preset.encoder.num_inducing}, "
             f"trials_output_dim={preset.encoder.trials_output_dim}]"
-            f", trial_pool={preset.encoder.trial_pool}"
+            f", trial_pool={preset.encoder.trial_pool}" + arm_norm_note
         )
     print(
         f"[config] rebuilt from the checkpoint: kind={preset.encoder.kind}"

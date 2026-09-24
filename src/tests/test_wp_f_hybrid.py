@@ -587,3 +587,70 @@ def test_train6_leaves_the_earlier_matrices_alone():
     for older in ("train.sh", "train2.sh", "train3.sh", "train4.sh",
                   "train4b.sh", "train5.sh"):
         assert (JOBS / older).exists()
+
+
+# --------------------------------------------------------------------------- #
+# 6. Matrix 8 on the hybrid: the arm branch only.
+# --------------------------------------------------------------------------- #
+
+
+def test_arm_norms_reach_the_hybrids_arm_branch_and_not_its_clone_branch():
+    """Both switches live inside ArmTokenEmbedding, which only one branch is."""
+    cfg = config_from_argv(
+        ["--arm-feature-norm", "layernorm", "--arm-context-norm"], model="hybrid"
+    )
+    enc = build_embedding_net(cfg.encoder, "cpu")
+    assert isinstance(enc, HybridEmbedding)
+    assert enc.arm_branch.arm_norm is not None
+    assert enc.arm_branch.context_norm is not None
+    # The clone branch has no such attribute at all, and its state_dict is
+    # exactly the one a default hybrid builds -- the flag cannot have widened
+    # or renamed anything on that side.
+    assert not hasattr(enc.clone_branch, "arm_norm")
+    default = build_embedding_net(HYBRID.encoder, "cpu")
+    assert set(enc.clone_branch.state_dict()) == set(
+        default.clone_branch.state_dict()
+    )
+    for name, tensor in default.clone_branch.state_dict().items():
+        assert enc.clone_branch.state_dict()[name].shape == tensor.shape
+    # ...and the arm branch is the only side that grew.
+    grew = set(enc.state_dict()) - set(default.state_dict())
+    assert grew == {
+        "arm_branch.arm_norm.weight",
+        "arm_branch.arm_norm.bias",
+        "arm_branch.context_norm.weight",
+        "arm_branch.context_norm.bias",
+    }
+
+
+def test_a_default_hybrid_builds_neither_norm():
+    enc = build_embedding_net(HYBRID.encoder, "cpu")
+    assert enc.arm_branch.arm_norm is None
+    assert enc.arm_branch.context_norm is None
+
+
+def test_a_normed_hybrid_still_has_its_partial_symmetry():
+    """416 equivariant/invariant in front, 256 clone-branch numbers behind."""
+    cfg = config_from_argv(["--arm-feature-norm", "batchnorm"], model="hybrid")
+    torch.manual_seed(1234)
+    enc = build_embedding_net(cfg.encoder, "cpu")
+    enc.eval()
+
+    gen = torch.Generator().manual_seed(0)
+    x = torch.randn(3, 4, 6, 45, generator=gen)
+    x[..., 44] = torch.rand(3, 4, 6, generator=gen) * 0.01
+    perm = torch.randperm(44, generator=torch.Generator().manual_seed(7))
+    xp = x.clone()
+    xp[..., :44] = x[..., perm]
+
+    with torch.no_grad():
+        out, out_p = enc(x), enc(xp)
+    assert out.shape == (3, enc.d_model)
+    assert torch.isfinite(out).all()
+
+    arms = out[:, : 44 * 8].reshape(3, 44, 8)
+    arms_p = out_p[:, : 44 * 8].reshape(3, 44, 8)
+    assert torch.allclose(arms_p, arms[:, perm], atol=1e-5)
+    assert torch.allclose(out_p[:, 44 * 8 : 416], out[:, 44 * 8 : 416], atol=1e-5)
+    # The negative half: the clone branch is not equivariant, and must not be.
+    assert not torch.allclose(out_p[:, 416:], out[:, 416:], atol=1e-4)

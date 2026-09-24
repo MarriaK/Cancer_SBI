@@ -88,6 +88,17 @@ the run it produced before:
 ``--embed-lr X`` / ``--embed-weight-decay X`` / ``--flow-weight-decay X``
     The two optimiser groups' rates and decays (runs R3, R7). Two-group models
     only; DominantClone optimises one group (trap 2). Default: the preset's.
+``--arm-feature-norm {none,layernorm,batchnorm}``
+    ArmToken and the hybrid's arm branch. Normalise the pooled per-arm moment
+    vector before the shared MLP -- the eight moments sit on four different
+    scales and matrix 5 fed them in raw. One module shared by all 44 arms, so
+    the arm-equivariance is unchanged. Runs AT12-AT13. Default: ``none``, which
+    builds no module at all and reproduces AT0 bit for bit.
+``--arm-context-norm``
+    ArmToken and the hybrid's arm branch. LayerNorm the 416-wide context the
+    arm branch hands the flow. NOT the same as ``--z-score-x``'s sibling
+    ``z_score_y``, which standardises the raw input tensor before the embedding
+    net and so never sees the context. Run AT14. Default: off, i.e. AT0.
 ``--require-all-trials``
     DominantClone only. Keep only the sims that have every trial file, i.e. the
     clone-set models' sim set, so the three models are compared on the same
@@ -563,6 +574,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    repairs.add_argument(
+        "--arm-feature-norm",
+        choices=["none", "layernorm", "batchnorm"],
+        default=None,
+        help=(
+            "ArmToken (and the hybrid's arm branch): normalise the pooled "
+            "per-arm moment vector immediately before the shared MLP. "
+            "'layernorm' z-scores each arm token across its own features; "
+            "'batchnorm' is a learned per-feature z-scoring with running "
+            "statistics. One shared module either way, so the 44 arms stay "
+            "equivariant. Runs AT12 and AT13. Default: none, the AT0 "
+            "behaviour, which builds no module at all. Ignored by the other "
+            "three models."
+        ),
+    )
+    repairs.add_argument(
+        "--arm-context-norm",
+        action="store_true",
+        help=(
+            "ArmToken (and the hybrid's arm branch): LayerNorm the 416-wide "
+            "context handed to the flow. sbi's z_score_y standardises the raw "
+            "input tensor before the embedding net, not the context, so it is "
+            "not the switch for this. Run AT14. Default: off, the AT0 "
+            "behaviour. Ignored by the other three models."
+        ),
+    )
+
     pickling = parser.add_mutually_exclusive_group()
     pickling.add_argument(
         "--final-pickle",
@@ -800,6 +838,17 @@ def build_config(
         encoder_cfg = replace(encoder_cfg, d_arm=args.d_arm)
     if getattr(args, "arm_num_inducing", None) is not None and has_arm_branch:
         encoder_cfg = replace(encoder_cfg, arm_num_inducing=args.arm_num_inducing)
+    # Matrix 8's two, gated the same way and for the same reason: both build a
+    # module inside ArmTokenEmbedding, so a value recorded on a preset with no
+    # arm branch would describe a network nothing built. For the hybrid they
+    # reach the ARM branch only -- build_arm_token_encoder is what forwards
+    # them, and the clone branch never sees either field.
+    if getattr(args, "arm_feature_norm", None) is not None and has_arm_branch:
+        encoder_cfg = replace(
+            encoder_cfg, arm_feature_norm=args.arm_feature_norm
+        )
+    if getattr(args, "arm_context_norm", False) and has_arm_branch:
+        encoder_cfg = replace(encoder_cfg, arm_context_norm=True)
 
     # The flow's context is the embedding's output, and build_nsf puts a
     # 50-wide residual net on it; a context much wider than the published 256
@@ -967,6 +1016,12 @@ def build_config(
     ):
         if value is not None and not has_arm_branch:
             print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
+    # Matrix 8's two. --arm-context-norm is a store_true, so "not given" is
+    # False rather than None and it gets its own line.
+    if getattr(args, "arm_feature_norm", None) is not None and not has_arm_branch:
+        print(f"[warn] --arm-feature-norm is not used by {preset.name}; ignoring it.")
+    if getattr(args, "arm_context_norm", False) and not has_arm_branch:
+        print(f"[warn] --arm-context-norm is not used by {preset.name}; ignoring it.")
 
     if args.top_k is not None and preset.data.top_k is None:
         print(f"[warn] --top-k is not used by {preset.name}; ignoring it.")
@@ -1047,6 +1102,11 @@ def effective_config_payload(
         "arm_layers": getattr(args, "arm_layers", None),
         "d_arm": getattr(args, "d_arm", None),
         "arm_num_inducing": getattr(args, "arm_num_inducing", None),
+        # Matrix 8. Both also land in the snapshotted `encoder` block, where
+        # they decide whether the state_dict carries an arm_norm/context_norm;
+        # these are the flags as typed.
+        "arm_feature_norm": getattr(args, "arm_feature_norm", None),
+        "arm_context_norm": bool(getattr(args, "arm_context_norm", False)),
         "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,

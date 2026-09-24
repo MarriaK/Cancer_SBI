@@ -32,6 +32,7 @@ InputSpace = Literal["log2", "copy"]
 FreqMode = Literal["weight", "feature"]
 AttnScale = Literal["published", "standard"]
 TrialPool = Literal["mean", "attention"]
+ArmFeatureNorm = Literal["none", "layernorm", "batchnorm"]
 
 
 @dataclass(frozen=True)
@@ -200,6 +201,17 @@ class EncoderConfig:
         trial_pool: Both clone-set encoders, matrix 4. ``"mean"`` -- the
             default -- is sbi's masked mean over the 25 trial embeddings;
             ``"attention"`` pools them with a one-seed PMA instead (run R20).
+        arm_feature_norm: ArmToken and the hybrid's arm branch, matrix 8.
+            ``"none"`` -- the default -- is AT0: the eight per-arm moments and
+            their across-trial spread reach ``arm_mlp`` un-normalised.
+            ``"layernorm"`` and ``"batchnorm"`` normalise that ``(B, 44, P)``
+            vector with one module shared by all 44 arms, so the equivariance
+            holds either way. Warned about and ignored for the other kinds.
+        arm_context_norm: ArmToken and the hybrid's arm branch, matrix 8.
+            ``True`` LayerNorms the 416-wide context the arm branch hands the
+            flow (the hybrid's clone branch is untouched). ``False`` -- the
+            default -- is AT0. Not the same thing as ``FlowConfig.z_score_y``,
+            which standardises the raw input tensor, not the context.
         input_dim / hidden_dim_phi / hidden_dim_rho / output_dim / aggregation_fn
             / aggregation_dim / num_heads_deepset: DeepSet only.
         trials_*: The ``TrialsSBIEmbedding`` wrapper (clone-set models only);
@@ -288,6 +300,27 @@ class EncoderConfig:
     # MLP and therefore the flow's context width. See
     # cancer_sbi.models.trials.AttentionTrialPooling.
     trial_pool: TrialPool = "mean"        # both clone-set encoders
+    # --- experiment switches, matrix 8 (added 2026-09-24) --------------------
+    # ArmToken and the hybrid's ARM branch only. Both defaults reproduce AT0
+    # exactly: "none" and False construct no module at all, so a default
+    # ArmToken's state_dict is byte for byte the one matrix 5 measured.
+    #
+    # `arm_feature_norm` normalises the pooled moment vector (B, 44, P) just
+    # before `arm_mlp`. The eight moments sit on four different scales -- a
+    # weighted mean and two extrema in [-1, 3], an sd in [0, ~2], three
+    # fractions in [0, 1] -- and matrix 5 fed them in raw, declaring that an
+    # accepted risk and never testing it. "layernorm" z-scores each arm token
+    # across its own P features; "batchnorm" is a learned per-feature z-scoring
+    # over the (B * 44, P) view, with running statistics at eval time. One
+    # shared module either way, so the arm-equivariance survives.
+    #
+    # `arm_context_norm` LayerNorms the 416-wide output instead. That vector is
+    # the flow's context, and the preset gives the flow z_score_y="none" --
+    # which is not an oversight to fix with sbi's own switch, because sbi
+    # standardises the RAW input tensor before the embedding net, not the
+    # context. This is the only place the context's scale can be set.
+    arm_feature_norm: ArmFeatureNorm = "none"   # armtoken + hybrid's arm branch
+    arm_context_norm: bool = False              # armtoken + hybrid's arm branch
 
     # --- DeepSet (DominantClone) --------------------------------------------
     input_dim: Optional[int] = None
@@ -1012,6 +1045,7 @@ def get_preset(name: str) -> ModelPreset:
 
 __all__ = [
     "EFFECTIVE_CONFIG_KEY",
+    "ArmFeatureNorm",
     "AttnScale",
     "TrialPool",
     "FreqMode",

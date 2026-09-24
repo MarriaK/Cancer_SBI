@@ -357,3 +357,58 @@ R27 names R26's six flags explicitly because the `cloneatt` preset, unlike `armt
 carry matrices 2–4's findings. `--min-trials` defaults to unset everywhere else, so every earlier
 matrix's behaviour is byte-identical; it is warned about and ignored for `dominantclone`, which
 NaN-pads missing trials already and so has no bar to lower.
+
+## Matrix 8 — ArmToken input space and feature normalisation (`train8.sh`)
+
+Matrix 5 built ArmToken with two things written down as accepted risks and never measured. The first
+is scale *inside* the encoder: the eight moments per (trial, arm) sit on four different ranges — a
+weighted mean and the min/max/dominant values in `[-1, 3]`, an sd in `[0, ~2]`, three fractions in
+`[0, 1]` — and those eight, plus their across-trial mean and sd, go straight into `arm_mlp` with no
+normalisation at all. The second is scale *out* of it: the 416-wide context reaches the flow with
+`z_score_y="none"`, so the flow sees whatever the arm and global heads happen to produce. sbi's
+`z_score_y` is **not** the switch for that second one — it standardises the raw `(B, T, K, 45)` input
+tensor *before* the embedding net, so it never touches the context — which is why matrix 8 adds a
+LayerNorm inside `ArmTokenEmbedding` instead.
+
+Two new flags, both defaulting to AT0's behaviour and both building **no module at all** when left
+alone, so a default `armtoken` run's `state_dict` is byte for byte the one matrix 5 measured:
+
+* `--arm-feature-norm {none,layernorm,batchnorm}` normalises the pooled moment vector `(B, 44, P)`
+  (`P` = 16 on the mean trial-pool path, `d_token` on the attention path) immediately before
+  `arm_mlp`. `layernorm` is `nn.LayerNorm(P)` — each arm token z-scored across its own P features.
+  `batchnorm` is `nn.BatchNorm1d(P)` over the `(B·44, P)` view — a learned per-feature z-scoring
+  whose running statistics are used at eval time. Either way it is **one module shared by all 44
+  arms**, and the batchnorm's statistics are pooled over the whole `(B·44)` set, which a permutation
+  of the arms reorders without changing — so the arm-equivariance ArmToken exists for survives both,
+  and the test suite pins that with the same permutation helper matrix 5 used.
+* `--arm-context-norm` puts `nn.LayerNorm(416)` on the encoder's output. It normalises all 416
+  entries at once, per sample; permuting the arms permutes those entries, leaving the mean and
+  variance it divides by unchanged, so the 44 blocks stay equivariant.
+
+For `hybrid`, both flags reach the **arm branch only** — they are forwarded by
+`build_arm_token_encoder`, which the clone branch does not go through — so a hybrid's
+`CloneSetEmbedding` and its `TrialsSBIEmbedding` wrapper are untouched. They are warned about and
+ignored for `clonemlp`, `cloneatt` and `dominantclone`. Both land in the checkpoint's effective
+config and are honoured on rebuild (`[config] rebuilt` prints them for `armtoken` and `hybrid`), and
+a checkpoint written before they existed rebuilds as AT0.
+
+All eight runs are `--model armtoken` and share `--min-epochs 1 --stop-after-epochs 15 --max-epochs
+60 --num-workers 8 --tail-bound 5`, seed 20260924 except where the table says. `--array=0-7`. Every
+row is AT0 plus exactly one thing, and every row is paired with a seed-1 replicate, because ±0.05 on
+R² is the spread matrices 2–4 measured and AT0's own band is ±0.002 over three seeds.
+
+| idx | run | flags on top of the preset | what it tests |
+| --- | --- | --- | --- |
+| 0 | AT11 | `--input-space log2` | is copy space actually better than the stored log2 values, isolated in the model with the tightest seed band? |
+| 1 | AT11s1 | `--input-space log2 --seed 1` | the same, on the replicate seed |
+| 2 | AT12 | `--arm-feature-norm layernorm` | does normalising the moment features help — each arm token across its own 16 numbers? |
+| 3 | AT12s1 | `--arm-feature-norm layernorm --seed 1` | the same, on the replicate seed |
+| 4 | AT13 | `--arm-feature-norm batchnorm` | does normalising the moment features help — per feature, across the whole `(B·44)` set? |
+| 5 | AT13s1 | `--arm-feature-norm batchnorm --seed 1` | the same, on the replicate seed |
+| 6 | AT14 | `--arm-context-norm` | does normalising the context help — the 416 numbers the flow is actually given? |
+| 7 | AT14s1 | `--arm-context-norm --seed 1` | the same, on the replicate seed |
+
+AT11 is the one row that *undoes* a preset default rather than adding to it: the `armtoken` preset
+carries `input_space="copy"` from repair T2, and no run has ever put the stored log2 values back on
+this encoder. `CACHE_DIR` defaults to empty and, when set, must be the **complete-sim** cache
+(`clone_top100_v1`) — not matrix 7's partial one — because every row here is read against AT0.

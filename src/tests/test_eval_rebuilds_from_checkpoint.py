@@ -1099,3 +1099,130 @@ def test_armtoken_trains_two_epochs_and_samples_end_to_end(tmp_path, monkeypatch
     assert path.exists() and path.suffix == ".npz"
     assert meta["config_from_checkpoint"] is True
     assert "kind=armtoken" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Matrix 8: --arm-feature-norm / --arm-context-norm.
+#
+# Both add a module to ArmTokenEmbedding, so a checkpoint trained with them is
+# the strongest kind of case for rebuilding from the snapshot: a preset-built
+# network does not merely compute something different, it cannot load the
+# state_dict at all.
+# ---------------------------------------------------------------------------
+
+
+@needs_data
+def test_a_normed_armtoken_checkpoint_round_trips_through_the_sampler(
+    tmp_path, monkeypatch, capsys
+):
+    """Train with both switches on, then really sample -- loading strictly."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.models.arm_tokens import ArmTokenEmbedding
+    from cancer_sbi.training.trainer import (
+        build_embedding_net,
+        build_training_components,
+    )
+
+    ckpt_dir, split_path = _train_tiny(
+        tmp_path,
+        "armtoken",
+        ["--arm-feature-norm", "batchnorm", "--arm-context-norm"],
+        "AT13x",
+    )
+
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["encoder"]["arm_feature_norm"] == "batchnorm"
+    assert stored["encoder"]["arm_context_norm"] is True
+
+    path, meta = _sample(
+        tmp_path, "armtoken", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists()
+    assert meta["config_from_checkpoint"] is True
+    out = capsys.readouterr().out
+    assert "[config] rebuilt" in out
+    assert "arm_feature_norm=batchnorm" in out
+    assert "arm_context_norm=True" in out
+
+    rebuilt = posterior_mod.resolve_eval_config(
+        ckpt_dir / "best.pt", "armtoken"
+    ).preset
+    net = build_embedding_net(rebuilt.encoder, "cpu")
+    assert isinstance(net, ArmTokenEmbedding)
+    assert net.arm_norm is not None and net.context_norm is not None
+    assert net.d_model == 416
+
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    flow = build_training_components(
+        rebuilt, train_loader, device="cpu", log_progress=False
+    ).density_estimator
+    # strict=True: the batchnorm's running statistics are in there too, and
+    # they are what eval-time inference actually uses.
+    flow.load_state_dict(state, strict=True)
+    bn_keys = [k for k in state if "arm_norm.running_" in k]
+    assert len(bn_keys) == 2, bn_keys
+
+
+@needs_data
+def test_a_normed_armtoken_checkpoint_does_not_load_into_a_default_armtoken(tmp_path):
+    """The proof that the two switches have to ride in the checkpoint."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.training.trainer import build_training_components
+
+    ckpt_dir, _ = _train_tiny(
+        tmp_path,
+        "armtoken",
+        ["--arm-feature-norm", "batchnorm", "--arm-context-norm"],
+        "AT13y",
+    )
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    preset_built = build_training_components(
+        get_preset("armtoken"), train_loader, device="cpu", log_progress=False
+    ).density_estimator
+
+    with pytest.raises(RuntimeError):
+        preset_built.load_state_dict(state)
+
+    rebuilt = build_training_components(
+        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "armtoken").preset,
+        train_loader,
+        device="cpu",
+        log_progress=False,
+    ).density_estimator
+    rebuilt.load_state_dict(state)
+
+
+@needs_data
+def test_an_unflagged_armtoken_checkpoint_still_carries_the_at0_values(tmp_path):
+    """Absence is recorded as absence, not as a missing key."""
+    ckpt_dir, _ = _train_tiny(tmp_path, "armtoken", [], "AT0n")
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["encoder"]["arm_feature_norm"] == "none"
+    assert stored["encoder"]["arm_context_norm"] is False
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+    assert not [k for k in state if "arm_norm" in k or "context_norm" in k]
+
+
+def test_a_checkpoint_without_the_matrix_eight_keys_still_rebuilds_armtoken():
+    """Every ArmToken checkpoint on the cluster predates both fields."""
+    from cancer_sbi.config import preset_from_effective_config
+
+    rebuilt = preset_from_effective_config(
+        {
+            "model": "armtoken",
+            "flow": {"z_score_x": "structured"},
+            "encoder": {"kind": "armtoken", "d_arm": 8, "n_arm_layers": 1},
+        }
+    )
+    assert rebuilt.encoder.arm_feature_norm == "none"
+    assert rebuilt.encoder.arm_context_norm is False

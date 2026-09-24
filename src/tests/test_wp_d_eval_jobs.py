@@ -1232,3 +1232,124 @@ def test_jobs_readme_documents_matrix_seven():
     assert "--min-trials 5" in text
     # The rule itself, not only the table.
     assert "test set does not" in text
+
+
+# ------------------------------------------------------------- train8.sh
+#
+# Matrix 8: eight armtoken runs, four questions with a seed-1 replicate each.
+# The dry run is the only place the per-run flag sets can be checked without a
+# GPU, and the two switches build modules, so a wrong flag here is a run that
+# silently reproduces AT0.
+
+
+def _train8_dry_run(env=None):
+    full = {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)}
+    full.update(env or {})
+    r = _run(JOBS / "train8.sh", full)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+def _train8_dry_run_lines():
+    return [
+        ln for ln in _train8_dry_run().stdout.splitlines() if ln.startswith("python ")
+    ]
+
+
+RUN8_NAMES = ("AT11", "AT11s1", "AT12", "AT12s1", "AT13", "AT13s1", "AT14", "AT14s1")
+
+
+def test_train8_sh_header_matches_the_matrix():
+    text = (JOBS / "train8.sh").read_text()
+    for run in RUN8_NAMES:
+        assert run in text
+    assert "--array=0-7" in text
+    assert "-C a100" in text and "general-gpu" in text and "-t 12:00:00" in text
+    # Header line per run, as train5.sh has.
+    assert 'echo "host=$(hostname)' in text
+    # The earlier matrices must not have been edited into this one.
+    assert "--array=0-5" in (JOBS / "train5.sh").read_text()
+    assert "--array=0-8" in (JOBS / "train6.sh").read_text()
+    assert "--array=0-3" in (JOBS / "train7.sh").read_text()
+
+
+def test_train8_sh_is_executable_and_uses_the_three_key_split():
+    assert os.access(JOBS / "train8.sh", os.X_OK)
+    text = (JOBS / "train8.sh").read_text()
+    assert "CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl" in text
+
+
+def test_train8_dry_run_prints_eight_commands_with_the_common_flags():
+    lines = _train8_dry_run_lines()
+    assert len(lines) == 8
+    for line in lines:
+        for flag in (
+            "--model armtoken",
+            "--min-epochs 1",
+            "--stop-after-epochs 15",
+            "--max-epochs 60",
+            "--num-workers 8",
+            "--tail-bound 5",
+        ):
+            assert flag in line, (flag, line)
+    # Not matrix 7's data switch: this matrix is read against AT0.
+    assert not any("--min-trials" in line for line in lines)
+
+
+def test_train8_dry_run_flags_per_run():
+    at11, at11s1, at12, at12s1, at13, at13s1, at14, at14s1 = _train8_dry_run_lines()
+
+    assert at11.endswith("--input-space log2") and "--seed 20260924" in at11
+    assert at11s1.endswith("--input-space log2") and "--seed 1" in at11s1
+
+    assert at12.endswith("--arm-feature-norm layernorm") and "--seed 20260924" in at12
+    assert at12s1.endswith("--arm-feature-norm layernorm") and "--seed 1" in at12s1
+
+    assert at13.endswith("--arm-feature-norm batchnorm") and "--seed 20260924" in at13
+    assert at13s1.endswith("--arm-feature-norm batchnorm") and "--seed 1" in at13s1
+
+    # store_true: the flag is bare, and takes no value.
+    assert at14.endswith("--arm-context-norm") and "--seed 20260924" in at14
+    assert at14s1.endswith("--arm-context-norm") and "--seed 1" in at14s1
+
+    # Each row is AT0 plus exactly one thing -- no row carries two switches.
+    for line in (at11, at11s1):
+        assert "--arm-feature-norm" not in line and "--arm-context-norm" not in line
+    for line in (at12, at12s1, at13, at13s1, at14, at14s1):
+        assert "--input-space" not in line
+    for line in (at14, at14s1):
+        assert "--arm-feature-norm" not in line
+
+
+def test_train8_dry_run_reports_the_split_gate_as_ok():
+    assert "split gate: OK" in _train8_dry_run().stdout
+
+
+def test_train8_sh_hard_fails_on_a_split_without_val_ids(tmp_path):
+    r = _run(
+        JOBS / "train8.sh",
+        {
+            "CANCER": str(CODE_ROOT),
+            "CANCER_SBI_SPLIT": str(CODE_ROOT / "data" / "train_test_split.pkl"),
+            "RUNS_ROOT": str(tmp_path),
+            "SLURM_ARRAY_TASK_ID": "0",
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "val_ids" in r.stderr
+
+
+def test_train8_leaves_the_earlier_matrices_alone():
+    for older in ("train.sh", "train2.sh", "train3.sh", "train4.sh",
+                  "train4b.sh", "train5.sh", "train6.sh", "train7.sh"):
+        assert (JOBS / older).exists()
+
+
+def test_jobs_readme_documents_matrix_eight():
+    text = (JOBS / "README.md").read_text()
+    assert "Matrix 8" in text and "train8.sh" in text
+    for run in RUN8_NAMES:
+        assert run in text
+    assert "--arm-feature-norm" in text and "--arm-context-norm" in text
+    # The reason sbi's own switch is not the tool for the context.
+    assert "z_score_y" in text
