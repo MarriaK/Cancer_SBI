@@ -38,18 +38,20 @@ CACHE="$CANCER/data/cache/clone_top100_partial_v1"
 MIN_TRIALS="${MIN_TRIALS:-5}"
 FORCE=""; [[ "${FORCE_CACHE:-0}" == "1" ]] && FORCE="--force"
 
-BUILD=(python utilities/build_clone_cache.py --root "$DATA" --split "$SPLIT"
+# BUILD_CMD, not BUILD: `conda activate` exports BUILD=x86_64-conda-linux-gnu and
+# silently replaced the array (job 29653074 died with "command not found").
+BUILD_CMD=(python utilities/build_clone_cache.py --root "$DATA" --split "$SPLIT"
        --out "$CACHE" --workers 16 --min-trials "$MIN_TRIALS" $FORCE)
-VERIFY=(python utilities/verify_clone_cache.py --root "$DATA" --split "$SPLIT"
+VERIFY_CMD=(python utilities/verify_clone_cache.py --root "$DATA" --split "$SPLIT"
         --cache "$CACHE" --n-sims 40 --n-trials 3)
 
 # Printed before `conda activate`, so the dry run works on a laptop that has no
 # cancer-sbi environment and no cluster paths at all.
 if [ "${DRY_RUN:-0}" = "1" ]; then
     echo "# 1. partial clone cache (expect 3600 simulations discovered)"
-    echo "${BUILD[@]}"
+    echo "${BUILD_CMD[@]}"
     echo "# 2. verify cache (bit-exact spot check, plus the NaN padding)"
-    echo "${VERIFY[@]}"
+    echo "${VERIFY_CMD[@]}"
     exit 0
 fi
 
@@ -66,9 +68,9 @@ if [[ ! -f "$SPLIT" ]]; then
 fi
 
 echo "=== 1. partial clone cache (expect 3600 simulations discovered) ==="
-"${BUILD[@]}"
+"${BUILD_CMD[@]}"
 
 echo "=== 2. verify cache (bit-exact spot check, plus the NaN padding) ==="
-"${VERIFY[@]}"
+"${VERIFY_CMD[@]}"
 du -sh "$CACHE"
 echo "PREPARE PARTIAL OK"
