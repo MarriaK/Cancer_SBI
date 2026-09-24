@@ -251,3 +251,12 @@ flag from `--arm-num-inducing` so that one cannot silently reshape the other mod
 d_global` is capped at 512: beyond that the flow's first layer is again the biggest thing in the
 network, which is what this encoder exists to avoid, so `cli/train.py` refuses the `--d-arm` rather
 than letting it through.
+
+## Matrix 4b — follow-up (`train4b.sh`)
+
+| idx | run | flags on top of BASE_R12 |
+| --- | --- | --- |
+| 0 | R18s1 | `--tail-bound 5 --seed 1` |
+| 1 | R18s2 | `--tail-bound 5 --seed 2` |
+| 2 | R26 | `--tail-bound 5 --d-model 256` |
+| 3 | R26s1 | `--tail-bound 5 --d-model 256 --seed 1` |
