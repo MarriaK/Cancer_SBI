@@ -1,0 +1,2 @@
+model,s_measured,b_truth_on_mean,b_pooled,r,r2,true_r2,gap,root_low,root_high
+armtoken,0.95573,1.00108,0.99857,0.947967,0.898642,0.897585,0.00105714,0.915454,0.980481
