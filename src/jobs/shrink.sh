@@ -20,6 +20,11 @@ export CANCER_SBI_RUNS="${CANCER_SBI_RUNS:-$CANCER/runs}"
 POST="${POST:-$CANCER/results/posteriors}"
 OUT="${OUT:-$CANCER/results}"
 CMD=(python -m cancer_sbi.evaluation.fig_shrinkage --in-dir "$POST" --out-dir "$OUT")
+# A matrix run's posteriors are tagged (posteriors_<model>_<RUN_TAG>.npz, from
+# sample.sh RUN_TAG=); without the same tag here the script finds nothing.
+if [ -n "${RUN_TAG:-}" ]; then
+  CMD+=(--run-tag "$RUN_TAG")
+fi
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "${CMD[@]}"
   echo "${CMD[@]} --poster"

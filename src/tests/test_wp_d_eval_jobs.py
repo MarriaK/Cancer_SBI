@@ -332,6 +332,28 @@ def test_analyze_and_shrink_honour_post_and_out(name):
     assert "--out-dir /o" in r.stdout
 
 
+@pytest.mark.parametrize("name", ["analyze.sh", "shrink.sh"])
+def test_analyze_and_shrink_pass_run_tag_through(name):
+    r = _run(JOBS / name, {"POST": "/p", "OUT": "/o", "RUN_TAG": "R1", "DRY_RUN": "1"})
+    assert r.returncode == 0, r.stderr
+    assert "--run-tag R1" in r.stdout
+    r = _run(JOBS / name, {"POST": "/p", "OUT": "/o", "DRY_RUN": "1"})
+    assert "--run-tag" not in r.stdout
+
+
+def test_metric_scripts_find_tagged_posterior_files(tmp_path):
+    """sample_posteriors --run-tag R1 writes posteriors_<m>_R1.npz; both metric
+    scripts must be able to read exactly that name back, or a matrix run is
+    sampled and then never measured."""
+    from cancer_sbi.evaluation import poster_metrics
+    from cancer_sbi.evaluation.sample_posteriors import output_filename
+    tagged = output_filename("clonemlp", None, "R1")
+    (tmp_path / tagged).write_bytes(b"")
+    assert poster_metrics.posterior_path(str(tmp_path), "clonemlp", "R1") == str(tmp_path / tagged)
+    assert os.path.exists(poster_metrics.posterior_path(str(tmp_path), "clonemlp", "R1"))
+    assert not os.path.exists(poster_metrics.posterior_path(str(tmp_path), "clonemlp"))
+
+
 def test_shrink_dry_run_covers_the_poster_build():
     r = _run(JOBS / "shrink.sh", {"POST": "/p", "OUT": "/o", "DRY_RUN": "1"})
     assert any(ln.endswith("--poster") for ln in r.stdout.splitlines())

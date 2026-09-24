@@ -300,9 +300,18 @@ def write_poster_export(run, out_path, prefer="sim714"):
     return sims[k]
 
 
+def posterior_path(in_dir, name, run_tag=None):
+    """``posteriors_<model>.npz``, or ``posteriors_<model>_<tag>.npz`` for a tagged run."""
+    suffix = f"_{run_tag}" if run_tag else ""
+    return os.path.join(in_dir, f"posteriors_{name}{suffix}.npz")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--in-dir", default="out", help="folder holding posteriors_<model>.npz")
+    ap.add_argument("--run-tag", default=None,
+                    help="read posteriors_<model>_<tag>.npz instead, as written by "
+                         "sample_posteriors --run-tag (the 2026-09-24 matrix runs)")
     ap.add_argument("--out-dir", default="results")
     ap.add_argument("--example-sim", default="sim714", help="tumour to feature in the poster export")
     args = ap.parse_args()
@@ -310,7 +319,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     runs, tables = {}, {}
     for name in MODEL_ORDER:
-        path = os.path.join(args.in_dir, f"posteriors_{name}.npz")
+        path = posterior_path(args.in_dir, name, args.run_tag)
         if not os.path.exists(path):
             print(f"[skip] {path} not found")
             continue

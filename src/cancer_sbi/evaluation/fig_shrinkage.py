@@ -42,8 +42,9 @@ def density_cmap(colour):
                  (0.45, tint(colour, 0.55)), (1.0, colour)])
 
 
-def load(in_dir, name):
-    p = os.path.join(in_dir, f"posteriors_{name}.npz")
+def load(in_dir, name, run_tag=None):
+    suffix = f"_{run_tag}" if run_tag else ""
+    p = os.path.join(in_dir, f"posteriors_{name}{suffix}.npz")
     if not os.path.exists(p):
         return None
     d = np.load(p, allow_pickle=False)
@@ -82,6 +83,8 @@ def verdict_for(s_med, b_pool):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in-dir", default="out")
+    ap.add_argument("--run-tag", default=None,
+                    help="read posteriors_<model>_<tag>.npz (sample_posteriors --run-tag)")
     ap.add_argument("--out-dir", default="results")
     ap.add_argument("--poster", action="store_true",
                     help="drop the figure title and enlarge type for a poster block")
@@ -96,7 +99,7 @@ def main():
     fs_note = 9.5 if P else 7.0
     fs_inline = 10.0 if P else 7.2
 
-    runs = {n: load(args.in_dir, n) for n in MODEL_ORDER}
+    runs = {n: load(args.in_dir, n, args.run_tag) for n in MODEL_ORDER}
     runs = {k: v for k, v in runs.items() if v is not None}
     names = [n for n in MODEL_ORDER if n in runs]
     if not names:
