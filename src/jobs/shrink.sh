@@ -15,7 +15,8 @@
 set -euo pipefail
 CANCER="$HOME/cancer"
 export CANCER_SBI_DATA_ROOT="${CANCER_SBI_DATA_ROOT:-$CANCER/data/Guassian_Normal/simulation_outputs}"
-export CANCER_SBI_SPLIT="${CANCER_SBI_SPLIT:-$CANCER/data/train_test_split.pkl}"
+# 3-key split: --partition val needs val_ids (the 2-key file made every val sampling job fail, 2026-09-24).
+export CANCER_SBI_SPLIT="${CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl}"
 export CANCER_SBI_RUNS="${CANCER_SBI_RUNS:-$CANCER/runs}"
 POST="${POST:-$CANCER/results/posteriors}"
 OUT="${OUT:-$CANCER/results}"
