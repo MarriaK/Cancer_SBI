@@ -25,6 +25,10 @@ JOBS = SRC / "jobs"
 SAMPLE_POSTERIORS = SRC / "cancer_sbi" / "evaluation" / "sample_posteriors.py"
 
 SHELL_SCRIPTS = sorted(JOBS.glob("*.sh"))
+# Only scripts meant for `sbatch` carry a #SBATCH header; helpers that are run with
+# `bash` on the login node (chain_eval.sh submits other jobs) are linted for syntax
+# only, not for the conda/LD_LIBRARY_PATH preamble or absolute log paths.
+SBATCH_SCRIPTS = [p for p in SHELL_SCRIPTS if "#SBATCH" in p.read_text()]
 
 
 def _load_output_filename():
@@ -89,7 +93,7 @@ def test_script_parses(script):
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.parametrize("script", SHELL_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("script", SBATCH_SCRIPTS, ids=lambda p: p.name)
 def test_ld_library_path_export_follows_conda_activate(script):
     """Without this export scipy dies with a GLIBCXX_3.4.30 ImportError."""
     lines = script.read_text().splitlines()
@@ -100,7 +104,7 @@ def test_ld_library_path_export_follows_conda_activate(script):
     assert min(export) > min(activate), "the export must come after `conda activate`"
 
 
-@pytest.mark.parametrize("script", SHELL_SCRIPTS, ids=lambda p: p.name)
+@pytest.mark.parametrize("script", SBATCH_SCRIPTS, ids=lambda p: p.name)
 def test_sbatch_log_paths_are_absolute(script):
     """Relative -o/-e paths land wherever sbatch was run from, or nowhere."""
     found = False
