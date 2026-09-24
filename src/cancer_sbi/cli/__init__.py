@@ -63,7 +63,9 @@ def add_model_argument(parser: argparse.ArgumentParser) -> None:
             "clonemlp = CloneMLP-NPE (was Base_NPE/), "
             "cloneatt = CloneAtt-NPE (was SetTransformer_NPE/), "
             "dominantclone = DominantClone-NPE (was Plain_NPE/), "
-            "armtoken = ArmToken-NPE (new in matrix 5; no original folder). "
+            "armtoken = ArmToken-NPE (new in matrix 5; no original folder), "
+            "hybrid = Hybrid-NPE (new in matrix 6: armtoken's and cloneatt's "
+            "encoders side by side, contexts concatenated). "
             "The choice fixes the encoder, the optimiser, the early-stopping "
             "rules and the checkpoint directory name."
         ),

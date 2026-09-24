@@ -47,6 +47,11 @@ before that would be overwritten and the draws would differ.
         --ckpt      ~/cancer/Base_NPE/checkpoints/best.pt \
         --out-dir   ~/cancer/evaluation/out
     ... --limit 4      # smoke test
+    ... --partition val  # sample the VALIDATION ids instead, into ..._val.npz
+
+`--partition val` exists for one purpose: `recalibrate_posteriors.py` fits its per-arm affine
+correction on a held-out set that is NOT the test set. The default is `test` and every byte of
+that path - loaders, file name, meta - is unchanged.
 """
 import argparse
 import json
@@ -87,8 +92,8 @@ EVAL_CKPT_DIRNAME = "checkpoints"
 ALT_CKPT_DIRNAME = "checkpoints_baseline"
 
 
-def output_filename(model, limit=None, run_tag=None):
-    """Name of the .npz this run writes: ``posteriors_<model>[_<tag>].npz``.
+def output_filename(model, limit=None, run_tag=None, partition="test"):
+    """Name of the .npz this run writes: ``posteriors_<model>[_<tag>][_val].npz``.
 
     A full run keeps the plain name, which is the only name
     ``poster_metrics.py`` discovers (:312-323) - so per-run outputs belong in
@@ -105,10 +110,17 @@ def output_filename(model, limit=None, run_tag=None):
 
     An explicit ``--run-tag`` wins over the ``--limit`` suffix.
 
+    ``partition="val"`` appends a further ``_val``, AFTER whichever suffix the
+    two rules above chose. A validation-split file is not a run's result - it is
+    the input a recalibration is fitted on - so it must never land on the name
+    ``poster_metrics.posterior_path`` discovers, even when the run is tagged.
+    ``partition="test"`` (the default) changes nothing.
+
     Args:
         model: Preset name, e.g. ``"clonemlp"``.
         limit: The ``--limit`` value, or None for a full run.
         run_tag: The ``--run-tag`` value, or None.
+        partition: ``"test"`` (default) or ``"val"``.
 
     Returns:
         The file name (no directory).
@@ -119,6 +131,10 @@ def output_filename(model, limit=None, run_tag=None):
         suffix = f"_limit{int(limit)}"
     else:
         suffix = ""
+    if partition == "val":
+        suffix += "_val"
+    elif partition != "test":
+        raise ValueError(f"partition must be 'test' or 'val', not {partition!r}")
     return f"posteriors_{model}{suffix}.npz"
 
 
@@ -145,7 +161,7 @@ def test_sim_ids(dataset, n_expected):
     return ids
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, choices=sorted(PRESETS))
     ap.add_argument("--data-root", type=Path, default=os.environ.get(DATA_ROOT_ENV),
@@ -186,7 +202,13 @@ def main():
                          "Only needed when two runs of one model share an --out-dir; the "
                          "per-run convention is a per-run --out-dir instead, because "
                          "poster_metrics.py only discovers the untagged name.")
-    args = ap.parse_args()
+    ap.add_argument("--partition", choices=["test", "val"], default="test",
+                    help="which held-out split to sample. 'test' (default) is the reported "
+                         "one and is unchanged. 'val' samples the VALIDATION ids instead and "
+                         "writes posteriors_<model>[_<tag>]_val.npz - the file "
+                         "recalibrate_posteriors.py fits its affine correction on, so that the "
+                         "correction is never fitted on the cases it is scored on.")
+    args = ap.parse_args(argv)
 
     # Heavy imports after the arguments parse, as the rest of the package does, so that
     # --help works on a machine that cannot import torch.
@@ -215,13 +237,24 @@ def main():
     device = resolve_device(args.device)
     print(f"model={args.model}  origin={preset.origin}  device={device}  seed={args.seed}", flush=True)
 
-    # load_split returns a dict; evaluation deliberately scores the TEST ids and
-    # never the validation ids, so `val_ids` is not passed to the builders and the
-    # middle element of the 3-tuple they return is always None here.
+    # load_split returns a dict. Evaluation scores the TEST ids by default, so
+    # `val_ids` is not passed to the builders and the middle element of the
+    # 3-tuple they return is None -- unchanged. --partition val is the one
+    # exception: it passes val_ids and takes that middle loader instead, so a
+    # post-hoc recalibration can be fitted on held-out cases that are NOT the
+    # ones it will be scored on.
     split = load_split(split_path)
     train_ids = split["train_ids"]
     test_ids = split["test_ids"]
-    print(f"split: {len(train_ids)} train ids / {len(test_ids)} test ids", flush=True)
+    val_ids = split.get("val_ids")
+    if args.partition == "val" and (val_ids is None or len(val_ids) == 0):
+        raise SystemExit(
+            f"--partition val needs a split with val_ids, and {split_path} has none.\n"
+            "  Carve one first:  python -m cancer_sbi.cli.make_split --add-val --frac 0.1 "
+            "--in <split.pkl> --out <train_val_test_split.pkl>")
+    print(f"split: {len(train_ids)} train ids / {len(test_ids)} test ids"
+          + (f" / {len(val_ids)} val ids" if val_ids is not None else ""), flush=True)
+    print(f"partition: {args.partition}", flush=True)
 
     if not ckpt_path.exists():
         raise SystemExit(f"checkpoint not found: {ckpt_path}")
@@ -243,28 +276,39 @@ def main():
     )
     preset = eval_cfg.preset
 
+    # val_ids is handed to the builders only for --partition val, so the default
+    # path builds exactly the loaders it always did.
+    builder_val_ids = val_ids if args.partition == "val" else None
     if preset.data.dataset == "clone_sets":
-        train_loader, _val_loader, test_loader = build_clone_set_dataloaders(
+        train_loader, val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
             top_k=preset.data.top_k,
             batch_size=preset.data.batch_size,
             pin_memory=preset.data.pin_memory,
+            val_ids=builder_val_ids,
         )
     else:
-        train_loader, _val_loader, test_loader = build_dominant_clone_dataloaders(
+        train_loader, val_loader, test_loader = build_dominant_clone_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
             batch_size=preset.data.batch_size,
             pin_memory=preset.data.pin_memory,
             require_all_trials=eval_cfg.require_all_trials,
+            val_ids=builder_val_ids,
         )
 
-    x_all, theta_all = posterior_mod.collect_test_tensors(test_loader, preset.data.dataset)
+    eval_loader = test_loader if args.partition == "test" else val_loader
+    if eval_loader is None:
+        raise SystemExit(
+            f"--partition {args.partition}: the loader builder returned no validation loader "
+            f"for {len(val_ids) if val_ids is not None else 0} val ids")
+
+    x_all, theta_all = posterior_mod.collect_test_tensors(eval_loader, preset.data.dataset)
     n_total = int(x_all.shape[0])
-    sim_ids = test_sim_ids(test_loader.dataset, n_total)
+    sim_ids = test_sim_ids(eval_loader.dataset, n_total)
     n = n_total if args.limit is None else min(args.limit, n_total)
     print(f"held-out cases: {n_total}" + ("" if args.limit is None else f" (using first {n})"), flush=True)
     print(f"X {tuple(x_all.shape)}  theta {tuple(theta_all.shape)}", flush=True)
@@ -360,11 +404,13 @@ def main():
         "seed": int(args.seed),
         "limit": None if args.limit is None else int(args.limit),
         "run_tag": args.run_tag,
+        "partition": args.partition,
         "device": device,
         "data_root": str(data_root),
         "split_file": str(split_path),
         "n_train_ids": int(len(train_ids)),
         "n_test_ids": int(len(test_ids)),
+        "n_val_ids": None if val_ids is None else int(len(val_ids)),
         # The architecture these samples came from, so a .npz can be read back
         # years later without the checkpoint beside it.
         "flow_config": _as_dict["flow"],
@@ -376,7 +422,8 @@ def main():
         "built_with": "cancer_sbi",
     }
 
-    out_path = os.path.join(out_dir, output_filename(args.model, args.limit, args.run_tag))
+    out_path = os.path.join(
+        out_dir, output_filename(args.model, args.limit, args.run_tag, args.partition))
     np.savez_compressed(
         out_path,
         theta_true=theta_np,

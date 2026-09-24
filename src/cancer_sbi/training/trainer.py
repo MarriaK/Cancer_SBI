@@ -319,6 +319,45 @@ def build_optimizer(
     )
 
 
+#: Settings of the ``--lr-plateau`` scheduler (matrix 6). Kept as constants so
+#: the jobs script, the tests and the docstring cannot disagree about them.
+LR_PLATEAU_FACTOR = 0.5
+LR_PLATEAU_PATIENCE = 5
+
+
+def build_lr_scheduler(
+    optimizer: torch.optim.Optimizer, cfg: TrainConfig
+) -> Optional[torch.optim.lr_scheduler.ReduceLROnPlateau]:
+    """Build the validation-loss LR scheduler, if this run asked for one.
+
+    Args:
+        optimizer: The Adam instance from :func:`build_optimizer`. In two-group
+            mode BOTH groups are scheduled, so a halving moves the flow's 1e-3
+            and the embedding's 1e-4 together.
+        cfg: The loop settings, normally ``preset.train``.
+
+    Returns:
+        A ``ReduceLROnPlateau(mode="min", factor=0.5, patience=5)``, or
+        ``None`` when ``cfg.lr_plateau`` is ``False``.
+
+    Note:
+        ``None`` is not a no-op scheduler: nothing is constructed at all, so a
+        default run's optimiser is untouched and its training is bitwise what
+        it was before this function existed. ``patience=5`` means the rate is
+        halved on the SIXTH consecutive epoch without improvement, because
+        ReduceLROnPlateau counts "bad epochs" and fires when the count exceeds
+        the patience.
+    """
+    if not cfg.lr_plateau:
+        return None
+    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=LR_PLATEAU_FACTOR,
+        patience=LR_PLATEAU_PATIENCE,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model assembly: what each original __init__ did before the loop started.
 # ---------------------------------------------------------------------------
@@ -341,6 +380,150 @@ class TrainingComponents(NamedTuple):
     example_batch: Tuple[torch.Tensor, torch.Tensor]
 
 
+def build_clone_attention_encoder(
+    cfg: EncoderConfig, device: str
+) -> torch.nn.Module:
+    """Build CloneAtt's per-trial clone encoder from an :class:`EncoderConfig`.
+
+    Factored out of :func:`build_embedding_net` in matrix 6 so that
+    :class:`cancer_sbi.models.hybrid.HybridEmbedding` can own *the same* clone
+    branch CloneAtt has, rather than a copy of this argument list that would
+    silently drift away from it the next time a switch is added. It is the
+    ``"attention"`` branch, unchanged.
+
+    Args:
+        cfg: The encoder settings. Only the CloneAtt fields are read.
+        device: Device the module is moved to.
+
+    Returns:
+        A :class:`~cancer_sbi.models.set_transformer.CloneSetEmbedding` on
+        ``device``.
+    """
+    # SetTransformer_NPE/inference_model.py:63-71. Trap 4: `dropout` is
+    # accepted by CloneSetEmbedding and never used
+    # (SetTransformer_NPE/set_transformer.py:88), so CloneAtt has no encoder
+    # dropout at all. EncoderConfig.encoder_dropout_is_used records that.
+    # This looks wrong but it is what the published model does; adding the
+    # dropout would change the results. See docs/REFACTOR_NOTES.md.
+    return CloneSetEmbedding(
+        in_dim=cfg.in_dim,
+        d_model=cfg.d_model,
+        n_heads=cfg.n_heads,
+        num_layers=cfg.num_layers,
+        num_inducing=cfg.num_inducing,
+        dropout=cfg.dropout,
+        freq_as_weight=cfg.freq_as_weight,
+        # Run R4 (WP-A + WP-C). False is the published raw-frequency
+        # multiply, so this argument changes nothing unless --freq-renorm
+        # is passed. Deliberately NOT forwarded to DeepSet below, which has
+        # no per-clone frequency weighting at all.
+        freq_renorm=cfg.freq_renorm,
+        # Matrix 2 (runs R5-R8). Every one of these four defaults to the
+        # published behaviour, so an untouched cloneatt preset builds the
+        # same network it always did. They must be forwarded here and not
+        # only at training time: evaluation rebuilds the encoder from the
+        # checkpoint's effective config through this same function, and a
+        # missing argument would silently rebuild a different network --
+        # the failure mode M1 exists to prevent.
+        input_space=cfg.input_space,
+        freq_mode=cfg.freq_mode,
+        attn_ln=cfg.attn_ln,
+        attn_dropout_active=cfg.attn_dropout_active,
+        # Matrix 4 / run R17, trap 6 made opt-out. "published" is the
+        # published sqrt(d_model) divisor, so this argument changes nothing
+        # unless --attn-scale standard is passed. Forwarded here for the
+        # same reason as the four above: evaluation rebuilds through this
+        # function, and a missing argument would score a run as a network
+        # it never was.
+        attn_scale=cfg.attn_scale,
+    ).to(device)
+
+
+def wrap_trial_encoder(
+    trial_encoder: torch.nn.Module, cfg: EncoderConfig, device: str
+) -> torch.nn.Module:
+    """Wrap a per-trial clone encoder in ``TrialsSBIEmbedding``.
+
+    Factored out of :func:`build_embedding_net` in matrix 6 for the same reason
+    as :func:`build_clone_attention_encoder`: the hybrid encoder's clone branch
+    must be wrapped *exactly* the way CloneAtt's is, or the branch would not
+    produce the 256-wide context CloneAtt's flow sees.
+
+    Args:
+        trial_encoder: ``BaselineCloneEmbedding`` or ``CloneSetEmbedding``.
+        cfg: The encoder settings; the ``trials_*`` fields and the four
+            attention settings the pooling PMA follows.
+        device: Device the wrapper is moved to.
+
+    Returns:
+        A :class:`~cancer_sbi.models.trials.TrialsSBIEmbedding` on ``device``.
+    """
+    # Base_NPE/inference_model.py:78-84 and
+    # SetTransformer_NPE/inference_model.py:74-80 -- byte-identical calls.
+    return TrialsSBIEmbedding(
+        trial_encoder=trial_encoder,
+        aggregation_fn=cfg.trials_aggregation_fn,
+        num_hiddens=cfg.trials_num_hiddens,
+        num_layers=cfg.trials_num_layers,
+        output_dim=cfg.trials_output_dim,
+        # Matrix 4 / run R20. "mean" is the published pooling, so these four
+        # arguments change nothing unless --trial-pool attention is passed.
+        # The three attention settings follow the encoder's so that the
+        # pooling PMA matches the stack under it; n_heads is None for the MLP
+        # encoder, where TrialsSBIEmbedding falls back to its own default.
+        trial_pool=cfg.trial_pool,
+        n_heads=cfg.n_heads,
+        attn_ln=cfg.attn_ln,
+        attn_scale=cfg.attn_scale,
+    ).to(device)
+
+
+def build_arm_token_encoder(
+    cfg: EncoderConfig, device: str
+) -> torch.nn.Module:
+    """Build ``ArmTokenEmbedding`` from an :class:`EncoderConfig`.
+
+    Factored out of :func:`build_embedding_net` in matrix 6 so the hybrid
+    encoder's arm branch is built by the same code as ArmToken's own, including
+    the ``if None`` fallbacks that let a pre-matrix-5 checkpoint rebuild.
+
+    Args:
+        cfg: The encoder settings. Only the ArmToken fields are read.
+        device: Device the module is moved to.
+
+    Returns:
+        An :class:`~cancer_sbi.models.arm_tokens.ArmTokenEmbedding` on
+        ``device``.
+    """
+    return ArmTokenEmbedding(
+        in_dim=cfg.in_dim,
+        d_token=cfg.d_token if cfg.d_token is not None else DEFAULT_D_TOKEN,
+        d_arm=cfg.d_arm if cfg.d_arm is not None else DEFAULT_D_ARM,
+        d_global=(
+            cfg.d_global if cfg.d_global is not None else DEFAULT_D_GLOBAL
+        ),
+        n_arm_layers=(
+            cfg.n_arm_layers
+            if cfg.n_arm_layers is not None
+            else DEFAULT_N_ARM_LAYERS
+        ),
+        n_heads=cfg.n_heads if cfg.n_heads is not None else DEFAULT_N_HEADS,
+        num_inducing=(
+            cfg.arm_num_inducing
+            if cfg.arm_num_inducing is not None
+            else DEFAULT_ARM_NUM_INDUCING
+        ),
+        trial_pool=cfg.trial_pool,
+        input_space=cfg.input_space,
+        attn_ln=cfg.attn_ln,
+        # Trap 4's shape again, opt-in: the probability alone builds no
+        # module, so both halves have to be forwarded.
+        dropout=cfg.dropout if cfg.dropout is not None else 0.2,
+        attn_dropout_active=cfg.attn_dropout_active,
+        attn_scale=cfg.attn_scale,
+    ).to(device)
+
+
 def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
     """Build the embedding net described by an :class:`EncoderConfig`.
 
@@ -351,8 +534,9 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
 
     Returns:
         ``TrialsSBIEmbedding`` wrapping a per-trial clone encoder (``"mlp"`` or
-        ``"attention"``), a bare ``DeepSet`` (``"deepset"``) or a bare
-        ``ArmTokenEmbedding`` (``"armtoken"``).
+        ``"attention"``), a bare ``DeepSet`` (``"deepset"``), a bare
+        ``ArmTokenEmbedding`` (``"armtoken"``) or a bare ``HybridEmbedding``
+        (``"hybrid"``, matrix 6), which owns one of each of the last two.
 
     Raises:
         ValueError: On an unknown ``cfg.kind``.
@@ -391,44 +575,7 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             freq_mode=cfg.freq_mode,
         ).to(device)
     elif cfg.kind == "attention":
-        # SetTransformer_NPE/inference_model.py:63-71. Trap 4: `dropout` is
-        # accepted by CloneSetEmbedding and never used
-        # (SetTransformer_NPE/set_transformer.py:88), so CloneAtt has no encoder
-        # dropout at all. EncoderConfig.encoder_dropout_is_used records that.
-        # This looks wrong but it is what the published model does; adding the
-        # dropout would change the results. See docs/REFACTOR_NOTES.md.
-        trial_encoder = CloneSetEmbedding(
-            in_dim=cfg.in_dim,
-            d_model=cfg.d_model,
-            n_heads=cfg.n_heads,
-            num_layers=cfg.num_layers,
-            num_inducing=cfg.num_inducing,
-            dropout=cfg.dropout,
-            freq_as_weight=cfg.freq_as_weight,
-            # Run R4 (WP-A + WP-C). False is the published raw-frequency
-            # multiply, so this argument changes nothing unless --freq-renorm
-            # is passed. Deliberately NOT forwarded to DeepSet below, which has
-            # no per-clone frequency weighting at all.
-            freq_renorm=cfg.freq_renorm,
-            # Matrix 2 (runs R5-R8). Every one of these four defaults to the
-            # published behaviour, so an untouched cloneatt preset builds the
-            # same network it always did. They must be forwarded here and not
-            # only at training time: evaluation rebuilds the encoder from the
-            # checkpoint's effective config through this same function, and a
-            # missing argument would silently rebuild a different network --
-            # the failure mode M1 exists to prevent.
-            input_space=cfg.input_space,
-            freq_mode=cfg.freq_mode,
-            attn_ln=cfg.attn_ln,
-            attn_dropout_active=cfg.attn_dropout_active,
-            # Matrix 4 / run R17, trap 6 made opt-out. "published" is the
-            # published sqrt(d_model) divisor, so this argument changes nothing
-            # unless --attn-scale standard is passed. Forwarded here for the
-            # same reason as the four above: evaluation rebuilds through this
-            # function, and a missing argument would score a run as a network
-            # it never was.
-            attn_scale=cfg.attn_scale,
-        ).to(device)
+        trial_encoder = build_clone_attention_encoder(cfg, device)
     elif cfg.kind == "armtoken":
         # Matrix 5. Returned DIRECTLY, not wrapped in TrialsSBIEmbedding: this
         # module already pools over the T trials itself, and the wrapper's
@@ -443,33 +590,20 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
         # missing argument would silently rebuild a different network. The
         # `if None` fallbacks name the published ArmToken values so that a
         # checkpoint predating any one of these fields still rebuilds.
-        return ArmTokenEmbedding(
-            in_dim=cfg.in_dim,
-            d_token=cfg.d_token if cfg.d_token is not None else DEFAULT_D_TOKEN,
-            d_arm=cfg.d_arm if cfg.d_arm is not None else DEFAULT_D_ARM,
-            d_global=(
-                cfg.d_global if cfg.d_global is not None else DEFAULT_D_GLOBAL
-            ),
-            n_arm_layers=(
-                cfg.n_arm_layers
-                if cfg.n_arm_layers is not None
-                else DEFAULT_N_ARM_LAYERS
-            ),
-            n_heads=cfg.n_heads if cfg.n_heads is not None else DEFAULT_N_HEADS,
-            num_inducing=(
-                cfg.arm_num_inducing
-                if cfg.arm_num_inducing is not None
-                else DEFAULT_ARM_NUM_INDUCING
-            ),
-            trial_pool=cfg.trial_pool,
-            input_space=cfg.input_space,
-            attn_ln=cfg.attn_ln,
-            # Trap 4's shape again, opt-in: the probability alone builds no
-            # module, so both halves have to be forwarded.
-            dropout=cfg.dropout if cfg.dropout is not None else 0.2,
-            attn_dropout_active=cfg.attn_dropout_active,
-            attn_scale=cfg.attn_scale,
-        ).to(device)
+        return build_arm_token_encoder(cfg, device)
+    elif cfg.kind == "hybrid":
+        # Matrix 6. Returned DIRECTLY, like armtoken and for a related reason:
+        # HybridEmbedding already owns BOTH branches, the clone one complete
+        # with its own TrialsSBIEmbedding wrapper. Wrapping the concatenation
+        # again would put a dense MLP over the 44 per-arm blocks and destroy
+        # the equivariance of the first 352 outputs.
+        #
+        # Local import, and the only one in this module that is not at the
+        # top: models/hybrid.py imports the three builders above from here, so
+        # a top-level import in both directions would be a cycle.
+        from cancer_sbi.models.hybrid import HybridEmbedding
+
+        return HybridEmbedding(cfg, device=device)
     elif cfg.kind == "deepset":
         # Plain_NPE/model.py:55 passes only the three dimensions; every other
         # argument keeps the class default from Plain_NPE/net_builder.py:14-24.
@@ -487,24 +621,7 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
     else:
         raise ValueError(f"Unknown encoder kind: {cfg.kind!r}")
 
-    # Base_NPE/inference_model.py:78-84 and
-    # SetTransformer_NPE/inference_model.py:74-80 -- byte-identical calls.
-    return TrialsSBIEmbedding(
-        trial_encoder=trial_encoder,
-        aggregation_fn=cfg.trials_aggregation_fn,
-        num_hiddens=cfg.trials_num_hiddens,
-        num_layers=cfg.trials_num_layers,
-        output_dim=cfg.trials_output_dim,
-        # Matrix 4 / run R20. "mean" is the published pooling, so these four
-        # arguments change nothing unless --trial-pool attention is passed.
-        # The three attention settings follow the encoder's so that the
-        # pooling PMA matches the stack under it; n_heads is None for the MLP
-        # encoder, where TrialsSBIEmbedding falls back to its own default.
-        trial_pool=cfg.trial_pool,
-        n_heads=cfg.n_heads,
-        attn_ln=cfg.attn_ln,
-        attn_scale=cfg.attn_scale,
-    ).to(device)
+    return wrap_trial_encoder(trial_encoder, cfg, device)
 
 
 def build_training_components(
@@ -593,6 +710,8 @@ class Trainer:
         density_estimator: The flow being trained.
         embedding_net: Its embedding submodule, or ``None``.
         optimizer: The Adam instance from :func:`build_optimizer`.
+        lr_scheduler: The ``ReduceLROnPlateau`` of a ``--lr-plateau`` run, or
+            ``None`` -- the default -- in which case no scheduler exists.
         ckpt_dir: Directory the checkpoints go to.
         epoch: Epochs finished so far (restored from a checkpoint if resuming).
         best_val_loss: Lowest validation loss so far.
@@ -690,6 +809,11 @@ class Trainer:
         os.makedirs(self.ckpt_dir, exist_ok=True)
 
         self.optimizer = build_optimizer(density_estimator, embedding_net, optim_cfg)
+        # Matrix 6. None unless --lr-plateau was passed, in which case nothing
+        # is constructed and the optimiser is exactly the published one. Built
+        # BEFORE the resume attempt, because the scheduler's state is part of
+        # the checkpoint the resume reads.
+        self.lr_scheduler = build_lr_scheduler(self.optimizer, train_cfg)
 
         # Preserved from Base_NPE/inference_model.py:115: the resume attempt is
         # the LAST thing the constructor does, after the optimiser exists,
@@ -722,6 +846,7 @@ class Trainer:
         self.best_model_state_dict = resumed.best_model_state_dict
         self.history = resumed.history
         self.epochs_since_last_improvement = resumed.epochs_since_last_improvement
+        self._restore_scheduler_state(resumed.scheduler_state)
         return True
 
     def save_checkpoint(self, epoch: int, is_best: bool = False) -> Path:
@@ -743,6 +868,13 @@ class Trainer:
             history=self.history,
             epochs_since_last_improvement=self.epochs_since_last_improvement,
             effective_config=self.effective_config,
+            # Matrix 6. None on a run with no scheduler, which omits the key
+            # and leaves the payload the shape it has always had.
+            scheduler_state=(
+                self.lr_scheduler.state_dict()
+                if self.lr_scheduler is not None
+                else None
+            ),
         )
         return checkpoints.save_checkpoint(self.ckpt_dir, epoch, payload, is_best=is_best)
 
@@ -774,7 +906,55 @@ class Trainer:
         self.best_model_state_dict = resumed.best_model_state_dict
         self.history = resumed.history
         self.epochs_since_last_improvement = resumed.epochs_since_last_improvement
+        self._restore_scheduler_state(resumed.scheduler_state)
         return resumed
+
+    def _restore_scheduler_state(
+        self, state: Optional[Dict[str, Any]]
+    ) -> None:
+        """Load a checkpoint's scheduler state into this run's scheduler.
+
+        Args:
+            state: The stored ``state_dict``, or ``None``.
+
+        Note:
+            A checkpoint written without ``--lr-plateau`` carries no state, and
+            a run started without the flag has no scheduler, so the two
+            mismatched combinations are both silent no-ops on purpose: adding
+            the flag to a resumed run starts the schedule fresh rather than
+            refusing the checkpoint, and dropping it leaves the last learning
+            rate the optimiser state already carries.
+        """
+        if state is None or self.lr_scheduler is None:
+            return
+        self.lr_scheduler.load_state_dict(state)
+
+    def _step_lr_scheduler(self, val_loss: float) -> None:
+        """Step the plateau scheduler and say so if the learning rate moved.
+
+        Args:
+            val_loss: This epoch's validation loss -- the quantity the
+                scheduler is in ``mode="min"`` on.
+
+        Note:
+            The rates are read either side of the step rather than from the
+            scheduler's own bookkeeping, so the line is printed exactly when
+            the optimiser actually changed, whatever torch version decides to
+            log for itself.
+        """
+        if self.lr_scheduler is None:
+            return
+        before = [group["lr"] for group in self.optimizer.param_groups]
+        self.lr_scheduler.step(val_loss)
+        after = [group["lr"] for group in self.optimizer.param_groups]
+        if after != before:
+            moved = ", ".join(
+                f"{old:.3g} -> {new:.3g}" for old, new in zip(before, after)
+            )
+            msg = f"[lr] ReduceLROnPlateau lowered the learning rate: {moved}"
+            print(msg)
+            if self.train_cfg.log_progress:
+                logging.info(msg)
 
     # -- validation -------------------------------------------------------
 
@@ -914,6 +1094,11 @@ class Trainer:
             print(msg)
             if cfg.log_progress:
                 logging.info(msg)
+
+            # Matrix 6. Stepped on the validation loss, once per epoch, before
+            # the checkpoint is written so the state saved is this epoch's.
+            # With no --lr-plateau this is a single `is None` test.
+            self._step_lr_scheduler(val_loss_average)
 
             # Preserved from Base_NPE/inference_model.py:230: the improvement
             # test is STRICT. An epoch that exactly ties the best loss counts as

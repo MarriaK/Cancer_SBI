@@ -395,6 +395,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     repairs.add_argument(
+        "--flow-hidden-features",
+        type=int,
+        default=None,
+        help=(
+            "Hidden width of the flow's residual blocks, all models "
+            "(published: 50, sbi's default -- and deliberately left without a "
+            "flag through matrices 1-5, because 50 is the width every "
+            "published run used). Matrix 6 adds it to WIDEN the flow (runs "
+            "AT6, AT8, AT9), which is an experiment, not a repair. Default: "
+            "the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--lr-plateau",
+        action="store_true",
+        help=(
+            "Attach ReduceLROnPlateau(mode='min', factor=0.5, patience=5) to "
+            "the optimiser and step it on the validation loss once per epoch, "
+            "halving every group's learning rate after 6 epochs without "
+            "improvement (runs AT7, AT9). Its state is checkpointed, so a "
+            "resumed run continues with the rate it had reached. Off by "
+            "default, which builds no scheduler at all and is exactly what "
+            "every published run did."
+        ),
+    )
+    repairs.add_argument(
         "--trial-subsample",
         type=int,
         default=None,
@@ -620,6 +646,10 @@ def build_config(
         # so TrainConfig.seed was a decorative field that no run could reach.
         seed=args.seed if args.seed is not None else preset.train.seed,
         log_progress=not args.quiet,
+        # Matrix 6. store_true, so False is both "absent" and the published
+        # behaviour; a preset that ever sets it True would still be honoured
+        # because the flag can only turn it on.
+        lr_plateau=bool(getattr(args, "lr_plateau", False)) or preset.train.lr_plateau,
     )
     # The `flow` block was never replaced here, which is why z_score_x -- the
     # one value the R0-vs-R1 comparison turns on -- could previously only be
@@ -635,6 +665,10 @@ def build_config(
         flow_cfg = replace(flow_cfg, dropout_probability=args.flow_dropout)
     if getattr(args, "flow_num_transforms", None) is not None:
         flow_cfg = replace(flow_cfg, num_transforms=args.flow_num_transforms)
+    # Matrix 6. Read by every preset's flow, like the three above it, so there
+    # is no preset for which it would be decorative and no warning to print.
+    if getattr(args, "flow_hidden_features", None) is not None:
+        flow_cfg = replace(flow_cfg, hidden_features=args.flow_hidden_features)
     # Matrix 4 / run R18. Read by all three presets, like the two above it.
     if getattr(args, "tail_bound", None) is not None:
         flow_cfg = replace(flow_cfg, tail_bound=args.tail_bound)
@@ -677,13 +711,20 @@ def build_config(
     # set them apply to both; `num_inducing`, `d_model`, `freq_mode` and
     # `freq_renorm` are not, and stay attention-only (cli warns for armtoken).
     is_armtoken = preset.encoder.kind == "armtoken"
-    has_attention = is_attention or is_armtoken
+    # Matrix 6. The hybrid encoder owns one of each branch, so it reads BOTH
+    # field groups: everything gated on `is_attention` below and everything
+    # gated on `is_armtoken` applies to it, and the two shape checks after the
+    # gates are run for both of its branches.
+    is_hybrid = preset.encoder.kind == "hybrid"
+    has_attention = is_attention or is_armtoken or is_hybrid
+    has_clone_branch = is_attention or is_hybrid
+    has_arm_branch = is_armtoken or is_hybrid
     # Matrix 3 widened --freq-mode to clonemlp, so the gate is "either clone-set
     # encoder", not "attention". Only DeepSet, which has no per-clone frequency
     # at all, still ignores it.
     if (
         getattr(args, "freq_mode", None) is not None
-        and preset.encoder.kind in ("mlp", "attention")
+        and preset.encoder.kind in ("mlp", "attention", "hybrid")
     ):
         encoder_cfg = replace(encoder_cfg, freq_mode=args.freq_mode)
     if getattr(args, "attn_ln", False) and has_attention:
@@ -703,7 +744,7 @@ def build_config(
         encoder_cfg = replace(encoder_cfg, attn_scale=args.attn_scale)
     if (
         getattr(args, "trial_pool", None) is not None
-        and preset.encoder.kind in ("mlp", "attention", "armtoken")
+        and preset.encoder.kind in ("mlp", "attention", "armtoken", "hybrid")
     ):
         encoder_cfg = replace(encoder_cfg, trial_pool=args.trial_pool)
     # --d-model is read by BaselineCloneEmbedding as well as CloneSetEmbedding
@@ -713,20 +754,23 @@ def build_config(
     if getattr(args, "d_model", None) is not None and preset.encoder.kind in (
         "mlp",
         "attention",
+        # Matrix 6: --d-model sizes the hybrid's CLONE branch. Its arm branch
+        # has --d-arm and --d-token-free defaults of its own.
+        "hybrid",
     ):
         encoder_cfg = replace(encoder_cfg, d_model=args.d_model)
     if getattr(args, "n_heads", None) is not None and has_attention:
         encoder_cfg = replace(encoder_cfg, n_heads=args.n_heads)
-    if getattr(args, "num_inducing", None) is not None and is_attention:
+    if getattr(args, "num_inducing", None) is not None and has_clone_branch:
         encoder_cfg = replace(encoder_cfg, num_inducing=args.num_inducing)
     # Matrix 5's three armtoken-only knobs, recorded only on armtoken for the
     # same reason as every switch above: a value on a preset that ignores it
     # would ride into the checkpoint describing a network nothing built.
-    if getattr(args, "arm_layers", None) is not None and is_armtoken:
+    if getattr(args, "arm_layers", None) is not None and has_arm_branch:
         encoder_cfg = replace(encoder_cfg, n_arm_layers=args.arm_layers)
-    if getattr(args, "d_arm", None) is not None and is_armtoken:
+    if getattr(args, "d_arm", None) is not None and has_arm_branch:
         encoder_cfg = replace(encoder_cfg, d_arm=args.d_arm)
-    if getattr(args, "arm_num_inducing", None) is not None and is_armtoken:
+    if getattr(args, "arm_num_inducing", None) is not None and has_arm_branch:
         encoder_cfg = replace(encoder_cfg, arm_num_inducing=args.arm_num_inducing)
 
     # The flow's context is the embedding's output, and build_nsf puts a
@@ -736,7 +780,7 @@ def build_config(
     # the flag is still named, rather than 20 minutes into an array task.
     # ArmTokenEmbedding raises the same error at build time; this one names
     # --d-arm.
-    if is_armtoken:
+    if has_arm_branch:
         from cancer_sbi.models.arm_tokens import MAX_CONTEXT_WIDTH, N_ARMS
 
         width = N_ARMS * encoder_cfg.d_arm + encoder_cfg.d_global
@@ -764,7 +808,7 @@ def build_config(
     # an indivisible pair does not raise -- it silently drops the remainder of
     # every token. Refused here, where the flags are still named, rather than
     # 20 minutes into an array task.
-    if encoder_cfg.kind == "attention" and encoder_cfg.d_model % encoder_cfg.n_heads:
+    if has_clone_branch and encoder_cfg.d_model % encoder_cfg.n_heads:
         raise ValueError(
             f"--d-model {encoder_cfg.d_model} is not divisible by --n-heads "
             f"{encoder_cfg.n_heads}: the attention splits the embedding evenly "
@@ -778,6 +822,10 @@ def build_config(
     if encoder_cfg.trial_pool == "attention" and encoder_cfg.kind in (
         "mlp",
         "attention",
+        # Matrix 6: the hybrid's clone branch has the same wrapper, so it has
+        # the same constraint. Its ARM branch's own pooling PMA is over
+        # d_token and is checked by the armtoken block above.
+        "hybrid",
     ):
         # armtoken is excluded: its trial pooling is ArmTokenEmbedding's own
         # PMA over d_token, checked just above, and its `d_model` is None.
@@ -818,7 +866,7 @@ def build_config(
         print(f"[warn] --freq-renorm is not used by {preset.name}; ignoring it.")
     if (
         getattr(args, "freq_mode", None) is not None
-        and preset.encoder.kind not in ("mlp", "attention")
+        and preset.encoder.kind not in ("mlp", "attention", "hybrid")
     ):
         print(f"[warn] --freq-mode is not used by {preset.name}; ignoring it.")
     if getattr(args, "attn_ln", False) and not has_attention:
@@ -858,19 +906,20 @@ def build_config(
         print(f"[warn] --attn-scale is not used by {preset.name}; ignoring it.")
     if (
         getattr(args, "trial_pool", None) is not None
-        and preset.encoder.kind not in ("mlp", "attention", "armtoken")
+        and preset.encoder.kind not in ("mlp", "attention", "armtoken", "hybrid")
     ):
         print(f"[warn] --trial-pool is not used by {preset.name}; ignoring it.")
     if getattr(args, "d_model", None) is not None and preset.encoder.kind not in (
         "mlp",
         "attention",
+        "hybrid",
     ):
         print(f"[warn] --d-model is not used by {preset.name}; ignoring it.")
     if getattr(args, "n_heads", None) is not None and not has_attention:
         print(f"[warn] --n-heads is not used by {preset.name}; ignoring it.")
     # --num-inducing stays CloneAtt's: armtoken has --arm-num-inducing, and one
     # flag for both would silently reshape whichever model was not meant.
-    if getattr(args, "num_inducing", None) is not None and not is_attention:
+    if getattr(args, "num_inducing", None) is not None and not has_clone_branch:
         print(f"[warn] --num-inducing is not used by {preset.name}; ignoring it.")
     # Matrix 5's three knobs, the other way round.
     for flag, value in (
@@ -878,7 +927,7 @@ def build_config(
         ("--d-arm", getattr(args, "d_arm", None)),
         ("--arm-num-inducing", getattr(args, "arm_num_inducing", None)),
     ):
-        if value is not None and not is_armtoken:
+        if value is not None and not has_arm_branch:
             print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
 
     if args.top_k is not None and preset.data.top_k is None:
@@ -938,6 +987,10 @@ def effective_config_payload(
         # inherited from the preset.
         "flow_dropout": getattr(args, "flow_dropout", None),
         "flow_num_transforms": getattr(args, "flow_num_transforms", None),
+        # Matrix 6. flow_hidden_features also lands in the snapshotted `flow`
+        # block and lr_plateau in `train`; these are the flags as typed.
+        "flow_hidden_features": getattr(args, "flow_hidden_features", None),
+        "lr_plateau": bool(getattr(args, "lr_plateau", False)),
         "trial_subsample": getattr(args, "trial_subsample", None),
         # Matrix 4. attn_scale, trial_pool, d_model, n_heads and num_inducing
         # also land in the snapshotted `encoder` block and tail_bound in

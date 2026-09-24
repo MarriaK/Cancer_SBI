@@ -27,6 +27,13 @@ plus, since 2026-09-24, a tenth::
 
     effective_config               cancer_sbi.config.config_to_dict(cfg)
 
+and an eleventh, written only by a ``--lr-plateau`` run (matrix 6)::
+
+    scheduler_state                ReduceLROnPlateau.state_dict()
+
+without which a resumed run would restart at the full learning rate and lose
+every halving the first attempt had earned.
+
 which is the config the run was *actually* trained with, flags folded in. It is
 what lets evaluation rebuild the same network instead of guessing at
 ``get_preset`` defaults -- see :func:`read_effective_config`. Every checkpoint
@@ -68,7 +75,10 @@ CHECKPOINT_KEYS = (
 #: The optional tenth key, written since 2026-09-24. Kept out of
 #: :data:`CHECKPOINT_KEYS` because that tuple documents the payload the three
 #: originals wrote, and a checkpoint without this key is still a valid one.
-OPTIONAL_CHECKPOINT_KEYS = (EFFECTIVE_CONFIG_KEY,)
+#: Key under which a ``--lr-plateau`` run stores its scheduler state.
+SCHEDULER_STATE_KEY = "scheduler_state"
+
+OPTIONAL_CHECKPOINT_KEYS = (EFFECTIVE_CONFIG_KEY, SCHEDULER_STATE_KEY)
 
 #: File name of the pointer a resume reads.
 LATEST_FILENAME = "latest.pt"
@@ -92,6 +102,12 @@ class ResumedState(NamedTuple):
         history: ``{"training_loss": [...], <history_val_key>: [...]}``.
         epochs_since_last_improvement: The early-stopping counter as stored.
         path: The file this state came from.
+        scheduler_state: The LR scheduler's ``state_dict()``, or ``None`` for a
+            checkpoint written without ``--lr-plateau`` (which is every
+            checkpoint before matrix 6). Returned rather than loaded here
+            because :func:`load_checkpoint` is given a model and an optimizer,
+            not a scheduler; :class:`~cancer_sbi.training.trainer.Trainer`
+            applies it to whichever scheduler it built.
     """
 
     epoch: int
@@ -100,6 +116,7 @@ class ResumedState(NamedTuple):
     history: Dict[str, List[float]]
     epochs_since_last_improvement: int
     path: Path
+    scheduler_state: Optional[Dict[str, Any]] = None
 
 
 def latest_checkpoint_path(ckpt_dir: PathLike) -> Optional[Path]:
@@ -129,6 +146,7 @@ def build_checkpoint(
     history: Dict[str, List[float]],
     epochs_since_last_improvement: int,
     effective_config: Optional[Dict[str, Any]] = None,
+    scheduler_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble the checkpoint payload.
 
@@ -148,6 +166,9 @@ def build_checkpoint(
             this run is training with, flags folded in. ``None`` omits the key
             entirely, which is what a checkpoint written before 2026-09-24 looks
             like.
+        scheduler_state: ``ReduceLROnPlateau.state_dict()`` for a
+            ``--lr-plateau`` run (matrix 6). ``None`` omits the key, which is
+            what a run with no scheduler writes.
 
     Returns:
         A ``dict`` with the keys listed in :data:`CHECKPOINT_KEYS`, plus
@@ -179,6 +200,8 @@ def build_checkpoint(
     }
     if effective_config is not None:
         payload[EFFECTIVE_CONFIG_KEY] = effective_config
+    if scheduler_state is not None:
+        payload[SCHEDULER_STATE_KEY] = scheduler_state
     return payload
 
 
@@ -304,6 +327,11 @@ def load_checkpoint(
     # every checkpoint already on the cluster. See docs/REFACTOR_NOTES.md.
     history = ckpt.get("history", {"training_loss": [], history_val_key: []})
     epochs_since_last_improvement = int(ckpt.get("epochs_since_last_improvement", 0))
+    # Matrix 6: absent from every checkpoint written without --lr-plateau, so
+    # the fallback is None and the Trainer simply leaves its scheduler fresh.
+    scheduler_state = ckpt.get(SCHEDULER_STATE_KEY)
+    if not isinstance(scheduler_state, dict):
+        scheduler_state = None
 
     if "rng_state" in ckpt:
         torch.set_rng_state(ckpt["rng_state"])
@@ -320,6 +348,7 @@ def load_checkpoint(
         history=history,
         epochs_since_last_improvement=epochs_since_last_improvement,
         path=Path(path),
+        scheduler_state=scheduler_state,
     )
 
 
@@ -373,6 +402,7 @@ def try_resume(
 __all__ = [
     "CHECKPOINT_KEYS",
     "OPTIONAL_CHECKPOINT_KEYS",
+    "SCHEDULER_STATE_KEY",
     "read_effective_config",
     "LATEST_FILENAME",
     "BEST_FILENAME",

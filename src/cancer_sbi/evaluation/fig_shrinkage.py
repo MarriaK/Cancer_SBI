@@ -20,11 +20,12 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 
-MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken"]
+MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid"]
 LABEL = {"clonemlp": "CloneMLP-NPE", "cloneatt": "CloneAtt-NPE",
-         "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE"}
+         "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE",
+         "hybrid": "Hybrid-NPE"}
 C_MLP, C_ATT, C_DOM = "#4c3fa5", "#17a673", "#e8622a"
-COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a"}
+COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a", "hybrid": "#e31a1c"}
 INK, MUTED, GRID, RULE = "#141412", "#63625c", "#dcdad2", "#4a4a46"
 WARN, GOOD = "#a8443f", "#12714f"
 

@@ -313,6 +313,21 @@ def resolve_eval_config(
         if preset.encoder.kind == "armtoken"
         else ""
     )
+    # Matrix 6. The hybrid reads BOTH branches' fields, so naming only one set
+    # would leave half the rebuilt network unsaid -- and the two halves are
+    # exactly what a state-dict load failure is about.
+    if preset.encoder.kind == "hybrid":
+        armtoken_note = (
+            f", arm[d_arm={preset.encoder.d_arm}, "
+            f"n_arm_layers={preset.encoder.n_arm_layers}, "
+            f"d_token={preset.encoder.d_token}, "
+            f"arm_num_inducing={preset.encoder.arm_num_inducing}]"
+            f", clone[d_model={preset.encoder.d_model}, "
+            f"n_heads={preset.encoder.n_heads}, "
+            f"num_inducing={preset.encoder.num_inducing}, "
+            f"trials_output_dim={preset.encoder.trials_output_dim}]"
+            f", trial_pool={preset.encoder.trial_pool}"
+        )
     print(
         f"[config] rebuilt from the checkpoint: kind={preset.encoder.kind}"
         f"{armtoken_note}, z_score_x="
@@ -329,6 +344,9 @@ def resolve_eval_config(
         # name them would leave the one thing a load failure turns on unsaid.
         f"flow_dropout={preset.flow.dropout_probability}, "
         f"num_transforms={preset.flow.num_transforms}, "
+        # Matrix 6: --flow-hidden-features moves the flow's residual width, so
+        # it belongs beside num_transforms for the same reason.
+        f"hidden_features={preset.flow.hidden_features}, "
         f"require_all_trials={resolved_require}",
         flush=True,
     )

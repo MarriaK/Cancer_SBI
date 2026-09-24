@@ -13,8 +13,9 @@ Cluster tree: `~/cancer/{src,data,runs,results,cache,logs}` — there is no `cod
 | `train.sh` | The five-run matrix R0/R1/R2/R4/D0 as a `--array=0-4` job. Refuses to start if the run's checkpoint directory is non-empty, or if the split carries no `val_ids`. 12 h, a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
 | `train2.sh` | The seven-run matrix 2 (R3/R2s1/R2s2/R5/R6/R7/R8) as a `--array=0-6` job. Same split gate, same non-empty-checkpoint refusal, same 12 h a100 as `train.sh`. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
 | `train3.sh` | The fourteen-run matrix 3 (R3s1/R3s2/R6s1/R6s2/D0s1/D0s2/R9–R16) as a `--array=0-13` job. Adds `--flow-dropout`, `--flow-num-transforms`, `--trial-subsample` and `--freq-mode feature` for clonemlp. Same split gate, same non-empty-checkpoint refusal, same 12 h a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
-| `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. For one run: `--array=<i>` or `MODEL=`; `CKPT` with the full 0-2 array is refused. | `MODEL`, `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `EXTRA` (extra flags, last-wins), `DRY_RUN` |
+| `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. For one run: `--array=<i>` or `MODEL=`; `CKPT` with the full 0-2 array is refused. | `MODEL`, `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `PARTITION` (`test`\|`val`, default `test`; `val` samples the validation ids into `..._val.npz` for `recalibrate.sh`), `EXTRA` (extra flags, last-wins), `DRY_RUN` |
 | `ensemble.sh` | Stage 1b: pools several seeds' stage-1 `.npz` files into one equal-weight mixture posterior, `posteriors_<MODEL>_<RUN_TAG>.npz`, which `analyze.sh` then reads unchanged. CPU, minutes. | `INPUTS` (space-separated `.npz` paths, required), `OUT` (output dir), `MODEL`, `RUN_TAG`, `NUM_SAMPLES` (subsample, equal share per member), `EXTRA`, `DRY_RUN` |
+| `recalibrate.sh` | Stage 1c: fits a per-arm affine correction (bias `a_j`, width factor `b_j`, both in posterior-sd units) on a **validation** stage-1 file written by `PARTITION=val jobs/sample.sh`, applies it to the test file, and writes `posteriors_<MODEL>_<RUN_TAG>.npz`, which `analyze.sh` then reads unchanged. `log_prob_true` is NaN in the output (the corrected draws are no longer the flow's density). CPU, minutes. | `VAL` (validation `.npz`, required), `TEST` (test `.npz`, required), `OUT` (output dir), `MODEL`, `RUN_TAG`, `METHOD` (`affine`\|`shift`), `EXTRA`, `DRY_RUN` |
 | `analyze.sh` | Stage 2: `poster_metrics` — every metric, table and figure, from stage 1's `.npz`. CPU, minutes. | `POST` (input dir), `OUT` (results dir), `DRY_RUN` |
 | `shrink.sh` | Figure D (`fig_shrinkage`), screen and poster builds. CPU. | `POST`, `OUT`, `DRY_RUN` |
 | `treetest.sh` | Smoke test: all three models sample 4 cases from the reorganised tree. | — |
@@ -260,3 +261,57 @@ than letting it through.
 | 1 | R18s2 | `--tail-bound 5 --seed 2` |
 | 2 | R26 | `--tail-bound 5 --d-model 256` |
 | 3 | R26s1 | `--tail-bound 5 --d-model 256 --seed 1` |
+
+## Matrix 6 — the hybrid, and ArmToken's flow (`train6.sh`)
+
+Matrix 5 settled the architecture question: ArmToken (AT0) reaches R² 0.898 where CloneAtt's
+best-ever run (R26) reaches 0.568. This matrix asks the two follow-ups that answer leaves open, as a
+`--array=0-8` job with the same split gate, non-empty-checkpoint refusal and 12 h a100 as
+`train5.sh`.
+
+**Rows 0–2, the hybrid.** A fifth model, `--model hybrid` (`Hybrid-NPE`, `models/hybrid.py`):
+ArmToken's encoder and R26's CloneAtt encoder run **side by side** on the same input, their contexts
+concatenated — 416 from the arm branch, 256 from the clone branch, **672** to the flow. The fusion is
+*late* on purpose: the branches share no weights and never see each other's activations, so the arm
+branch is bit-for-bit the module matrix 5 measured and a hybrid that only matches AT0 says the clone
+branch added nothing. The symmetry is correspondingly partial and the tests assert all three halves:
+the first 352 outputs are exactly arm-equivariant, the next 64 exactly arm-invariant, and the last
+256 are **neither** — which is the point, since per-arm moments throw away the joint pattern of two
+arms *within* one clone and clone-level attention is the one encoder here that keeps it. Three seeds,
+because the difference being tested is the size of the seed spread (±0.05 on R²).
+
+**Rows 3–8, ArmToken's flow.** Its encoder is 62k parameters and its flow, at 3 transforms × 50
+hidden features, is now the small half of the model; every matrix so far shrank the flow to fight
+overfitting and none has asked whether ArmToken's context can feed a bigger one. AT0s2 is the
+yardstick's third seed so the six flow rows are read against a three-seed baseline.
+
+All nine share `--min-epochs 1 --stop-after-epochs 15 --max-epochs 60 --num-workers 8 --tail-bound
+5`, use the clone cache when `CACHE_DIR` is set, and take seed 20260924 except where the table says.
+
+| idx | run | flags on top of the preset | what it tests |
+| --- | --- | --- | --- |
+| 0 | H0 | `--model hybrid` | the hybrid itself — does clone-level attention add anything on top of the per-arm moments? |
+| 1 | H0s1 | `--model hybrid --seed 1` | the hybrid's own seed spread |
+| 2 | H0s2 | `--model hybrid --seed 2` | likewise |
+| 3 | AT0s2 | `--model armtoken --seed 2` | matrix 5's yardstick, third seed |
+| 4 | AT5 | `--flow-num-transforms 5` | is R12's shrink to 3 transforms still right now the encoder does the work? |
+| 5 | AT6 | `--flow-hidden-features 100` | 50 is the published width in *every* run of every matrix; nothing has tested it |
+| 6 | AT7 | `--lr-plateau` | `ReduceLROnPlateau(factor 0.5, patience 5)` on the validation loss |
+| 7 | AT8 | `--flow-num-transforms 5 --flow-hidden-features 100` | the bigger flow, both dimensions |
+| 8 | AT9 | `--flow-num-transforms 5 --flow-hidden-features 100 --lr-plateau` | the biggest flow with the best chance of settling into it |
+
+Both new flags default to the published behaviour. `--flow-hidden-features` overrides
+`FlowConfig.hidden_features`, which matrices 1–5 deliberately left without a flag because 50 is the
+published width — it is an experiment flag, not a repair. `--lr-plateau` builds **no scheduler at
+all** when absent, so a default run's training is bitwise what it was; when present the scheduler
+steps on the validation loss once per epoch, prints a line whenever it lowers a rate (both optimiser
+groups move together), and its state rides in the checkpoint so a resume continues with the rate it
+had reached. Two seeded two-epoch runs, one with the flag and one without, are pinned to produce
+identical weights.
+
+For `hybrid`, `--d-model`, `--n-heads`, `--num-inducing`, `--freq-mode` and `--attn-scale` size the
+**clone** branch; `--arm-layers`, `--d-arm` and `--arm-num-inducing` the **arm** branch; `--attn-ln`,
+`--input-space`, `--encoder-dropout` and `--trial-pool` apply to **both**. `--freq-renorm` and
+`--require-all-trials` are warned about and ignored. One `--n-heads` serves both branches, so it must
+divide the clone branch's `d_model` (256) *and* the arm branch's `d_token` (64); 8 does both and
+`cli/train.py` refuses a value that does not.

@@ -37,9 +37,9 @@ import matplotlib.patheffects as pe
 # the poster's tokens, inlined so this file has no project dependencies
 INK, INK2, MUTED, GRID, AXIS, PANEL = "#0b0b0b", "#52514e", "#5c5b55", "#c4c3ba", "#8a8982", "#f5f4f0"
 C_MLP, C_DOM, C_ATT = "#4a3aa7", "#eb6834", "#1baf7a"
-MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken"]
-LABEL = {"clonemlp": "CloneMLP-NPE", "cloneatt": "CloneAtt-NPE", "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE"}
-COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a"}
+MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid"]
+LABEL = {"clonemlp": "CloneMLP-NPE", "cloneatt": "CloneAtt-NPE", "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE", "hybrid": "Hybrid-NPE"}
+COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a", "hybrid": "#e31a1c"}
 ARMS = [f"{c}{a}" for c in range(1, 23) for a in "pq"]
 
 plt.rcParams.update({

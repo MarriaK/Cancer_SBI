@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
 
 DatasetKind = Literal["clone_sets", "dominant_clone"]
-EncoderKind = Literal["mlp", "attention", "deepset", "armtoken"]
+EncoderKind = Literal["mlp", "attention", "deepset", "armtoken", "hybrid"]
 ReloadBestPolicy = Literal["never", "on_early_stop", "always"]
 ZScoreMode = Literal["none", "structured", "independent"]
 InputSpace = Literal["log2", "copy"]
@@ -137,7 +137,14 @@ class EncoderConfig:
             last one is the whole embedding net, like DeepSet and unlike the
             first two: its ``trials_*`` fields are ``None`` because wrapping it
             in ``TrialsSBIEmbedding`` would blend the per-arm blocks back
-            together.
+            together. ``"hybrid"`` -> ``HybridEmbedding`` (matrix 6): an
+            ``ArmTokenEmbedding`` and a fully-wrapped CloneAtt stack side by
+            side, their contexts concatenated. It reads BOTH sets of fields --
+            the armtoken ones size the arm branch, ``d_model``/``n_heads``/
+            ``num_inducing``/``freq_mode``/``attn_scale`` and the ``trials_*``
+            block size the clone branch -- which is why this dataclass's
+            "fields that do not apply are None" rule has one kind for which
+            almost nothing is None.
         in_dim: Declared clone-row width (44 CNA features + 1 frequency).
         d_model: Per-trial embedding width for the clone-set encoders.
         hidden_dim: Hidden width of the per-clone MLP (``"mlp"`` only).
@@ -321,8 +328,11 @@ class FlowConfig:
     # sbi defaults, pinned. Identical in sbi 0.23.3 and 0.25.0.
     hidden_features: int = 50
     # 5 is sbi's default and the published value; --flow-num-transforms
-    # (matrix 3, runs R12/R16) shrinks the flow by lowering it. hidden_features
-    # deliberately has no flag: 50 is the published width in every run.
+    # (matrix 3, runs R12/R16) shrinks the flow by lowering it. 50 was
+    # deliberately left without a flag through matrices 1-5 because it is the
+    # published width in every run; matrix 6 adds --flow-hidden-features to
+    # WIDEN it (runs AT6, AT8, AT9), which is an experiment, not a repair. The
+    # default is still 50, so an untouched command line is unchanged.
     num_transforms: int = 5
     num_bins: int = 10
     num_blocks: int = 2
@@ -401,6 +411,13 @@ class TrainConfig:
         ckpt_dir: Default checkpoint directory *of the original folder*. Trap 11.
         seed: ``None`` reproduces today's fully unseeded behaviour. Trap 21.
         log_progress: Mirror the per-epoch message into ``logging``.
+        lr_plateau: Matrix 6. ``False`` -- the default and the published
+            behaviour -- builds no scheduler at all, so training is bitwise
+            what it was before this field existed. ``True`` attaches
+            ``ReduceLROnPlateau(mode="min", factor=0.5, patience=5)`` to the
+            optimiser and steps it on the validation loss once per epoch; its
+            state is written into every checkpoint and restored on resume, so a
+            restarted run continues with the learning rate it had reached.
     """
 
     max_epochs: int = 200
@@ -448,6 +465,9 @@ class TrainConfig:
     # None keeps exactly that; pass an int only for new, explicitly-seeded runs.
     seed: Optional[int] = None
     log_progress: bool = True
+    # Added 2026-09-24 (matrix 6). False == no scheduler is constructed, which
+    # is exactly what every published run did; see the docstring.
+    lr_plateau: bool = False
 
 
 @dataclass(frozen=True)
@@ -729,12 +749,115 @@ ARMTOKEN = ModelPreset(
 )
 
 
+# ---------------------------------------------------------------------------
+# Matrix 6: a fifth model, the late fusion of the fourth and the second.
+# ---------------------------------------------------------------------------
+
+#: Hybrid-NPE. ArmToken reaches R^2 0.898 on per-arm moments alone; CloneAtt's
+#: best (R26) reaches 0.568 on raw clone-level attention. This preset runs both
+#: encoders side by side and concatenates their contexts -- 416 from the arm
+#: branch, 256 from the clone branch, 672 in all -- so the flow can use either.
+#: The question it asks is narrow and worth one matrix: does raw clone-level
+#: attention carry ANYTHING the per-arm moments threw away?
+#:
+#: The two branches are each other's published best. The arm branch is
+#: ARMTOKEN's encoder field for field; the clone branch is R26's CloneAtt
+#: (`--z-score-x structured --input-space copy --freq-mode feature --attn-ln
+#: --flow-num-transforms 3 --tail-bound 5 --d-model 256`), and the data,
+#: optimiser and training blocks come from CLONEATT so a matrix-6 run is read
+#: against matrices 4 and 5 on everything except the encoder.
+#:
+#: `n_heads` is shared by the two branches, as it is for every other preset:
+#: 8 divides CloneAtt's d_model 256 and ArmToken's d_token 64, so R26's head
+#: count is usable by the arm branch unchanged.
+#:
+#: NOT a published model, so none of the traps apply.
+HYBRID = ModelPreset(
+    name="hybrid",
+    paper_name="Hybrid-NPE",
+    origin="cancer_sbi/models/hybrid.py (new, matrix 6)",
+    data=DataConfig(
+        dataset="clone_sets",
+        top_k=100,
+        batch_size=32,
+        trial_filename="CNratios_all.pkl.gz",
+    ),
+    encoder=EncoderConfig(
+        kind="hybrid",
+        in_dim=45,
+        # --- arm branch: ARMTOKEN's encoder, field for field ------------------
+        d_token=64,
+        d_arm=8,
+        d_global=64,
+        n_arm_layers=1,
+        arm_num_inducing=16,
+        trial_pool="mean",
+        # --- clone branch: R26's CloneAtt -------------------------------------
+        d_model=256,             # R26's width, not CloneAtt's published 128
+        n_heads=8,               # divides 256 and 64, so both branches use it
+        num_layers=3,            # ISABs over the clone set
+        num_inducing=32,         # CloneAtt's published value, kept by R26
+        freq_mode="feature",     # R26
+        attn_scale="published",
+        freq_as_weight=True,
+        # The clone branch IS wrapped in TrialsSBIEmbedding, exactly as
+        # CloneAtt's is, so these five are read (unlike ARMTOKEN, where they
+        # are all None). The wrapper is what makes the clone branch produce the
+        # same 256-wide context CloneAtt's flow sees.
+        trials_aggregation_fn="mean",
+        trials_num_hiddens=256,
+        trials_num_layers=2,
+        trials_output_dim=256,
+        trials_aggregation_dim=1,
+        # --- shared by both branches ------------------------------------------
+        input_space="copy",
+        attn_ln=True,
+        dropout=0.2,
+        attn_dropout_active=False,
+        encoder_dropout_is_used=False,   # opt-in on both branches (trap 4 style)
+    ),
+    # z_score_x "structured" is matrices 2-5's finding; z_score_y stays "none"
+    # for the same reason as in ARMTOKEN -- the context is these encoders' own
+    # output and whitening it would flatten the per-arm scale.
+    #
+    # tail_bound is 5.0 IN THE PRESET, unlike every preset above it, which
+    # leaves sbi's 3.0 and lets `--tail-bound 5` name it per run. Matrix 4b and
+    # matrix 5 both established 5 as the value for this theta, and a hybrid run
+    # that forgot the flag would not be comparable with either AT0 or R26. The
+    # jobs script still passes `--tail-bound 5` so the two agree visibly.
+    flow=FlowConfig(
+        z_score_x="structured",
+        z_score_y="none",
+        dropout_probability=0.2,
+        num_transforms=3,        # matrix 3's R12 finding, kept by AT0 and R26
+        hidden_features=50,      # the published width; --flow-hidden-features widens it
+        tail_bound=5.0,
+    ),
+    optim=OptimConfig(
+        use_param_groups=True,
+        grad_clip=5.0,
+        learning_rate=5e-4,
+        learning_rate_is_used=False,
+    ),
+    train=TrainConfig(
+        max_epochs=200,
+        min_epochs=50,
+        stop_after_epochs=50,
+        enforce_min_epochs=False,
+        reload_best="on_early_stop",
+        history_val_key="validation_loss",
+        ckpt_dir="checkpoints",
+    ),
+)
+
+
 #: Lookup by CLI name.
 PRESETS = {
     CLONEMLP.name: CLONEMLP,
     CLONEATT.name: CLONEATT,
     DOMINANTCLONE.name: DOMINANTCLONE,
     ARMTOKEN.name: ARMTOKEN,
+    HYBRID.name: HYBRID,
 }
 
 
@@ -859,14 +982,15 @@ def get_preset(name: str) -> ModelPreset:
 
     Args:
         name: One of ``"clonemlp"``, ``"cloneatt"``, ``"dominantclone"`` --
-            the three published models -- or ``"armtoken"``, which is new in
-            matrix 5 and reproduces no original folder (case-insensitive).
+            the three published models -- or ``"armtoken"`` (matrix 5) or
+            ``"hybrid"`` (matrix 6), neither of which reproduces an original
+            folder (case-insensitive).
 
     Returns:
         The frozen :class:`ModelPreset`.
 
     Raises:
-        KeyError: If ``name`` is not one of the four presets.
+        KeyError: If ``name`` is not one of the five presets.
     """
     key = name.strip().lower()
     if key not in PRESETS:
@@ -891,6 +1015,7 @@ __all__ = [
     "CLONEATT",
     "DOMINANTCLONE",
     "ARMTOKEN",
+    "HYBRID",
     "PRESETS",
     "get_preset",
     "config_to_dict",

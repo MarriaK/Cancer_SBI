@@ -23,9 +23,15 @@
 # or, without remembering the index:  MODEL=clonemlp ... sbatch --array=0 jobs/sample.sh
 # (CKPT with the default 0-2 array is refused: a checkpoint belongs to one model.)
 #
-# Env overrides: MODEL (clonemlp|cloneatt|dominantclone), CKPT (explicit checkpoint), POST (output dir), RUN_TAG (output
-#   file label; the script reads RUN_TAG, not RUN), EXTRA (extra flags),
-#   DRY_RUN=1 (print the command, run nothing).
+# The validation pass a recalibration is fitted on (jobs/recalibrate.sh writes the
+# rest of that recipe). Same checkpoint, same POST directory, different partition:
+#   PARTITION=val RUN_TAG=AT0 CKPT=... POST=... MODEL=armtoken sbatch --array=0 jobs/sample.sh
+# writes posteriors_armtoken_AT0_val.npz beside posteriors_armtoken_AT0.npz. It needs a
+# split with val_ids (train_val_test_split.pkl); sample_posteriors.py refuses otherwise.
+#
+# Env overrides: MODEL (clonemlp|cloneatt|dominantclone|armtoken), CKPT (explicit checkpoint), POST (output dir), RUN_TAG (output
+#   file label; the script reads RUN_TAG, not RUN), PARTITION (test|val, default test),
+#   EXTRA (extra flags), DRY_RUN=1 (print the command, run nothing).
 #
 # -t is 12:00:00, above the ~8 h estimate for 651 cases x 5000 draws: an array task
 # killed at the wall clock loses the whole sample, and the queue cost of the extra
@@ -58,6 +64,10 @@ fi
 if [ -n "${RUN_TAG:-}" ]; then
   CMD+=(--run-tag "$RUN_TAG")
 fi
+# Always explicit, so the log says which split was sampled. test is the default and
+# is byte-identical to not passing it; val writes the _val.npz a recalibration is fitted on.
+PARTITION="${PARTITION:-test}"
+CMD+=(--partition "$PARTITION")
 # EXTRA stays last: argparse is last-wins, so it can still override anything above.
 CMD+=(${EXTRA:-})
 
@@ -74,7 +84,7 @@ conda activate cancer-sbi
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cd "$CANCER/src"
-echo "host=$(hostname)  model=$MODEL  post=$POST  ckpt=${CKPT:-<default: published run>}"
+echo "host=$(hostname)  model=$MODEL  post=$POST  partition=$PARTITION  ckpt=${CKPT:-<default: published run>}"
 mkdir -p "$POST"
 echo "${CMD[@]}"
 "${CMD[@]}"
