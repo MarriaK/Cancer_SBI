@@ -197,18 +197,24 @@ class CloneSetEmbedding(nn.Module):
         dropout: float = 0.1,
         freq_as_weight: bool = True,
         freq_renorm: bool = False,
+        input_space: str = "log2",
+        freq_mode: str = "weight",
+        attn_ln: bool = False,
+        attn_dropout_active: bool = False,
     ) -> None:
         """Build the input projection, the ISAB stack and the PMA head.
 
         Args:
             in_dim: Declared input width. Accepted and never read -- the
-                projection below is hard-coded to 44 inputs, so passing a
-                different ``in_dim`` has no effect.
+                projection below is sized by ``freq_mode`` (44 inputs in the
+                published ``"weight"`` mode), so passing a different ``in_dim``
+                has no effect.
             d_model: Token width throughout the stack and the output width.
             n_heads: Attention heads in every ISAB and in the PMA.
             num_layers: Number of stacked ISABs.
-            dropout: Accepted and IGNORED -- see the trap-4 note below.
-            freq_as_weight: Multiply each token by its clone frequency.
+            dropout: IGNORED unless ``attn_dropout_active`` -- see trap 4 below.
+            freq_as_weight: Multiply each token by its clone frequency. Read
+                only in ``freq_mode="weight"``; ``"feature"`` never multiplies.
             freq_renorm: Repair R4. ``False`` is the published behaviour -- the
                 tokens are multiplied by the RAW top-K frequencies, which sum to
                 well under 1 (trap 18/19), so every token is shrunk by roughly
@@ -225,11 +231,57 @@ class CloneSetEmbedding(nn.Module):
                 weighting for ISABs 2-3 and the PMA -- so the two halves cancel
                 and a joint run cannot be read. See
                 ``docs/MODEL_IMPROVEMENT_PLAN.md`` §5 step 5c.
+            input_space: Representation the 44 CNA columns are fed to the input
+                projection in, with exactly the formula
+                :class:`~cancer_sbi.models.mlp_encoder.BaselineCloneEmbedding`
+                uses (repair T2, there for run R2 and here for runs R6-R8).
+                ``"log2"`` is the published pass-through. The frequency column
+                is never touched by this setting.
+            freq_mode: What the clone frequency is *for*. ``"weight"`` is the
+                published behaviour: the 44 CNA columns are projected and each
+                token is multiplied by the frequency (see ``freq_renorm``).
+                ``"feature"`` (runs R5-R8) removes the multiply entirely and
+                feeds ``log10(clamp(freq, 1e-6))`` to the projection as a 45th
+                input column instead, so the frequency informs the token without
+                rescaling it. R4 showed the multiply is the reason CloneAtt
+                stalls: even renormalised, 100 clones share a unit of mass, so
+                every token is still ~0.01 of its scale with no LayerNorm to
+                rescale it. ``freq_renorm`` has nothing to act on in this mode
+                and ``cli/train.py`` refuses the pair.
+            attn_ln: Build every MAB/ISAB/PMA with ``ln=True`` (runs R5-R8).
+                ``False`` -- the default -- is trap 5, no LayerNorm anywhere.
+                Unlike under ``freq_mode="weight"`` there is no cancellation to
+                worry about here: ``"feature"`` does not scale the tokens, so a
+                LayerNorm has no frequency weighting left to erase.
+            attn_dropout_active: Wire ``dropout`` up (run R8). ``False`` -- the
+                default -- is trap 4: the value is accepted and discarded.
+
+        Raises:
+            ValueError: If ``input_space`` or ``freq_mode`` is not one of its
+                two allowed values.
         """
         super().__init__()
+
+        if input_space not in ("log2", "copy"):
+            raise ValueError(
+                f"input_space must be 'log2' or 'copy', got {input_space!r}."
+            )
+        if freq_mode not in ("weight", "feature"):
+            raise ValueError(
+                f"freq_mode must be 'weight' or 'feature', got {freq_mode!r}."
+            )
+
         self.freq_as_weight = freq_as_weight
         self.freq_renorm = freq_renorm
-        self.input_proj = nn.Linear(44, d_model)
+        self.input_space = input_space
+        self.freq_mode = freq_mode
+        self.attn_ln = attn_ln
+        self.attn_dropout_active = attn_dropout_active
+        # 44 in the published "weight" mode, where the frequency is a multiplier
+        # and never reaches the projection; 45 in "feature" mode, where the
+        # log10 frequency is the extra column. The width therefore moves only
+        # when freq_mode does, which keeps every published state_dict loadable.
+        self.input_proj = nn.Linear(45 if freq_mode == "feature" else 44, d_model)
         self.d_model = d_model
 
         # Preserved from SetTransformer_NPE/set_transformer.py:88 and :91-103.
@@ -240,23 +292,33 @@ class CloneSetEmbedding(nn.Module):
         # signature because removing it would change the call sites. This looks
         # wrong but it is what the published model does; wiring dropout up
         # changes the results. See docs/REFACTOR_NOTES.md.
+        #
+        # Run R8 (attn_dropout_active=True) is trap 4 put right, opt-in: one
+        # nn.Dropout applied to the output of every ISAB and of the PMA, which
+        # is where the MLP encoder's dropout sits relative to its own blocks.
+        # None -- the default -- constructs no module at all, so the trap-4
+        # forward pass is untouched. nn.Dropout holds no parameters, so neither
+        # branch consumes RNG or changes the state_dict.
+        self.attn_dropout = nn.Dropout(dropout) if attn_dropout_active else None
 
         # Stack of ISABs -> permutation-equivariant encoder.
-        # Preserved from SetTransformer_NPE/set_transformer.py:98 (trap 5): ln=False.
+        # Preserved from SetTransformer_NPE/set_transformer.py:98 (trap 5):
+        # ln=False, which is what attn_ln defaults to.
         self.layers = nn.ModuleList([
             ISAB(
                 dim_in=d_model,
                 dim_out=d_model,
                 num_heads=n_heads,
                 num_inds=num_inducing,
-                ln=False,
+                ln=attn_ln,
             )
             for _ in range(num_layers)
         ])
 
         # PMA -> permutation-invariant pooling.
-        # Preserved from SetTransformer_NPE/set_transformer.py:103 (trap 5): ln=False.
-        self.pma = PMA(dim=d_model, num_heads=n_heads, num_seeds=1, ln=False)
+        # Preserved from SetTransformer_NPE/set_transformer.py:103 (trap 5):
+        # ln=False, which is what attn_ln defaults to.
+        self.pma = PMA(dim=d_model, num_heads=n_heads, num_seeds=1, ln=attn_ln)
 
     def forward(self, x: Tensor) -> Tensor:
         """Embed and pool one batch of clone sets.
@@ -284,9 +346,31 @@ class CloneSetEmbedding(nn.Module):
         feats = x_clean[..., :44]  # (B, K, 44)
         freq = x_clean[..., 44]    # (B, K)
 
-        h = self.input_proj(feats)  # (B, K, d_model)
+        if self.input_space == "copy":
+            # Repair T2, the same formula as
+            # BaselineCloneEmbedding.forward (models/mlp_encoder.py): undo the
+            # log, clamp to [0, 8] so the -10.966 "arm completely lost"
+            # sentinel lands on 0, then recentre on diploid and halve. Kept
+            # literally identical to that line so the two encoders cannot drift
+            # apart. The frequency column is NOT converted.
+            feats = (torch.clamp(2.0 ** (feats + 1.0), 0, 8) - 2.0) / 2.0
 
-        if self.freq_as_weight:
+        if self.freq_mode == "feature":
+            # Runs R5-R8. No multiply anywhere: the frequency enters as a 45th
+            # input column, on a log scale so that the 1e-2..1e-6 range the top
+            # 100 clones span is spread out rather than crushed against 0.
+            log_freq = torch.log10(freq.clamp_min(1e-6))  # (B, K)
+            h = self.input_proj(torch.cat([feats, log_freq.unsqueeze(-1)], dim=-1))
+            # A padded row's frequency is 0, so its log10 is the -6 floor, which
+            # is a perfectly ordinary token value -- without this the padding
+            # would enter attention as data. In "weight" mode the multiply by a
+            # masked-to-zero frequency is what zeroes those tokens; this is the
+            # same zeroing, done explicitly because there is no multiply left.
+            h = h * (~pad_mask).unsqueeze(-1).to(h.dtype)  # (B, K, d_model)
+        else:
+            h = self.input_proj(feats)  # (B, K, d_model)
+
+        if self.freq_mode == "weight" and self.freq_as_weight:
             freq_masked = freq.masked_fill(pad_mask, 0.0)  # (B, K)
             # Preserved from SetTransformer_NPE/set_transformer.py:133-135.
             # Trap 19: the token embeddings are multiplied by the RAW top-K
@@ -315,8 +399,12 @@ class CloneSetEmbedding(nn.Module):
         z = h
         for layer in self.layers:
             z = layer(z)  # (B, K, d_model)
+            if self.attn_dropout is not None:
+                z = self.attn_dropout(z)
 
         pooled = self.pma(z)[:, 0, :]  # (B, d_model)
+        if self.attn_dropout is not None:
+            pooled = self.attn_dropout(pooled)
         return pooled
 
 

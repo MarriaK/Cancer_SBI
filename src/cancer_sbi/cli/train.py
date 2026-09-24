@@ -31,13 +31,30 @@ the run it produced before:
     ``config.py``. Default: the preset's (``none`` for clonemlp/cloneatt,
     ``structured`` for dominantclone).
 ``--input-space {log2,copy}``
-    CloneMLP only. ``copy`` converts the log2 ratios to copy-number space
-    *inside the encoder* (repair T2, run R2) rather than in the loader, which is
-    shared with CloneAtt. Default: ``log2``, the published behaviour.
+    Both clone-set models. ``copy`` converts the log2 ratios to copy-number
+    space *inside the encoder* (repair T2; run R2 for CloneMLP, runs R6-R8 for
+    CloneAtt) rather than in the loader, which they share. Default: ``log2``,
+    the published behaviour.
 ``--freq-renorm``
     CloneAtt only. Renormalise the per-clone frequency weights instead of
     multiplying tokens by a raw ~0.003 frequency (run R4). ``ln`` stays off.
     Default: off, the published behaviour.
+``--freq-mode {weight,feature}``
+    CloneAtt only. ``feature`` drops the frequency multiply altogether and
+    feeds ``log10(freq)`` to the input projection as a 45th column (runs
+    R5-R8); R4 showed that even a renormalised multiply leaves every token at
+    ~1/K of its scale. Refused together with ``--freq-renorm``. Default:
+    ``weight``, the published behaviour.
+``--attn-ln``
+    CloneAtt only. LayerNorm in every MAB/ISAB/PMA (runs R5-R8). Default: off,
+    which is trap 5.
+``--encoder-dropout P``
+    Embedding-net dropout. CloneMLP: overrides the published 0.2. CloneAtt:
+    the value *and* the layers, which the published encoder never built (trap
+    4, run R8). Ignored by DominantClone, whose DeepSet has no dropout.
+``--embed-lr X`` / ``--embed-weight-decay X`` / ``--flow-weight-decay X``
+    The two optimiser groups' rates and decays (runs R3, R7). Two-group models
+    only; DominantClone optimises one group (trap 2). Default: the preset's.
 ``--require-all-trials``
     DominantClone only. Keep only the sims that have every trial file, i.e. the
     clone-set models' sim set, so the three models are compared on the same
@@ -244,9 +261,74 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["log2", "copy"],
         default=None,
         help=(
-            "CloneMLP only: the space the per-clone MLP sees. 'copy' applies "
-            "the T2 conversion inside the encoder (run R2). Default: log2, "
-            "the published behaviour. Ignored by the other two encoders."
+            "Clone-set models only: the space the per-clone projection sees. "
+            "'copy' applies the T2 conversion inside the encoder, identically "
+            "for both (runs R2 and R6-R8). Default: log2, the published "
+            "behaviour. Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--freq-mode",
+        choices=["weight", "feature"],
+        default=None,
+        help=(
+            "CloneAtt only: what the clone frequency is for. 'weight' is the "
+            "published token multiply; 'feature' drops it and feeds "
+            "log10(freq) to the input projection as a 45th column instead "
+            "(runs R5-R8). Cannot be combined with --freq-renorm, which then "
+            "has nothing to renormalise. Default: weight."
+        ),
+    )
+    repairs.add_argument(
+        "--attn-ln",
+        action="store_true",
+        help=(
+            "CloneAtt only: build every MAB/ISAB/PMA with ln=True (runs "
+            "R5-R8). Default: off, which is trap 5 -- no LayerNorm anywhere "
+            "in the attention stack."
+        ),
+    )
+    repairs.add_argument(
+        "--encoder-dropout",
+        type=float,
+        default=None,
+        help=(
+            "Dropout probability inside the embedding net. clonemlp: "
+            "overrides the published 0.2 between the MLP's hidden layers. "
+            "cloneatt: the same value, AND wires it up at all -- the "
+            "published encoder accepts dropout and discards it (trap 4), so "
+            "this flag is what turns run R8 on. Ignored by dominantclone, "
+            "whose DeepSet has no dropout layer. Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--embed-lr",
+        type=float,
+        default=None,
+        help=(
+            "Learning rate of the embedding-net parameter group (published: "
+            "1e-4, which is near-frozen for an attention encoder -- run R7 "
+            "raises it). Two-group models only; ignored by dominantclone, "
+            "which optimises every parameter in one group (trap 2)."
+        ),
+    )
+    repairs.add_argument(
+        "--embed-weight-decay",
+        type=float,
+        default=None,
+        help=(
+            "Weight decay of the embedding-net parameter group (published: "
+            "0.0; run R3 uses 1e-4). Two-group models only."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-weight-decay",
+        type=float,
+        default=None,
+        help=(
+            "Weight decay of the flow parameter group (published: 1e-4; run "
+            "R3 uses 1e-3 against the epoch-15 overfit). Two-group models "
+            "only."
         ),
     )
     repairs.add_argument(
@@ -373,23 +455,80 @@ def build_config(
         if args.z_score_x is not None
         else preset.flow
     )
+    # --freq-renorm scales the weights of a multiply that --freq-mode feature
+    # removes, so the pair describes no network at all. Refused rather than
+    # resolved: silently dropping either half is how a run gets launched
+    # believing it carries a repair it does not.
+    if getattr(args, "freq_mode", None) == "feature" and args.freq_renorm:
+        raise ValueError(
+            "--freq-renorm and --freq-mode feature contradict each other: "
+            "'feature' removes the frequency multiply entirely, so there are "
+            "no per-clone weights left to renormalise. Pass one or the other."
+        )
+
     encoder_cfg = preset.encoder
-    if args.input_space is not None:
+    # Both clone-set encoders read input_space now (the same formula in both);
+    # only DeepSet ignores it, and a value recorded there would describe a
+    # transform nothing applied.
+    if args.input_space is not None and preset.encoder.kind != "deepset":
         encoder_cfg = replace(encoder_cfg, input_space=args.input_space)
     if args.freq_renorm:
         encoder_cfg = replace(encoder_cfg, freq_renorm=True)
+    # The three attention-only switches, and the optimiser group overrides, are
+    # applied only where they are read. A value recorded on a preset that
+    # ignores it would ride into the checkpoint's effective config and describe
+    # a network nothing built -- the same reason --require-all-trials is gated
+    # on the dataset above.
+    is_attention = preset.encoder.kind == "attention"
+    if getattr(args, "freq_mode", None) is not None and is_attention:
+        encoder_cfg = replace(encoder_cfg, freq_mode=args.freq_mode)
+    if getattr(args, "attn_ln", False) and is_attention:
+        encoder_cfg = replace(encoder_cfg, attn_ln=True)
+    if getattr(args, "encoder_dropout", None) is not None and preset.encoder.kind != "deepset":
+        encoder_cfg = replace(encoder_cfg, dropout=args.encoder_dropout)
+        if is_attention:
+            # Trap 4: CloneAtt's encoder accepts `dropout` and discards it, so
+            # setting the probability is not enough -- the run has to say that
+            # the layers should exist at all. clonemlp already applies it.
+            encoder_cfg = replace(encoder_cfg, attn_dropout_active=True)
+    optim_cfg = preset.optim
+    if preset.optim.use_param_groups:
+        if getattr(args, "embed_lr", None) is not None:
+            optim_cfg = replace(optim_cfg, embed_lr=args.embed_lr)
+        if getattr(args, "embed_weight_decay", None) is not None:
+            optim_cfg = replace(optim_cfg, embed_weight_decay=args.embed_weight_decay)
+        if getattr(args, "flow_weight_decay", None) is not None:
+            optim_cfg = replace(optim_cfg, flow_weight_decay=args.flow_weight_decay)
     cfg = replace(
         preset,
         data=data_cfg,
         train=train_cfg,
         flow=flow_cfg,
         encoder=encoder_cfg,
+        optim=optim_cfg,
     )
 
-    if args.input_space is not None and preset.encoder.kind != "mlp":
+    if args.input_space is not None and preset.encoder.kind not in ("mlp", "attention"):
         print(f"[warn] --input-space is not used by {preset.name}; ignoring it.")
     if args.freq_renorm and preset.encoder.kind != "attention":
         print(f"[warn] --freq-renorm is not used by {preset.name}; ignoring it.")
+    if getattr(args, "freq_mode", None) is not None and preset.encoder.kind != "attention":
+        print(f"[warn] --freq-mode is not used by {preset.name}; ignoring it.")
+    if getattr(args, "attn_ln", False) and preset.encoder.kind != "attention":
+        print(f"[warn] --attn-ln is not used by {preset.name}; ignoring it.")
+    # DeepSet builds no nn.Dropout at all (models/deep_set.py), so there is
+    # nothing for the probability to reach on the dominant-clone path.
+    if getattr(args, "encoder_dropout", None) is not None and preset.encoder.kind == "deepset":
+        print(f"[warn] --encoder-dropout is not used by {preset.name}; ignoring it.")
+    # Trap 2: dominantclone optimises every parameter in a single group, so the
+    # two per-group fields are not read at all on that path.
+    for flag, value in (
+        ("--embed-lr", getattr(args, "embed_lr", None)),
+        ("--embed-weight-decay", getattr(args, "embed_weight_decay", None)),
+        ("--flow-weight-decay", getattr(args, "flow_weight_decay", None)),
+    ):
+        if value is not None and not preset.optim.use_param_groups:
+            print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
 
     if args.require_all_trials and preset.data.dataset != "dominant_clone":
         print(f"[warn] --require-all-trials is not used by {preset.name}; ignoring it.")
@@ -436,6 +575,15 @@ def effective_config_payload(
         "z_score_x": args.z_score_x,
         "input_space": args.input_space,
         "freq_renorm": bool(args.freq_renorm),
+        # Matrix 2. Recorded as given, next to the blocks config_to_dict has
+        # already snapshotted, so a checkpoint says both what was asked for and
+        # what the run actually used.
+        "freq_mode": getattr(args, "freq_mode", None),
+        "attn_ln": bool(getattr(args, "attn_ln", False)),
+        "encoder_dropout": getattr(args, "encoder_dropout", None),
+        "embed_lr": getattr(args, "embed_lr", None),
+        "embed_weight_decay": getattr(args, "embed_weight_decay", None),
+        "flow_weight_decay": getattr(args, "flow_weight_decay", None),
         "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,

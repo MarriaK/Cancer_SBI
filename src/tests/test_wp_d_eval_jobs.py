@@ -78,7 +78,7 @@ def test_sample_posteriors_help_runs_without_torch():
 # ------------------------------------------------------------------ job scripts
 def test_jobs_dir_has_the_expected_scripts():
     names = {p.name for p in SHELL_SCRIPTS}
-    assert {"train.sh", "sample.sh", "analyze.sh", "shrink.sh",
+    assert {"train.sh", "train2.sh", "sample.sh", "analyze.sh", "shrink.sh",
             "treetest.sh", "finaltest.sh", "verify.sh"} <= names
     assert (JOBS / "README.md").exists()
 
@@ -277,6 +277,165 @@ def test_train_dry_run_never_gives_the_clone_cache_to_dominantclone():
     assert len(cmds) == 5
     assert sum("--cache-dir /some/cache" in c for c in cmds) == 4
     assert "--cache-dir" not in cmds[4], cmds[4]
+
+
+# ------------------------------------------------------------------ train2.sh
+#
+# Matrix 2: seven runs, four new switches. The dry run is the only place the
+# per-run flag sets can be checked without a GPU, and a wrong flag here is a
+# 12-hour array task that answers a question nobody asked.
+
+
+def _train2_dry_run(env=None):
+    full = {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)}
+    full.update(env or {})
+    r = _run(JOBS / "train2.sh", full)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+def _train2_dry_run_lines():
+    return [
+        ln for ln in _train2_dry_run().stdout.splitlines() if ln.startswith("python ")
+    ]
+
+
+def _seed_of(cmd):
+    """The value of --seed in one dry-run command line."""
+    parts = cmd.split()
+    return parts[parts.index("--seed") + 1]
+
+
+def test_train2_sh_header_matches_the_matrix():
+    text = (JOBS / "train2.sh").read_text()
+    for run in ("R3", "R2s1", "R2s2", "R5", "R6", "R7", "R8"):
+        assert run in text
+    assert "--array=0-6" in text
+    assert "--min-epochs 1" in text
+    assert "-C a100" in text
+    assert "general-gpu" in text
+    assert "--gres=gpu:1" in text
+    assert "-t 12:00:00" in text
+    # train.sh is the first matrix and must not have been edited into this one.
+    assert "--array=0-4" in (JOBS / "train.sh").read_text()
+
+
+def test_train2_sh_is_executable():
+    assert os.access(JOBS / "train2.sh", os.X_OK)
+
+
+def test_train2_sh_defaults_to_the_three_key_split():
+    text = (JOBS / "train2.sh").read_text()
+    assert "CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl" in text
+
+
+def test_train2_dry_run_reports_the_split_gate_as_ok():
+    assert "split gate: OK" in _train2_dry_run().stdout
+
+
+def test_train2_sh_hard_fails_on_a_split_without_val_ids(tmp_path):
+    r = _run(
+        JOBS / "train2.sh",
+        {
+            "CANCER": str(CODE_ROOT),
+            "CANCER_SBI_SPLIT": str(CODE_ROOT / "data" / "train_test_split.pkl"),
+            "RUNS_ROOT": str(tmp_path),
+            "SLURM_ARRAY_TASK_ID": "0",
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "val_ids" in r.stderr
+
+
+def test_train2_sh_refuses_a_non_empty_checkpoint_dir(tmp_path):
+    ckpt = tmp_path / "R5" / "checkpoints"
+    ckpt.mkdir(parents=True)
+    (ckpt / "best.pt").write_text("not really a checkpoint")
+    r = _run(JOBS / "train2.sh",
+             {"RUNS_ROOT": str(tmp_path), "SLURM_ARRAY_TASK_ID": "3"})
+    assert r.returncode != 0
+    assert "REFUSING" in r.stderr
+
+
+def test_train2_dry_run_prints_seven_commands():
+    assert len(_train2_dry_run_lines()) == 7
+
+
+def test_train2_dry_run_flags_per_run():
+    r3, r2s1, r2s2, r5, r6, r7, r8 = _train2_dry_run_lines()
+    runs = (r3, r2s1, r2s2, r5, r6, r7, r8)
+
+    for cmd in runs:
+        assert "-m cancer_sbi.cli.train" in cmd
+        assert "--min-epochs 1" in cmd
+        assert "--stop-after-epochs 15" in cmd
+        assert "--max-epochs 60" in cmd
+        assert "--num-workers 8" in cmd
+        assert "--z-score-x structured" in cmd
+        assert "--ckpt-dir" in cmd and "/runs/2026-09-24/" in cmd
+
+    # R3: weight decay on both groups, and the matrix seed, not a repeat seed.
+    assert "--model clonemlp" in r3
+    assert "--input-space copy" in r3
+    assert "--flow-weight-decay 1e-3" in r3
+    assert "--embed-weight-decay 1e-4" in r3
+    # By token, not substring: "--seed 20260924" contains "--seed 2".
+    assert _seed_of(r3) == "20260924"
+
+    # R2s1/R2s2: R2 again, only the seed differs.
+    for cmd, seed in ((r2s1, "1"), (r2s2, "2")):
+        assert "--model clonemlp" in cmd
+        assert "--input-space copy" in cmd
+        assert _seed_of(cmd) == seed
+        for flag in ("--flow-weight-decay", "--embed-weight-decay", "--embed-lr",
+                     "--freq-mode", "--attn-ln", "--encoder-dropout"):
+            assert flag not in cmd, cmd
+
+    # R5-R8: the CloneAtt ladder, one switch added at a time.
+    for cmd in (r5, r6, r7, r8):
+        assert "--model cloneatt" in cmd
+        assert "--freq-mode feature" in cmd
+        assert "--attn-ln" in cmd
+        assert _seed_of(cmd) == "20260924"
+        # Refused by build_config, so it must never appear beside --freq-mode.
+        assert "--freq-renorm" not in cmd
+
+    assert "--input-space" not in r5, "R5 is the one CloneAtt run without T2"
+    assert "--input-space copy" in r6
+    assert "--embed-lr" not in r6
+    assert "--embed-lr 5e-4" in r7 and "--encoder-dropout" not in r7
+    # R8 is R7 plus dropout: all four CloneAtt switches at once.
+    for flag in ("--freq-mode feature", "--attn-ln", "--input-space copy",
+                 "--embed-lr 5e-4", "--encoder-dropout 0.1"):
+        assert flag in r8, r8
+
+    # Each run gets its own checkpoint directory.
+    dirs = []
+    for name, cmd in zip(("R3", "R2s1", "R2s2", "R5", "R6", "R7", "R8"), runs):
+        parts = cmd.split()
+        d = parts[parts.index("--ckpt-dir") + 1]
+        assert d.endswith(f"/{name}/checkpoints")
+        dirs.append(d)
+    assert len(set(dirs)) == 7
+
+
+def test_train2_gives_every_run_the_clone_cache():
+    """All seven are clone-set models -- there is no DominantClone exception."""
+    cmds = [
+        ln
+        for ln in _train2_dry_run({"CACHE_DIR": "/some/cache"}).stdout.splitlines()
+        if ln.startswith("python ")
+    ]
+    assert len(cmds) == 7
+    assert all("--cache-dir /some/cache" in c for c in cmds)
+
+
+def test_jobs_readme_documents_matrix_two():
+    text = (JOBS / "README.md").read_text()
+    assert "train2.sh" in text
+    assert "Matrix 2" in text
+    for run in ("R3", "R2s1", "R2s2", "R5", "R6", "R7", "R8"):
+        assert run in text
 
 
 # ------------------------------------------------------- sample / analyze / shrink

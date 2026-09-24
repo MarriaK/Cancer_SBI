@@ -11,6 +11,7 @@ Cluster tree: `~/cancer/{src,data,runs,results,cache,logs}` — there is no `cod
 | script | what it does | env overrides |
 | --- | --- | --- |
 | `train.sh` | The five-run matrix R0/R1/R2/R4/D0 as a `--array=0-4` job. Refuses to start if the run's checkpoint directory is non-empty, or if the split carries no `val_ids`. 12 h, a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
+| `train2.sh` | The seven-run matrix 2 (R3/R2s1/R2s2/R5/R6/R7/R8) as a `--array=0-6` job. Same split gate, same non-empty-checkpoint refusal, same 12 h a100 as `train.sh`. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
 | `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. For one run: `--array=<i>` or `MODEL=`; `CKPT` with the full 0-2 array is refused. | `MODEL`, `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `EXTRA` (extra flags, last-wins), `DRY_RUN` |
 | `analyze.sh` | Stage 2: `poster_metrics` — every metric, table and figure, from stage 1's `.npz`. CPU, minutes. | `POST` (input dir), `OUT` (results dir), `DRY_RUN` |
 | `shrink.sh` | Figure D (`fig_shrinkage`), screen and poster builds. CPU. | `POST`, `OUT`, `DRY_RUN` |
@@ -34,6 +35,35 @@ set (2,261 train / 247 val / 651 test on the cluster), which is what makes the t
 numbers comparable. It passes no `--z-score-x`: the `dominantclone` preset is already `structured`.
 The flag is recorded in the checkpoint's `effective_config`, and `sample_posteriors.py` /
 `cli/evaluate.py` rebuild the test loader with the same restriction automatically.
+
+## Matrix 2 (`train2.sh`)
+
+Matrix 1 left two findings to act on: R2 (CloneMLP, `--z-score-x structured --input-space copy`)
+reached R² = 0.415 but overfits from epoch ~15, and R4 left CloneAtt at R² = 0.025 because
+renormalising the frequencies still spreads one unit of mass over 100 clones, so every token stays
+at ~1/100 of its scale with no LayerNorm to rescale it — on an encoder whose learning rate is 1e-4
+and which has no dropout at all (trap 4). The seven runs below are those two threads. All of them
+whiten theta (`--z-score-x structured`), all use the clone cache, and all share
+`--min-epochs 1 --stop-after-epochs 15 --max-epochs 60 --num-workers 8`; the seed is 20260924
+except where the table names another.
+
+| idx | run | model | flags |
+| --- | --- | --- | --- |
+| 0 | R3 | clonemlp | `--z-score-x structured --input-space copy --flow-weight-decay 1e-3 --embed-weight-decay 1e-4` |
+| 1 | R2s1 | clonemlp | `--z-score-x structured --input-space copy --seed 1` |
+| 2 | R2s2 | clonemlp | `--z-score-x structured --input-space copy --seed 2` |
+| 3 | R5 | cloneatt | `--z-score-x structured --freq-mode feature --attn-ln` |
+| 4 | R6 | cloneatt | R5 + `--input-space copy` |
+| 5 | R7 | cloneatt | R6 + `--embed-lr 5e-4` |
+| 6 | R8 | cloneatt | R7 + `--encoder-dropout 0.1` |
+
+R3 asks whether weight decay stops R2's overfit; R2s1/R2s2 are R2 on two more seeds, so the next
+comparison knows how much of 0.415 is seed noise. R5–R8 are a ladder on CloneAtt, one switch at a
+time: the frequency as a log10 *feature* rather than a multiplier plus LayerNorm (R5), then the
+copy-space input R2 uses (R6), then an encoder learning rate that is not near-frozen (R7), then the
+dropout trap 4 denied it (R8). Every switch defaults to the published behaviour and is recorded in
+the checkpoint's `effective_config`, so `sample_posteriors.py` and `cli/evaluate.py` rebuild the
+right network without being told.
 
 ## Carve the validation split before the first sbatch
 

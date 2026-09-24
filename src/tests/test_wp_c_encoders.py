@@ -396,3 +396,255 @@ def test_freq_renorm_widens_the_attention_logit_spread(real_batch, monkeypatch, 
         )
 
     assert spread_on > spread_off
+
+
+# --------------------------------------------------------------------------- #
+# 4. Matrix 2: freq_mode, attn_ln, attn_dropout_active and copy space in the
+#    set transformer (runs R5-R8).
+#
+# R4 proved that keeping the multiply is the problem, not its normalisation:
+# even renormalised, 100 clones share one unit of mass, so a token is still at
+# ~1/100 of its scale and there is no LayerNorm to rescale it. These switches
+# take the multiply out, put the LayerNorms in, and make trap 4's dropout real.
+# --------------------------------------------------------------------------- #
+
+
+def test_set_transformer_matrix_two_defaults():
+    """Every new constructor argument defaults to the published behaviour."""
+    enc = CloneSetEmbedding()
+    assert enc.freq_mode == "weight"
+    assert enc.input_space == "log2"
+    assert enc.attn_ln is False
+    assert enc.attn_dropout_active is False
+    assert enc.attn_dropout is None
+    # The published projection still takes the 44 CNA columns only.
+    assert enc.input_proj.in_features == 44
+
+    with pytest.raises(ValueError):
+        CloneSetEmbedding(freq_mode="multiply")
+    with pytest.raises(ValueError):
+        CloneSetEmbedding(input_space="copies")
+
+
+def test_freq_mode_feature_widens_the_projection_and_changes_the_output(real_batch):
+    """45 inputs, the 45th being log10(freq) -- and it is not a no-op."""
+    weight = _seeded(CloneSetEmbedding)
+    feature = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+
+    assert weight.input_proj.in_features == 44
+    assert feature.input_proj.in_features == 45
+
+    with torch.no_grad():
+        out_w = weight(real_batch)
+        out_f = feature(real_batch)
+
+    assert out_f.shape == out_w.shape
+    assert torch.isfinite(out_f).all()
+    assert not torch.equal(out_f, out_w)
+
+
+def test_feature_mode_does_not_scale_the_tokens_with_the_frequency(real_batch):
+    """The R4 finding, pinned: in "weight" mode the frequency IS the token scale.
+
+    Multiplying every frequency by 10 multiplies every "weight"-mode token by
+    exactly 10. In "feature" mode it shifts one input column by
+    log10(10) = 1 and leaves the token magnitude where it was -- which is the
+    whole reason the mode exists. It is *not* a bitwise no-op (the frequency
+    still informs the token, which is the other half of the point); the exact
+    invariance is proved in the next test.
+    """
+    scaled = real_batch.clone()
+    scaled[..., 44] = scaled[..., 44] * 10.0
+
+    weight = _seeded(CloneSetEmbedding)
+    tokens_w = _capture_tokens(weight, real_batch)
+    tokens_w10 = _capture_tokens(weight, scaled)
+    assert torch.allclose(tokens_w10, tokens_w * 10.0, atol=1e-5)
+
+    feature = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+    tokens_f = _capture_tokens(feature, real_batch)
+    tokens_f10 = _capture_tokens(feature, scaled)
+    norm, norm10 = tokens_f.norm().item(), tokens_f10.norm().item()
+    assert 0.5 < norm10 / norm < 2.0, (norm, norm10)
+    # ... whereas the multiply moved the token norm by a clean decade.
+    assert tokens_w10.norm().item() / tokens_w.norm().item() > 9.0
+
+
+def test_feature_mode_frequency_enters_only_through_the_45th_column(real_batch):
+    """Zero that column's weight and the frequency stops mattering, exactly."""
+    feature = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+    with torch.no_grad():
+        feature.input_proj.weight[:, 44] = 0.0
+
+    scaled = real_batch.clone()
+    scaled[..., 44] = scaled[..., 44] * 10.0
+
+    with torch.no_grad():
+        assert torch.equal(feature(real_batch), feature(scaled))
+
+
+def test_feature_mode_keeps_padded_rows_out_of_the_attention(real_batch):
+    """A padded row's log10(0 -> 1e-6) = -6 is an ordinary number, not padding.
+
+    In "weight" mode the masked-to-zero frequency multiply is what zeroes those
+    tokens; with no multiply left the zeroing has to be explicit, or the
+    padding would enter attention as data.
+    """
+    x = torch.zeros(1, 4, 45)
+    x[0, :, :44] = 1.0
+    x[0, :, 44] = torch.tensor([0.01, 0.02, 0.0, 0.0])
+    x[0, 2:, :] = float("nan")
+
+    enc = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+    tokens = _capture_tokens(enc, x)
+
+    assert torch.equal(tokens[0, 2:], torch.zeros_like(tokens[0, 2:]))
+    assert not torch.equal(tokens[0, :2], torch.zeros_like(tokens[0, :2]))
+
+
+def test_feature_mode_clamps_a_zero_frequency_to_the_log_floor():
+    """log10(0) is -inf; the clamp at 1e-6 is what keeps the tokens finite."""
+    x = torch.zeros(1, 3, 45)  # every frequency 0, no padding
+    enc = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+    with torch.no_grad():
+        out = enc(x)
+    assert torch.isfinite(out).all()
+
+    tokens = _capture_tokens(enc, x)
+    # -6 through the 45th column, plus the bias: exactly what a -6 input gives.
+    expected = enc.input_proj(torch.cat([torch.zeros(44), torch.tensor([-6.0])]))
+    assert torch.allclose(tokens[0, 0], expected, atol=1e-6)
+
+
+def test_copy_space_in_the_set_transformer_equals_the_mlp_formula():
+    """One repair, one formula: the two encoders must not drift apart."""
+    feats = torch.linspace(-12.0, 3.0, steps=44).reshape(1, 1, 44)
+    x = torch.zeros(1, 1, 45)
+    x[..., :44] = feats
+    x[..., 44] = 0.5
+
+    enc = _seeded(lambda: CloneSetEmbedding(input_space="copy"))
+    tokens = _capture_tokens(enc, x)
+
+    mlp_formula = (torch.clamp(2.0 ** (feats + 1.0), 0, 8) - 2.0) / 2.0
+    expected = enc.input_proj(mlp_formula) * 0.5  # freq_as_weight, "weight" mode
+    assert torch.equal(tokens, expected)
+
+    # And the sentinel lands on ~-1.0 here as it does in the MLP encoder,
+    # instead of the 15-sd outlier -10.966 it is in log2 space.
+    sentinel = torch.full((1, 1, 44), SENTINEL)
+    assert torch.allclose(
+        (torch.clamp(2.0 ** (sentinel + 1.0), 0, 8) - 2.0) / 2.0,
+        torch.full((1, 1, 44), -1.0),
+        atol=1e-3,
+    )
+
+
+def test_copy_space_leaves_the_set_transformers_frequency_alone(real_batch):
+    """The 45th column is a frequency, not a log2 ratio."""
+    enc = _seeded(lambda: CloneSetEmbedding(freq_mode="feature", input_space="copy"))
+    plain = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+
+    x = real_batch[:4].clone()
+    tokens_copy = _capture_tokens(enc, x)
+    tokens_log2 = _capture_tokens(plain, x)
+    # Same weights, different CNA columns, identical frequency column: the two
+    # differ, and the difference is entirely explained by the 44 features.
+    assert not torch.equal(tokens_copy, tokens_log2)
+    feats = torch.nan_to_num(x, nan=0.0)[..., :44]
+    freq = torch.log10(torch.nan_to_num(x, nan=0.0)[..., 44].clamp_min(1e-6))
+    converted = (torch.clamp(2.0 ** (feats + 1.0), 0, 8) - 2.0) / 2.0
+    valid = (~torch.isnan(x).all(dim=-1)).unsqueeze(-1).float()
+    expected = enc.input_proj(torch.cat([converted, freq.unsqueeze(-1)], dim=-1)) * valid
+    assert torch.allclose(tokens_copy, expected, atol=1e-6)
+
+
+def test_attn_ln_builds_layer_norms_and_default_builds_none():
+    """Trap 5 counted: 0 LayerNorms by default, 14 with the switch."""
+    from torch import nn
+
+    default = CloneSetEmbedding()
+    on = CloneSetEmbedding(attn_ln=True)
+
+    n_default = sum(isinstance(m, nn.LayerNorm) for m in default.modules())
+    n_on = sum(isinstance(m, nn.LayerNorm) for m in on.modules())
+    assert n_default == 0
+    # 3 ISABs x 2 MABs x 2 norms, plus the PMA's MAB's 2.
+    assert n_on == 14
+
+    for layer in on.layers:
+        for mab in (layer.mab0, layer.mab1):
+            assert isinstance(mab.ln0, nn.LayerNorm)
+            assert isinstance(mab.ln1, nn.LayerNorm)
+    assert isinstance(on.pma.mab.ln0, nn.LayerNorm)
+
+
+def test_attn_ln_state_dict_does_not_load_into_a_default_encoder():
+    """Why evaluation MUST rebuild from the checkpoint and not from the preset."""
+    on = _seeded(lambda: CloneSetEmbedding(attn_ln=True))
+    default = _seeded(CloneSetEmbedding)
+
+    with pytest.raises(RuntimeError):
+        default.load_state_dict(on.state_dict())
+    # The other direction is just as broken: the LayerNorms have no source.
+    with pytest.raises(RuntimeError):
+        on.load_state_dict(default.state_dict())
+
+
+def test_feature_mode_state_dict_does_not_load_into_a_default_encoder():
+    """The 44 -> 45 projection is a shape change, so this one is loud too."""
+    feature = _seeded(lambda: CloneSetEmbedding(freq_mode="feature"))
+    with pytest.raises(RuntimeError):
+        _seeded(CloneSetEmbedding).load_state_dict(feature.state_dict())
+
+
+def test_attn_dropout_is_off_by_default_and_deterministic_in_train_mode(real_batch):
+    """Trap 4 intact: the published encoder ignores `dropout` even in train()."""
+    enc = _seeded(lambda: CloneSetEmbedding(dropout=0.5))
+    enc.train()
+    with torch.no_grad():
+        assert torch.equal(enc(real_batch), enc(real_batch))
+
+
+def test_attn_dropout_active_fires_in_train_mode_only(real_batch):
+    enc = _seeded(lambda: CloneSetEmbedding(dropout=0.5, attn_dropout_active=True))
+
+    enc.train()
+    with torch.no_grad():
+        first, second = enc(real_batch), enc(real_batch)
+    assert not torch.equal(first, second), "dropout did not fire in train mode"
+
+    enc.eval()
+    with torch.no_grad():
+        assert torch.equal(enc(real_batch), enc(real_batch))
+
+
+def test_attn_dropout_adds_no_parameters(real_batch):
+    """nn.Dropout is stateless, so R8 changes the state_dict not at all."""
+    off = _seeded(lambda: CloneSetEmbedding(dropout=0.1))
+    on = _seeded(lambda: CloneSetEmbedding(dropout=0.1, attn_dropout_active=True))
+    assert _param_spec(on) == _param_spec(off)
+    on.eval()
+    with torch.no_grad():
+        # Same weights, and eval-mode dropout is the identity.
+        assert torch.equal(on(real_batch), off(real_batch))
+
+
+def test_the_r5_stack_runs_end_to_end(real_batch):
+    """R5-R8's encoder, all four switches on, on a real batch."""
+    enc = _seeded(
+        lambda: CloneSetEmbedding(
+            input_space="copy",
+            freq_mode="feature",
+            attn_ln=True,
+            dropout=0.1,
+            attn_dropout_active=True,
+        )
+    )
+    with torch.no_grad():
+        out = enc(real_batch)
+    assert out.shape == (real_batch.shape[0], enc.d_model)
+    assert torch.isfinite(out).all()
+    # The LayerNorms have something to work with: R4's complaint was that the
+    # pooled embedding sat at ~1e-3 of the scale the flow expects.
+    assert out.abs().mean().item() > 1e-2

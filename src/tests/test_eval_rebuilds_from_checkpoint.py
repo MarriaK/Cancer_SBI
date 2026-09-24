@@ -604,3 +604,96 @@ def test_require_all_trials_override_describes_an_old_checkpoint(tmp_path):
     )
     assert resolved.from_checkpoint is False
     assert resolved.require_all_trials is True
+
+
+# ---------------------------------------------------------------------------
+# 7. Matrix 2 (R5-R8): the CloneAtt switches make a *different network*.
+#
+# `--attn-ln` adds 14 LayerNorms and `--freq-mode feature` widens the input
+# projection from 44 to 45, so a preset-built cloneatt cannot load either one --
+# the same failure R1 has in the flow, now in the encoder. `--encoder-dropout`
+# is the quiet one: it changes no parameter name at all, and a rebuild that
+# forgot it would report numbers from an encoder that never had dropout.
+# ---------------------------------------------------------------------------
+
+
+@needs_data
+def test_matrix_two_cloneatt_checkpoint_round_trips_through_the_sampler(
+    tmp_path, monkeypatch
+):
+    """Train R8's encoder for one epoch, then really sample from it."""
+    extra = [
+        "--z-score-x", "structured",
+        "--freq-mode", "feature",
+        "--attn-ln",
+        "--encoder-dropout", "0.1",
+        "--input-space", "copy",
+    ]
+    ckpt_dir, split_path = _train_tiny(tmp_path, "cloneatt", extra, "R8")
+
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["encoder"]["freq_mode"] == "feature"
+    assert stored["encoder"]["attn_ln"] is True
+    assert stored["encoder"]["attn_dropout_active"] is True
+    assert stored["encoder"]["dropout"] == 0.1
+    assert stored["encoder"]["input_space"] == "copy"
+    assert stored["flow"]["hidden_features"] == 50, "must stay 50"
+
+    path, meta = _sample(
+        tmp_path, "cloneatt", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists()
+    assert meta["config_from_checkpoint"] is True
+    assert meta["encoder_config"]["freq_mode"] == "feature"
+    assert meta["encoder_config"]["attn_ln"] is True
+    assert meta["encoder_config"]["attn_dropout_active"] is True
+    assert meta["encoder_config"]["input_space"] == "copy"
+
+    # The network the sampler rebuilt is the one that was trained.
+    rebuilt = posterior_mod.resolve_eval_config(
+        ckpt_dir / "best.pt", "cloneatt"
+    ).preset
+    encoder = _build_cloneatt_encoder(rebuilt)
+    assert encoder.freq_mode == "feature"
+    assert encoder.attn_ln is True
+    assert encoder.input_space == "copy"
+    assert encoder.attn_dropout is not None and encoder.attn_dropout.p == 0.1
+    assert encoder.input_proj.in_features == 45
+
+
+def _build_cloneatt_encoder(preset):
+    """The trial encoder ``build_embedding_net`` makes for this preset."""
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    return build_embedding_net(preset.encoder, "cpu").trial_encoder
+
+
+@needs_data
+def test_an_attn_ln_checkpoint_does_not_load_into_a_default_cloneatt(tmp_path):
+    """The proof that rebuilding from the checkpoint is necessary, not tidy."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.training.trainer import build_training_components
+
+    ckpt_dir, _ = _train_tiny(tmp_path, "cloneatt", ["--attn-ln"], "R5ln")
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    preset_built = build_training_components(
+        get_preset("cloneatt"), train_loader, device="cpu", log_progress=False
+    ).density_estimator
+
+    with pytest.raises(RuntimeError):
+        preset_built.load_state_dict(state)
+
+    # ... and the checkpoint's own config does build something that loads.
+    rebuilt = build_training_components(
+        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "cloneatt").preset,
+        train_loader,
+        device="cpu",
+        log_progress=False,
+    ).density_estimator
+    rebuilt.load_state_dict(state)

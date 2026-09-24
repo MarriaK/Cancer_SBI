@@ -392,6 +392,17 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             # is passed. Deliberately NOT forwarded to DeepSet below, which has
             # no per-clone frequency weighting at all.
             freq_renorm=cfg.freq_renorm,
+            # Matrix 2 (runs R5-R8). Every one of these four defaults to the
+            # published behaviour, so an untouched cloneatt preset builds the
+            # same network it always did. They must be forwarded here and not
+            # only at training time: evaluation rebuilds the encoder from the
+            # checkpoint's effective config through this same function, and a
+            # missing argument would silently rebuild a different network --
+            # the failure mode M1 exists to prevent.
+            input_space=cfg.input_space,
+            freq_mode=cfg.freq_mode,
+            attn_ln=cfg.attn_ln,
+            attn_dropout_active=cfg.attn_dropout_active,
         ).to(device)
     elif cfg.kind == "deepset":
         # Plain_NPE/model.py:55 passes only the three dimensions; every other

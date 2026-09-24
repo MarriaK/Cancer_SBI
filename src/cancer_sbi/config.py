@@ -29,6 +29,7 @@ EncoderKind = Literal["mlp", "attention", "deepset"]
 ReloadBestPolicy = Literal["never", "on_early_stop", "always"]
 ZScoreMode = Literal["none", "structured", "independent"]
 InputSpace = Literal["log2", "copy"]
+FreqMode = Literal["weight", "feature"]
 
 
 @dataclass(frozen=True)
@@ -127,13 +128,25 @@ class EncoderConfig:
         freq_as_weight: Weight clones by their frequency when pooling.
         include_freq_in_mlp: ``"mlp"`` only; ``False`` keeps the 44->d projection.
         n_heads / num_inducing: Attention encoder only.
-        layer_norm_in_attention: ``False`` everywhere -- trap 5.
-        input_space: ``"mlp"`` only. ``"log2"`` feeds the encoder the raw log2
-            ratios, which is what every published run did; ``"copy"`` converts
-            them to copy-number space inside the encoder (repair T2 / run R2).
+        layer_norm_in_attention: ``False`` everywhere -- trap 5. Documentary
+            only: ``attn_ln`` is the field that is actually wired.
+        input_space: ``"mlp"`` and ``"attention"``. ``"log2"`` feeds the encoder
+            the raw log2 ratios, which is what every published run did;
+            ``"copy"`` converts them to copy-number space inside the encoder
+            (repair T2 / runs R2, R6-R8).
         freq_renorm: ``"attention"`` only. ``False`` keeps CloneAtt's published
             raw-frequency multiply; ``True`` renormalises the per-clone weights
             so the tokens are not shrunk to ~0.003 of their scale (run R4).
+        freq_mode: ``"attention"`` only. ``"weight"`` is the published multiply
+            (modulated by ``freq_renorm``); ``"feature"`` drops the multiply and
+            feeds ``log10(freq)`` to the input projection as a 45th column
+            instead (runs R5-R8).
+        attn_ln: ``"attention"`` only. ``True`` builds every MAB/ISAB/PMA with
+            ``ln=True`` (runs R5-R8). ``False`` -- the default -- is trap 5.
+        attn_dropout_active: ``"attention"`` only. ``True`` makes
+            ``CloneSetEmbedding`` apply ``nn.Dropout(dropout)`` after each ISAB
+            and after the PMA (run R8). ``False`` -- the default -- is trap 4,
+            where ``dropout`` is accepted and silently discarded.
         input_dim / hidden_dim_phi / hidden_dim_rho / output_dim / aggregation_fn
             / aggregation_dim / num_heads_deepset: DeepSet only.
         trials_*: The ``TrialsSBIEmbedding`` wrapper (clone-set models only);
@@ -170,12 +183,26 @@ class EncoderConfig:
     # attention stack. This looks wrong but it is what the published model does;
     # changing it changes the results. See docs/REFACTOR_NOTES.md.
     layer_norm_in_attention: bool = False
+    # `layer_norm_in_attention` above is DOCUMENTARY -- verify_refactor.py:282
+    # reads it to assert trap 5 is recorded, and nothing constructs a layer from
+    # it. `attn_ln` below is the wired one: build_embedding_net forwards it to
+    # CloneSetEmbedding, which passes it as `ln` to every MAB/ISAB/PMA.
+    attn_ln: bool = False
 
     # --- repair switches, added 2026-09-24 (WP-A) ----------------------------
-    # Both defaults are the PUBLISHED behaviour, so every preset below keeps
+    # Every default is the PUBLISHED behaviour, so every preset below keeps
     # reproducing its original folder without naming them.
-    input_space: InputSpace = "log2"      # BaselineCloneEmbedding (CloneMLP)
+    input_space: InputSpace = "log2"      # both clone-set encoders
     freq_renorm: bool = False             # CloneSetEmbedding (CloneAtt)
+    # --- repair switches, matrix 2 (added 2026-09-24) ------------------------
+    # "weight" is the published token multiply; "feature" removes it and feeds
+    # log10(freq) to the input projection instead (runs R5-R8). `freq_renorm`
+    # has nothing to renormalise in "feature" mode -- cli/train.py refuses the
+    # pair rather than silently ignoring one of them.
+    freq_mode: FreqMode = "weight"        # CloneSetEmbedding (CloneAtt)
+    # Trap 4 made opt-out: True wires `dropout` into CloneSetEmbedding, which
+    # published CloneAtt never did. False keeps the value decorative (run R8).
+    attn_dropout_active: bool = False     # CloneSetEmbedding (CloneAtt)
 
     # --- DeepSet (DominantClone) --------------------------------------------
     input_dim: Optional[int] = None
@@ -690,6 +717,7 @@ def get_preset(name: str) -> ModelPreset:
 
 __all__ = [
     "EFFECTIVE_CONFIG_KEY",
+    "FreqMode",
     "InputSpace",
     "ZScoreMode",
     "DataConfig",

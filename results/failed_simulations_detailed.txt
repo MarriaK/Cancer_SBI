@@ -1,0 +1,2099 @@
+sim226
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim230
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim245
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim251
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim252
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim253
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim254
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim255
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim256
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim257
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim258
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim259
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim260
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim261
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim262
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim263
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim264
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim265
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim266
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim267
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim268
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim269
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim270
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim271
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim272
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim273
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim274
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim275
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim276
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim277
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim278
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim279
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim280
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim281
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim282
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim283
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim284
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim285
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim286
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim287
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim288
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim289
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim290
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim291
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim292
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim293
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim294
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim295
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim296
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim297
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim298
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim299
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim300
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim301
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim302
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim303
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim304
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim305
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim306
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim307
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim308
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim309
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim310
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim311
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim312
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim313
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim314
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim315
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim316
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim317
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim318
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim319
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim320
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim321
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim322
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim323
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim324
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim325
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim326
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim327
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim328
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim329
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim330
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim331
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim332
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim333
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim334
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim335
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim336
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim337
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim338
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim339
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim340
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim341
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim342
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim343
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim344
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim345
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim346
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim347
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim348
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim349
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim350
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim351
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim352
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim353
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim354
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim355
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim356
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim357
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim358
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim359
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim360
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim361
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim362
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim363
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim364
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim365
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim366
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim367
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim368
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim369
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim370
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim525
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim530
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim536
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim1240
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim1262
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim1266
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim1268
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim1273
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim1274
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim1275
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim1276
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim2106
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim2319
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim2346
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim2752
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim2754
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim2757
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim2758
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim2759
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim2761
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim2762
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim2763
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim2765
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim2767
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim2768
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim2769
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim2771
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim2772
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim2774
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim2776
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim2777
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim2778
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim2779
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim2781
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim2784
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim2789
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim2790
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim2791
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2792
+  - Missing trial folders: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 4: results.pkl
+  - Missing file in trial 4: CNratios_all.pkl.gz
+
+sim2793
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2794
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2795
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2796
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2797
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2798
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2799
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2800
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2801
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2802
+  - Missing trial folders: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 2: results.pkl
+  - Missing file in trial 2: CNratios_all.pkl.gz
+
+sim2803
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2804
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2805
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2806
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2807
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2808
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2809
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2810
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2811
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2812
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2813
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2814
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2815
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2816
+  - Missing trial folders: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 4: results.pkl
+  - Missing file in trial 4: CNratios_all.pkl.gz
+
+sim2817
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2818
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2819
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2820
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2821
+  - Missing trial folders: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 4: results.pkl
+  - Missing file in trial 4: CNratios_all.pkl.gz
+
+sim2822
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2823
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2824
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2825
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2826
+  - Missing trial folders: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 6: results.pkl
+  - Missing file in trial 6: CNratios_all.pkl.gz
+
+sim2827
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2828
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2829
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2830
+  - Missing trial folders: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 4: results.pkl
+  - Missing file in trial 4: CNratios_all.pkl.gz
+
+sim2831
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2832
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2833
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2834
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2835
+  - Missing trial folders: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 2: results.pkl
+  - Missing file in trial 2: CNratios_all.pkl.gz
+
+sim2836
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim2837
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2838
+  - Missing trial folders: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 4: results.pkl
+  - Missing file in trial 4: CNratios_all.pkl.gz
+
+sim2839
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2840
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2841
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2842
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim2843
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2844
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2845
+  - Missing trial folders: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 2: results.pkl
+  - Missing file in trial 2: CNratios_all.pkl.gz
+
+sim2846
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2847
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2848
+  - Missing trial folders: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 6: results.pkl
+  - Missing file in trial 6: CNratios_all.pkl.gz
+
+sim2849
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2850
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2851
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2852
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2853
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2854
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2855
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2856
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2857
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2858
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2859
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2860
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2861
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2862
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2863
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2864
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2865
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2866
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2867
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2868
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2869
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2870
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2871
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2872
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2873
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2874
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2875
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2876
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2877
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2878
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2879
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2880
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2881
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2882
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2883
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2884
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2885
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2886
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2887
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2888
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2889
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2890
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2891
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2892
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2893
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2894
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2895
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2896
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2897
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2898
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim2899
+  - Missing sim-level file: parameters.pkl
+  - Missing trial folders: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+
+sim3140
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim3141
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3142
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3143
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim3144
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim3145
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3146
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3147
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3148
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3149
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3150
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3151
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3152
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3153
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim3154
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3155
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3156
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3157
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3158
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3159
+  - Missing trial folders: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 6: results.pkl
+  - Missing file in trial 6: CNratios_all.pkl.gz
+
+sim3160
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim3161
+  - Missing trial folders: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 8: results.pkl
+  - Missing file in trial 8: CNratios_all.pkl.gz
+
+sim3162
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3163
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3164
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3165
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3166
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3167
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3168
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3169
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3170
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3171
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3172
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3173
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3174
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3175
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3176
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3177
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3178
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim3179
+  - Missing trial folders: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 7: results.pkl
+  - Missing file in trial 7: CNratios_all.pkl.gz
+
+sim3180
+  - Missing trial folders: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 2: results.pkl
+  - Missing file in trial 2: CNratios_all.pkl.gz
+
+sim3181
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3182
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3183
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim3184
+  - Missing trial folders: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 7: results.pkl
+  - Missing file in trial 7: CNratios_all.pkl.gz
+
+sim3185
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3186
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3187
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3188
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3189
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3190
+  - Missing trial folders: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 7: results.pkl
+  - Missing file in trial 7: CNratios_all.pkl.gz
+
+sim3191
+  - Missing trial folders: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 7: results.pkl
+  - Missing file in trial 7: CNratios_all.pkl.gz
+
+sim3192
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim3193
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim3194
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3195
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3196
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3197
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3198
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3199
+  - Missing trial folders: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 6: results.pkl
+  - Missing file in trial 6: CNratios_all.pkl.gz
+
+sim3200
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3201
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3202
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3203
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3204
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3205
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3206
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim3207
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3208
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3209
+  - Missing trial folders: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 9: results.pkl
+  - Missing file in trial 9: CNratios_all.pkl.gz
+
+sim3210
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3211
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3212
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim3213
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim3214
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3215
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim3216
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3217
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3218
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim3219
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3220
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3221
+  - Missing trial folders: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 3: results.pkl
+  - Missing file in trial 3: CNratios_all.pkl.gz
+
+sim3222
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3223
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3224
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3225
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3226
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3227
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3228
+  - Missing trial folders: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 10: results.pkl
+  - Missing file in trial 10: CNratios_all.pkl.gz
+
+sim3229
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3230
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim3231
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3232
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3233
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3234
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3235
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3236
+  - Missing trial folders: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 15: results.pkl
+  - Missing file in trial 15: CNratios_all.pkl.gz
+
+sim3237
+  - Missing trial folders: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 8: results.pkl
+  - Missing file in trial 8: CNratios_all.pkl.gz
+
+sim3238
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3239
+  - Missing trial folders: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 4: results.pkl
+  - Missing file in trial 4: CNratios_all.pkl.gz
+
+sim3240
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3241
+  - Missing trial folders: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 11: results.pkl
+  - Missing file in trial 11: CNratios_all.pkl.gz
+
+sim3242
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3243
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3244
+  - Missing trial folders: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 1: results.pkl
+  - Missing file in trial 1: CNratios_all.pkl.gz
+
+sim3245
+  - Missing trial folders: [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 12: results.pkl
+  - Missing file in trial 12: CNratios_all.pkl.gz
+
+sim3246
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim3247
+  - Missing trial folders: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 8: results.pkl
+  - Missing file in trial 8: CNratios_all.pkl.gz
+
+sim3248
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3249
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim3250
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim3491
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3493
+  - Missing trial folders: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 14: results.pkl
+  - Missing file in trial 14: CNratios_all.pkl.gz
+
+sim3495
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3497
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim3498
+  - Missing trial folders: [21, 22, 23, 24, 25]
+  - Missing file in trial 20: results.pkl
+  - Missing file in trial 20: CNratios_all.pkl.gz
+
+sim3501
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3502
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim3503
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3504
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3506
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3507
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3511
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim3512
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3513
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3514
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim3516
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3520
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3523
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3524
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3526
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3528
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3529
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3530
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3531
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3532
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3533
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3534
+  - Missing trial folders: [18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 17: results.pkl
+  - Missing file in trial 17: CNratios_all.pkl.gz
+
+sim3535
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3536
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3540
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3541
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3543
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3544
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3547
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3548
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim3549
+  - Missing trial folders: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 13: results.pkl
+  - Missing file in trial 13: CNratios_all.pkl.gz
+
+sim3550
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3551
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3552
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3553
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3554
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3555
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3557
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim3559
+  - Missing trial folders: [17, 18, 19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 16: results.pkl
+  - Missing file in trial 16: CNratios_all.pkl.gz
+
+sim3560
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3568
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3570
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3571
+  - Missing trial folders: [22, 23, 24, 25]
+  - Missing file in trial 21: results.pkl
+  - Missing file in trial 21: CNratios_all.pkl.gz
+
+sim3572
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim3573
+  - Missing trial folders: [23, 24, 25]
+  - Missing file in trial 22: results.pkl
+  - Missing file in trial 22: CNratios_all.pkl.gz
+
+sim3578
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim3579
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3582
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim3583
+  - Missing trial folders: [20, 21, 22, 23, 24, 25]
+  - Missing file in trial 19: results.pkl
+  - Missing file in trial 19: CNratios_all.pkl.gz
+
+sim3586
+  - Missing file in trial 25: results.pkl
+  - Missing file in trial 25: CNratios_all.pkl.gz
+
+sim3588
+  - Missing trial folders: [24, 25]
+  - Missing file in trial 23: results.pkl
+  - Missing file in trial 23: CNratios_all.pkl.gz
+
+sim3590
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3592
+  - Missing trial folders: [19, 20, 21, 22, 23, 24, 25]
+  - Missing file in trial 18: results.pkl
+  - Missing file in trial 18: CNratios_all.pkl.gz
+
+sim3594
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3597
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+
+sim3600
+  - Missing trial folders: [25]
+  - Missing file in trial 24: results.pkl
+  - Missing file in trial 24: CNratios_all.pkl.gz
+

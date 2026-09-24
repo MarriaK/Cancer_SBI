@@ -137,6 +137,199 @@ def test_deterministic_flag_parses_and_is_off_by_default():
 
 
 # ---------------------------------------------------------------------------
+# 2b. Matrix 2's switches (2026-09-24): the same rule, one level further in.
+#
+# R4 left CloneAtt at R^2=0.025 with a renormalised multiply that still shrinks
+# every token to ~1/K, an encoder lr of 1e-4 and no dropout; R2 reached 0.415
+# and overfits from epoch ~15. These six flags are those two findings, and each
+# one has to survive the trip flag -> config -> checkpoint -> rebuilt network.
+# ---------------------------------------------------------------------------
+
+
+def test_matrix_two_flags_absent_keeps_published_defaults():
+    for model in ("clonemlp", "cloneatt", "dominantclone"):
+        cfg = config_from_argv([], model=model)
+        preset = get_preset(model)
+        assert cfg.encoder.freq_mode == "weight", model
+        assert cfg.encoder.attn_ln is False, model
+        assert cfg.encoder.attn_dropout_active is False, model
+        assert cfg.encoder.dropout == preset.encoder.dropout, model
+        assert cfg.optim.embed_lr == preset.optim.embed_lr, model
+        assert cfg.optim.embed_weight_decay == preset.optim.embed_weight_decay, model
+        assert cfg.optim.flow_weight_decay == preset.optim.flow_weight_decay, model
+        # Trap 5's documentary field is untouched by the wired one.
+        assert cfg.encoder.layer_norm_in_attention is False, model
+
+
+@pytest.mark.parametrize("mode", ["weight", "feature"])
+def test_freq_mode_flag_reaches_the_encoder(mode):
+    cfg = config_from_argv(["--freq-mode", mode], model="cloneatt")
+    assert cfg.encoder.freq_mode == mode
+
+
+def test_attn_ln_flag_reaches_the_encoder_without_touching_the_record():
+    cfg = config_from_argv(["--attn-ln"], model="cloneatt")
+    assert cfg.encoder.attn_ln is True
+    # `layer_norm_in_attention` records what the PUBLISHED model did and is read
+    # by verify_refactor.py:282; the switch must not rewrite that history.
+    assert cfg.encoder.layer_norm_in_attention is False
+
+
+def test_encoder_dropout_flag_reaches_the_mlp_encoder():
+    cfg = config_from_argv(["--encoder-dropout", "0.35"], model="clonemlp")
+    assert cfg.encoder.dropout == 0.35
+    # clonemlp already builds nn.Dropout from it (trap 4 is cloneatt's).
+    assert cfg.encoder.encoder_dropout_is_used is True
+    assert cfg.encoder.attn_dropout_active is False
+
+
+def test_encoder_dropout_flag_also_activates_it_for_cloneatt():
+    """Trap 4: setting the probability alone would change nothing at all."""
+    assert get_preset("cloneatt").encoder.dropout == 0.2
+    assert get_preset("cloneatt").encoder.attn_dropout_active is False
+    cfg = config_from_argv(["--encoder-dropout", "0.1"], model="cloneatt")
+    assert cfg.encoder.dropout == 0.1
+    assert cfg.encoder.attn_dropout_active is True
+
+
+@pytest.mark.parametrize(
+    "flag, field, value",
+    [
+        ("--embed-lr", "embed_lr", 5e-4),
+        ("--embed-weight-decay", "embed_weight_decay", 1e-4),
+        ("--flow-weight-decay", "flow_weight_decay", 1e-3),
+    ],
+)
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt"])
+def test_optimiser_overrides_reach_the_optim_block(flag, field, value, model):
+    cfg = config_from_argv([flag, str(value)], model=model)
+    assert getattr(cfg.optim, field) == value
+    # A one-value change: trap 2's structure and trap 3's dead rate stay put.
+    assert cfg.optim.use_param_groups is True
+    assert cfg.optim.learning_rate_is_used is False
+
+
+def test_optimiser_overrides_are_not_recorded_for_the_one_group_model():
+    """Trap 2: dominantclone reads neither group field, so neither may be set."""
+    plain = config_from_argv([], model="dominantclone")
+    cfg = config_from_argv(
+        ["--embed-lr", "5e-4", "--embed-weight-decay", "1e-4",
+         "--flow-weight-decay", "1e-3"],
+        model="dominantclone",
+    )
+    assert cfg.optim == plain.optim
+    assert cfg.optim.embed_lr is None and cfg.optim.flow_weight_decay is None
+
+
+def test_the_optimiser_overrides_actually_reach_the_parameter_groups():
+    """build_optimizer reads the fields; this is the proof it reads the new ones."""
+    from cancer_sbi.training.trainer import build_optimizer
+
+    cfg = config_from_argv(
+        ["--embed-lr", "5e-4", "--embed-weight-decay", "1e-4",
+         "--flow-weight-decay", "1e-3"],
+        model="clonemlp",
+    ).optim
+    embed = nn.Linear(4, 3)
+    flow = nn.Sequential(embed, nn.Linear(3, 2))
+    groups = build_optimizer(flow, embed, cfg).param_groups
+
+    # Group order is fixed by build_optimizer: flow first, embedding second.
+    assert groups[0]["lr"] == cfg.flow_lr == 1e-3
+    assert groups[0]["weight_decay"] == 1e-3
+    assert groups[1]["lr"] == 5e-4
+    assert groups[1]["weight_decay"] == 1e-4
+    # The split is by object identity, not by name (see build_optimizer).
+    assert len(groups[1]["params"]) == len(list(embed.parameters()))
+
+
+def test_freq_mode_feature_and_freq_renorm_are_refused_together():
+    """'feature' removes the multiply, so there is nothing left to renormalise."""
+    with pytest.raises(ValueError, match="freq-renorm"):
+        config_from_argv(["--freq-mode", "feature", "--freq-renorm"], model="cloneatt")
+    # Either one alone is fine.
+    assert config_from_argv(["--freq-mode", "feature"], model="cloneatt").encoder.freq_mode == "feature"
+    assert config_from_argv(["--freq-renorm"], model="cloneatt").encoder.freq_renorm is True
+
+
+def test_input_space_now_reaches_the_set_transformer_too():
+    """Matrix 2 item 1: the flag stopped being clonemlp-only."""
+    cfg = config_from_argv(["--input-space", "copy"], model="cloneatt")
+    assert cfg.encoder.input_space == "copy"
+    assert cfg.encoder.kind == "attention"
+
+
+def test_matrix_two_flags_ride_into_the_effective_config():
+    """Round trip: flags -> preset -> checkpoint dict -> preset again."""
+    from cancer_sbi.cli.train import effective_config_payload
+    from cancer_sbi.config import preset_from_effective_config
+
+    argv = [
+        "--input-space", "copy", "--freq-mode", "feature", "--attn-ln",
+        "--encoder-dropout", "0.1", "--embed-lr", "5e-4",
+        "--flow-weight-decay", "1e-3",
+    ]
+    args = build_parser().parse_args(["--model", "cloneatt"] + argv)
+    cfg = config_from_argv(argv, model="cloneatt")
+    payload = effective_config_payload(cfg, args, Path("/d"), Path("/s.pkl"))
+
+    assert payload["encoder"]["freq_mode"] == "feature"
+    assert payload["encoder"]["attn_ln"] is True
+    assert payload["encoder"]["attn_dropout_active"] is True
+    assert payload["encoder"]["dropout"] == 0.1
+    assert payload["encoder"]["input_space"] == "copy"
+    assert payload["optim"]["embed_lr"] == 5e-4
+    assert payload["optim"]["flow_weight_decay"] == 1e-3
+    assert payload["cli_flags"]["freq_mode"] == "feature"
+    assert payload["cli_flags"]["attn_ln"] is True
+    assert payload["cli_flags"]["encoder_dropout"] == 0.1
+
+    # What evaluation rebuilds from. The optim block is deliberately NOT part of
+    # preset_from_effective_config (it decides no shape), so only the encoder
+    # and flow blocks are asserted here.
+    rebuilt = preset_from_effective_config(payload)
+    assert rebuilt.encoder.freq_mode == "feature"
+    assert rebuilt.encoder.attn_ln is True
+    assert rebuilt.encoder.attn_dropout_active is True
+    assert rebuilt.encoder.input_space == "copy"
+    assert rebuilt.encoder.dropout == 0.1
+
+
+def test_an_old_checkpoint_without_the_new_keys_still_rebuilds():
+    """Every checkpoint on the cluster predates these fields."""
+    from cancer_sbi.config import preset_from_effective_config
+
+    stored = {"model": "cloneatt", "encoder": {"kind": "attention"}, "flow": {}}
+    rebuilt = preset_from_effective_config(stored)
+    assert rebuilt.encoder.freq_mode == "weight"
+    assert rebuilt.encoder.attn_ln is False
+    assert rebuilt.encoder.attn_dropout_active is False
+
+
+def test_build_embedding_net_forwards_the_new_encoder_fields():
+    """The seam evaluation goes through; a dropped argument is silent otherwise."""
+    cfg = config_from_argv(
+        ["--input-space", "copy", "--freq-mode", "feature", "--attn-ln",
+         "--encoder-dropout", "0.1"],
+        model="cloneatt",
+    ).encoder
+    encoder = build_embedding_net(cfg, device="cpu").trial_encoder
+
+    assert encoder.freq_mode == "feature"
+    assert encoder.input_space == "copy"
+    assert encoder.attn_ln is True
+    assert encoder.attn_dropout is not None and encoder.attn_dropout.p == 0.1
+    assert encoder.input_proj.in_features == 45
+    assert any(isinstance(m, nn.LayerNorm) for m in encoder.modules())
+
+    # And the default still builds the published network.
+    published = build_embedding_net(get_preset("cloneatt").encoder, "cpu").trial_encoder
+    assert published.input_proj.in_features == 44
+    assert published.attn_dropout is None
+    assert not any(isinstance(m, nn.LayerNorm) for m in published.modules())
+
+
+# ---------------------------------------------------------------------------
 # 3. Seed plumbing (cli/train.py:226).
 # ---------------------------------------------------------------------------
 
@@ -520,13 +713,25 @@ def test_two_key_split_falls_back_to_the_test_loader_and_says_so(
 @pytest.mark.parametrize(
     "argv, model, needle",
     [
-        (["--input-space", "copy"], "cloneatt", "--input-space"),
+        # --input-space is no longer cloneatt-only-ignored: matrix 2 wired the
+        # same copy-space transform into the set transformer, so dominantclone
+        # is the only preset left that ignores it.
         (["--input-space", "copy"], "dominantclone", "--input-space"),
         (["--freq-renorm"], "clonemlp", "--freq-renorm"),
         (["--freq-renorm"], "dominantclone", "--freq-renorm"),
         (["--top-k", "50"], "dominantclone", "--top-k"),
         (["--require-all-trials"], "clonemlp", "--require-all-trials"),
         (["--require-all-trials"], "cloneatt", "--require-all-trials"),
+        # Matrix 2: the three attention-only switches and the three
+        # two-group-optimiser overrides.
+        (["--freq-mode", "feature"], "clonemlp", "--freq-mode"),
+        (["--freq-mode", "feature"], "dominantclone", "--freq-mode"),
+        (["--attn-ln"], "clonemlp", "--attn-ln"),
+        (["--attn-ln"], "dominantclone", "--attn-ln"),
+        (["--encoder-dropout", "0.1"], "dominantclone", "--encoder-dropout"),
+        (["--embed-lr", "5e-4"], "dominantclone", "--embed-lr"),
+        (["--embed-weight-decay", "1e-4"], "dominantclone", "--embed-weight-decay"),
+        (["--flow-weight-decay", "1e-3"], "dominantclone", "--flow-weight-decay"),
     ],
 )
 def test_flag_that_the_preset_ignores_is_warned_about(argv, model, needle, capsys):
@@ -539,9 +744,17 @@ def test_flag_that_the_preset_ignores_is_warned_about(argv, model, needle, capsy
     "argv, model",
     [
         (["--input-space", "copy"], "clonemlp"),
+        # Matrix 2 made this one a real switch for cloneatt too.
+        (["--input-space", "copy"], "cloneatt"),
         (["--freq-renorm"], "cloneatt"),
         (["--top-k", "50"], "clonemlp"),
         (["--require-all-trials"], "dominantclone"),
+        (["--freq-mode", "feature"], "cloneatt"),
+        (["--attn-ln"], "cloneatt"),
+        (["--encoder-dropout", "0.1"], "clonemlp"),
+        (["--encoder-dropout", "0.1"], "cloneatt"),
+        (["--embed-lr", "5e-4"], "clonemlp"),
+        (["--flow-weight-decay", "1e-3"], "cloneatt"),
     ],
 )
 def test_the_preset_that_does_use_the_flag_is_not_warned_about(argv, model, capsys):
@@ -551,11 +764,12 @@ def test_the_preset_that_does_use_the_flag_is_not_warned_about(argv, model, caps
 
 def test_an_ignored_flag_does_not_change_the_config():
     """The warning is not the only thing that must happen: nothing else may."""
-    plain = config_from_argv([], model="cloneatt")
-    warned = config_from_argv(["--input-space", "copy"], model="cloneatt")
-    # `input_space` is only read by the mlp encoder, so cloneatt's encoder
-    # block must otherwise be the preset's.
-    assert warned.encoder.kind == plain.encoder.kind
+    plain = config_from_argv([], model="dominantclone")
+    warned = config_from_argv(["--input-space", "copy"], model="dominantclone")
+    # DeepSet reads no `input_space`, so its encoder block must be the preset's
+    # -- a recorded value would ride into the checkpoint describing a transform
+    # nothing applied.
+    assert warned.encoder == plain.encoder
     assert warned.flow == plain.flow
     assert config_from_argv(["--top-k", "50"], model="dominantclone").data.top_k is None
     # The clone-set path already applies the rule, so the flag must not land in

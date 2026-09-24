@@ -306,6 +306,12 @@ def resolve_eval_config(
         f"[config] rebuilt from the checkpoint: z_score_x="
         f"{preset.flow.z_score_x}, input_space={preset.encoder.input_space}, "
         f"freq_renorm={preset.encoder.freq_renorm}, "
+        # Matrix 2. These three ride in through preset_from_effective_config's
+        # encoder block; printing them is how a log says which network was
+        # rebuilt, not only which one was asked for.
+        f"freq_mode={preset.encoder.freq_mode}, "
+        f"attn_ln={preset.encoder.attn_ln}, "
+        f"attn_dropout_active={preset.encoder.attn_dropout_active}, "
         f"require_all_trials={resolved_require}",
         flush=True,
     )
