@@ -1087,3 +1087,144 @@ def test_metric_scripts_know_every_preset_model():
         for name in PRESETS:
             assert name in mod.MODEL_ORDER, (mod.__name__, name)
             assert name in mod.LABEL and name in mod.COLOUR, (mod.__name__, name)
+
+
+# ------------------------------------------------- train7.sh / prepare_partial.sh
+#
+# Matrix 7: four runs on the partial-sim cache. Same reasoning as the matrices
+# above -- the dry run is the only place the per-run flag sets can be checked
+# without a GPU.
+
+
+def _train7_dry_run(env=None):
+    full = {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)}
+    full.update(env or {})
+    r = _run(JOBS / "train7.sh", full)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+def _train7_dry_run_lines():
+    return [
+        ln for ln in _train7_dry_run().stdout.splitlines() if ln.startswith("python ")
+    ]
+
+
+RUN7_NAMES = ("AT10", "AT10s1", "R27", "H1")
+
+
+def test_train7_sh_header_matches_the_matrix():
+    text = (JOBS / "train7.sh").read_text()
+    for run in RUN7_NAMES:
+        assert run in text
+    assert "--array=0-3" in text
+    assert "-C a100" in text and "general-gpu" in text and "-t 12:00:00" in text
+    # The earlier matrices must not have been edited into this one.
+    assert "--array=0-5" in (JOBS / "train5.sh").read_text()
+    assert "--array=0-8" in (JOBS / "train6.sh").read_text()
+
+
+def test_train7_sh_is_executable_and_uses_the_three_key_split():
+    assert os.access(JOBS / "train7.sh", os.X_OK)
+    text = (JOBS / "train7.sh").read_text()
+    assert "CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl" in text
+
+
+def test_train7_sh_defaults_to_the_partial_cache():
+    text = (JOBS / "train7.sh").read_text()
+    assert "CACHE_DIR:-$CANCER/data/cache/clone_top100_partial_v1" in text
+
+
+def test_train7_dry_run_prints_four_commands_with_the_common_flags():
+    lines = _train7_dry_run_lines()
+    assert len(lines) == 4
+    for line in lines:
+        for flag in (
+            "--min-epochs 1",
+            "--stop-after-epochs 15",
+            "--max-epochs 60",
+            "--num-workers 8",
+            "--tail-bound 5",
+            "--min-trials 5",
+        ):
+            assert flag in line, (flag, line)
+        assert "--cache-dir " in line and "clone_top100_partial_v1" in line
+
+
+def test_train7_dry_run_flags_per_run():
+    at10, at10s1, r27, h1 = _train7_dry_run_lines()
+    assert "--model armtoken" in at10 and "--seed 20260924" in at10
+    assert "--model armtoken" in at10s1 and "--seed 1" in at10s1
+    assert "--model hybrid" in h1
+    # R27 is R26 plus the partial sims, so all six of R26's flags must be there.
+    assert "--model cloneatt" in r27
+    for flag in (
+        "--z-score-x structured",
+        "--input-space copy",
+        "--freq-mode feature",
+        "--attn-ln",
+        "--flow-num-transforms 3",
+        "--d-model 256",
+    ):
+        assert flag in r27, flag
+    # ...and nowhere else: they are cloneatt's preset gap, not a matrix default.
+    for line in (at10, at10s1, h1):
+        assert "--freq-mode" not in line
+
+
+def test_train7_dry_run_reports_the_split_gate_as_ok():
+    assert "split gate: OK" in _train7_dry_run().stdout
+
+
+def test_train7_sh_hard_fails_on_a_split_without_val_ids(tmp_path):
+    r = _run(
+        JOBS / "train7.sh",
+        {
+            "CANCER": str(CODE_ROOT),
+            "CANCER_SBI_SPLIT": str(CODE_ROOT / "data" / "train_test_split.pkl"),
+            "RUNS_ROOT": str(tmp_path),
+            "SLURM_ARRAY_TASK_ID": "0",
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "val_ids" in r.stderr
+
+
+def test_prepare_partial_sh_is_valid_bash_and_executable():
+    r = subprocess.run(
+        ["bash", "-n", str(JOBS / "prepare_partial.sh")],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert os.access(JOBS / "prepare_partial.sh", os.X_OK)
+
+
+def test_prepare_partial_dry_run_prints_the_build_and_the_verify():
+    r = _run(JOBS / "prepare_partial.sh", {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)})
+    assert r.returncode == 0, r.stderr
+    lines = [ln for ln in r.stdout.splitlines() if ln.startswith("python ")]
+    assert len(lines) == 2
+    build, verify = lines
+    assert "build_clone_cache.py" in build
+    assert "--min-trials 5" in build
+    assert "clone_top100_partial_v1" in build
+    assert "verify_clone_cache.py" in verify
+    assert "clone_top100_partial_v1" in verify
+    # It must NOT carve a split -- prepare.sh owns that, and this one reads it.
+    assert "make_split" not in (JOBS / "prepare_partial.sh").read_text()
+
+
+def test_prepare_sh_is_untouched_and_still_complete_only():
+    text = (JOBS / "prepare.sh").read_text()
+    assert "--min-trials" not in text
+    assert "clone_top100_v1" in text and "clone_top100_partial_v1" not in text
+
+
+def test_jobs_readme_documents_matrix_seven():
+    text = (JOBS / "README.md").read_text()
+    assert "Matrix 7" in text and "train7.sh" in text
+    for run in RUN7_NAMES:
+        assert run in text
+    assert "--min-trials 5" in text
+    # The rule itself, not only the table.
+    assert "test set does not" in text

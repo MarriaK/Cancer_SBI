@@ -853,3 +853,297 @@ def test_clone_set_builder_defaults_to_no_subsampling(small_ids):
     for loader in loaders:
         assert loader.dataset.trial_subsample is None
         assert next(iter(loader))[0].shape[1] == 25
+
+
+# --------------------------------------------------------------------------
+# 6. min_trials: training on sims with fewer than 25 replicates (matrix 7)
+# --------------------------------------------------------------------------
+
+
+def _trials_on_disk(name):
+    """Count a sim's present ``CNratios_all.pkl.gz`` files, straight from disk."""
+    return sum(
+        (DATA_ROOT / name / str(t) / "CNratios_all.pkl.gz").exists()
+        for t in range(1, 26)
+    )
+
+
+def _has_params(name):
+    """Whether ``parameters.pkl`` is readable, the other half of the filter."""
+    from cancer_sbi.data.clone_sets import load_pickle
+
+    try:
+        load_pickle(str(DATA_ROOT / name / "parameters.pkl"))
+    except Exception:  # noqa: BLE001 - mirrors CNASimsDataset.drop_missing
+        return False
+    return True
+
+
+def _sim_names():
+    """Every ``sim*`` directory name under the local tree, numerically sorted."""
+    return sorted(
+        (d for d in os.listdir(DATA_ROOT) if d.startswith("sim")),
+        key=lambda n: int(n[3:]),
+    )
+
+
+def _kept(ds):
+    """The sim names a dataset kept."""
+    return {os.path.basename(item["sim_dir"]) for item in ds.items}
+
+
+@needs_data
+def test_min_trials_none_is_the_published_sim_set():
+    """The default must still be trap 10: exactly ``complete_sim_ids``."""
+    ids = _sim_names()[:120]
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=ids)
+    assert ds.min_trials is None
+    assert _kept(ds) == set(complete_sim_ids(str(DATA_ROOT), ids))
+
+
+@needs_data
+def test_min_trials_adds_exactly_the_sims_with_enough_files():
+    """The kept set is counted independently, off the filesystem."""
+    ids = _sim_names()[:120]
+    k = 5
+    relaxed = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=ids, min_trials=k)
+    assert relaxed.min_trials == k
+
+    # Independent count: enough trial files AND a readable parameters.pkl, which
+    # is the other half of the dataset's own filter.
+    expected = {
+        name for name in ids if _trials_on_disk(name) >= k and _has_params(name)
+    }
+    assert _kept(relaxed) == expected
+    assert _kept(relaxed) >= set(complete_sim_ids(str(DATA_ROOT), ids))
+    # And it really did add something the published rule drops.
+    assert any(_trials_on_disk(name) < 25 for name in expected)
+
+
+@needs_data
+def test_min_trials_item_is_nan_padded_with_a_matching_mask():
+    """A partial sim's real trials come first; the rest are NaN and masked out."""
+    ids = _sim_names()[:200]
+    partial = [n for n in ids if 5 <= _trials_on_disk(n) < 25 and _has_params(n)]
+    if not partial:
+        pytest.skip("no partial sim in the local tree")
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=partial[:2], min_trials=5)
+
+    for i, item in enumerate(ds.items):
+        n = _trials_on_disk(os.path.basename(item["sim_dir"]))
+        x, mask, _ = ds[i]
+        assert x.shape == (25, 100, 45)
+        assert mask.shape == (25,)
+        assert int(mask.sum()) == n
+        assert bool(mask[:n].all()) and not bool(mask[n:].any())
+        assert not torch.isnan(x[:n]).any()
+        assert bool(torch.isnan(x[n:]).all())
+
+
+@needs_data
+@pytest.mark.parametrize("bad", [0, -1, 26])
+def test_min_trials_rejects_a_bar_outside_the_trial_count(bad):
+    with pytest.raises(ValueError, match="min_trials"):
+        CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=["sim1"], min_trials=bad)
+
+
+@needs_data
+def test_min_trials_reaches_train_and_val_but_never_test():
+    """The published test set is the whole point: it must not move."""
+    ids = _sim_names()[:200]
+    partial = [n for n in ids if 5 <= _trials_on_disk(n) < 25 and _has_params(n)]
+    if len(partial) < 2:
+        pytest.skip("fewer than two partial sims in the local tree")
+    complete = complete_sim_ids(str(DATA_ROOT), ids)
+    # Every partition is offered both kinds, so "test did not move" is a real
+    # assertion rather than a partition with nothing to drop.
+    train = complete[:6] + partial[:1]
+    val = complete[6:10] + partial[1:2]
+    test = complete[10:16] + partial[:1]
+
+    train_loader, val_loader, test_loader = build_clone_set_dataloaders(
+        str(DATA_ROOT), train, test, val_ids=val, batch_size=2, min_trials=5
+    )
+    assert train_loader.dataset.min_trials == 5
+    assert val_loader.dataset.min_trials == 5
+    assert test_loader.dataset.min_trials is None
+    assert _kept(train_loader.dataset) == set(train)
+    assert _kept(val_loader.dataset) == set(val)
+    # The test dataset keeps the published rule, so the partial sim is gone.
+    assert _kept(test_loader.dataset) == set(complete_sim_ids(str(DATA_ROOT), test))
+
+    default = build_clone_set_dataloaders(
+        str(DATA_ROOT), train, test, val_ids=val, batch_size=2
+    )
+    for loader in default:
+        assert loader.dataset.min_trials is None
+
+
+@needs_data
+@pytest.mark.parametrize("model", ["armtoken", "cloneatt", "clonemlp"])
+def test_every_encoder_gives_a_finite_context_on_a_partial_item(model):
+    """NaN slots must be masked, not propagated, by all three encoders."""
+    from cancer_sbi.config import get_preset
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    ids = _sim_names()[:200]
+    partial = [n for n in ids if 5 <= _trials_on_disk(n) < 25 and _has_params(n)]
+    if not partial:
+        pytest.skip("no partial sim in the local tree")
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=partial[:1], min_trials=5)
+    x, _, _ = ds[0]
+
+    net = build_embedding_net(get_preset(model).encoder, "cpu").eval()
+    with torch.no_grad():
+        out = net(x.unsqueeze(0))
+    assert torch.isfinite(out).all(), model
+
+
+@needs_data
+def test_armtoken_ignores_the_padded_slots_exactly():
+    """20 real trials + 5 NaN slots must embed to the same thing as the 20."""
+    from cancer_sbi.config import get_preset
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    ids = _sim_names()[:120]
+    complete = complete_sim_ids(str(DATA_ROOT), ids)
+    if not complete:
+        pytest.skip("no complete sim in the local tree")
+    ds = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=complete[:1])
+    x, _, _ = ds[0]
+
+    twenty = x[:20]
+    padded = x.clone()
+    padded[20:] = float("nan")
+
+    net = build_embedding_net(get_preset("armtoken").encoder, "cpu").eval()
+    with torch.no_grad():
+        a = net(twenty.unsqueeze(0))
+        b = net(padded.unsqueeze(0))
+    assert torch.allclose(a, b, atol=0, rtol=0), (a - b).abs().max()
+
+
+# --- the partial cache -----------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def partial_cache(tmp_path_factory):
+    """Build a --min-trials 2 cache over a few partial sims and a few complete."""
+    if not DATA_ROOT.is_dir():
+        pytest.skip("no local simulation tree")
+    ids = _sim_names()[:200]
+    partial = [n for n in ids if 2 <= _trials_on_disk(n) < 25 and _has_params(n)]
+    complete = complete_sim_ids(str(DATA_ROOT), ids)
+    if not partial or len(complete) < 4:
+        pytest.skip("local tree has no partial sims to cache")
+    chosen = complete[:4] + partial[:2]
+
+    work = tmp_path_factory.mktemp("partial_clone_cache")
+    split_path = work / "split.pkl"
+    save_split(split_path, np.array(chosen[:4]), np.array(chosen[4:]))
+    out = work / "cache"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SRC / "utilities" / "build_clone_cache.py"),
+            "--root", str(DATA_ROOT),
+            "--split", str(split_path),
+            "--out", str(out),
+            "--workers", "2",
+            "--top-k", "100",
+            "--min-trials", "2",
+            "--force",
+        ],
+        cwd=str(SRC), capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return out, chosen, split_path
+
+
+@needs_data
+def test_partial_cache_manifest_and_trial_counts(partial_cache):
+    cache_dir, chosen, _ = partial_cache
+    manifest = json.loads((cache_dir / CACHE_MANIFEST_FILENAME).read_text())
+    assert manifest["min_trials"] == 2
+
+    names = [str(n) for n in np.load(cache_dir / "sim_ids.npy")]
+    counts = np.load(cache_dir / "trial_counts.npy")
+    assert set(names) == set(chosen)
+    assert len(counts) == len(names)
+    for name, count in zip(names, counts):
+        assert int(count) == _trials_on_disk(name), name
+
+
+@needs_data
+def test_partial_cache_item_equals_the_uncached_item(partial_cache):
+    """Values, mask and NaN pattern, all three."""
+    cache_dir, chosen, _ = partial_cache
+    plain = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=chosen, min_trials=2)
+    fast = CNASimsDataset(
+        str(DATA_ROOT), top_k=100, sim_ids=chosen, min_trials=2, cache_dir=str(cache_dir)
+    )
+    assert len(plain) == len(fast) == len(chosen)
+    for i in range(len(plain)):
+        xa, ma, ya = plain[i]
+        xb, mb, yb = fast[i]
+        assert torch.equal(torch.isnan(xa), torch.isnan(xb))
+        assert torch.equal(xa[~torch.isnan(xa)], xb[~torch.isnan(xb)])
+        assert torch.equal(ma, mb)
+        assert torch.equal(ya, yb)
+
+
+@needs_data
+def test_a_complete_only_cache_refuses_a_relaxed_dataset(tiny_cache, partial_cache):
+    """It simply does not hold the partial sims, and the message names them."""
+    cache_dir, cached, _ = tiny_cache
+    _, chosen, _ = partial_cache
+    partial = [n for n in chosen if _trials_on_disk(n) < 25]
+    with pytest.raises(ValueError) as excinfo:
+        CNASimsDataset(
+            str(DATA_ROOT),
+            top_k=100,
+            sim_ids=cached[:2] + partial[:1],
+            min_trials=2,
+            cache_dir=str(cache_dir),
+        )
+    message = str(excinfo.value)
+    assert partial[0] in message
+    assert "min_trials=25" in message
+
+
+@needs_data
+def test_verify_clone_cache_passes_on_a_partial_cache(partial_cache):
+    cache_dir, _, split_path = partial_cache
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SRC / "utilities" / "verify_clone_cache.py"),
+            "--root", str(DATA_ROOT),
+            "--split", str(split_path),
+            "--cache", str(cache_dir),
+            "--n-sims", "6",
+            "--n-trials", "2",
+        ],
+        cwd=str(SRC), capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "PARTIAL cache: min_trials=2" in proc.stdout
+
+
+@needs_data
+def test_the_complete_only_cache_path_is_unchanged(tiny_cache):
+    """min_trials=None + the published cache: still all-True masks, same values."""
+    cache_dir, cached, _ = tiny_cache
+    assert not (cache_dir / "trial_counts.npy").exists()
+    manifest = json.loads((cache_dir / CACHE_MANIFEST_FILENAME).read_text())
+    assert "min_trials" not in manifest
+
+    plain = CNASimsDataset(str(DATA_ROOT), top_k=100, sim_ids=cached[:3])
+    fast = CNASimsDataset(
+        str(DATA_ROOT), top_k=100, sim_ids=cached[:3], cache_dir=str(cache_dir)
+    )
+    for i in range(len(plain)):
+        xa, ma, ya = plain[i]
+        xb, mb, yb = fast[i]
+        assert torch.equal(xa, xb) and torch.equal(ma, mb) and torch.equal(ya, yb)
+        assert bool(mb.all())

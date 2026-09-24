@@ -32,6 +32,10 @@ CACHE_X_FILENAME = "X.npy"
 CACHE_THETA_FILENAME = "theta.npy"
 CACHE_SIM_IDS_FILENAME = "sim_ids.npy"
 CACHE_MANIFEST_FILENAME = "manifest.json"
+#: Written only by a cache built with ``--min-trials`` (one int per cached
+#: sim: how many real trial planes its row carries, always in slots
+#: ``0..count-1``). Absent from a complete-only cache, where every row is full.
+CACHE_TRIAL_COUNTS_FILENAME = "trial_counts.npy"
 
 
 def load_gz_pickle(filepath: str) -> Any:
@@ -192,6 +196,7 @@ class CNASimsDataset(Dataset):
         sim_ids: Optional[Sequence[str]] = None,
         cache_dir: Optional[str] = None,
         trial_subsample: Optional[int] = None,
+        min_trials: Optional[int] = None,
     ) -> None:
         """Scan ``root_dir`` and index the usable sims.
 
@@ -237,13 +242,33 @@ class CNASimsDataset(Dataset):
                 protect. Two runs with the same ``--seed`` therefore draw the
                 same subsets; two different seeds do not.
 
+            min_trials: Lower the trap-10 bar. ``None`` -- the default and the
+                published behaviour -- keeps a sim only when all
+                ``num_trials_per_sim`` trial files are present. An int ``K``
+                with ``1 <= K <= num_trials_per_sim`` keeps every sim with at
+                least ``K`` of them; the missing slots stay NaN and
+                ``trial_mask`` is False there, exactly as the padding path
+                already does for the slots it never fills. On the cluster's
+                3,600 sims this recovers the 441 with 1-24 complete replicates.
+
+                **Give this to the training and validation datasets only.** The
+                test set is the published evaluation condition -- the 651
+                complete sims -- and the loader builder keeps it that way
+                (``data/loaders.py``).
+
+                Every model that reads these items already tolerates the NaN
+                slots: ArmToken masks them natively (``models/arm_tokens.py``)
+                and CloneAtt/CloneMLP through sbi's NaN-aware trial pooling
+                (``models/trials.py``).
+
         Raises:
             RuntimeError: If no sims match, none survive the ``sim_ids`` filter,
                 or none survive the minimum-trials filter.
             ValueError: If ``cache_dir`` was built by a different version of
                 :func:`top_frequent_rows_tensor`, or with a different ``top_k``
                 or trial count than this dataset asks for; or if
-                ``trial_subsample`` is less than 1.
+                ``trial_subsample`` is less than 1; or if ``min_trials`` is
+                outside ``[1, num_trials_per_sim]``.
         """
         self.root_dir = root_dir
         self.num_trials = num_trials_per_sim
@@ -257,6 +282,20 @@ class CNASimsDataset(Dataset):
         self.trial_filename = trial_filename
         self.params_filename = params_filename
         self.drop_missing = drop_missing
+
+        if min_trials is not None and not (
+            1 <= int(min_trials) <= int(num_trials_per_sim)
+        ):
+            raise ValueError(
+                f"min_trials must be in [1, {num_trials_per_sim}], got "
+                f"{min_trials!r}."
+            )
+        self.min_trials = int(min_trials) if min_trials is not None else None
+        # The single number the scan below compares against, so the default and
+        # the relaxed rule are one code path rather than two.
+        self._required_trials = (
+            self.min_trials if self.min_trials is not None else self.num_trials
+        )
 
         if trial_subsample is not None and int(trial_subsample) < 1:
             raise ValueError(
@@ -328,7 +367,11 @@ class CNASimsDataset(Dataset):
             # dataset classes must NOT be unified. The warning text is also
             # inherited verbatim and is misleading: trials were found, just not
             # enough of them. See docs/REFACTOR_NOTES.md.
-            if len(available_trials) < self.num_trials:
+            # ...unless min_trials lowers the bar, in which case the sim is
+            # kept with NaN in the slots it has no file for. _required_trials is
+            # num_trials when min_trials is None, so the default is this same
+            # line with the same comparison and the same warning text.
+            if len(available_trials) < self._required_trials:
                 print(f"[WARN] Skipping {sim_dir}: no available trials found.")
                 continue
 
@@ -352,6 +395,11 @@ class CNASimsDataset(Dataset):
         # and that is exactly the way to get corrupt reads.
         self._cache_x: Optional[np.ndarray] = None
         self._cache_theta: Optional[np.ndarray] = None
+        # Real-trial count per cache row, or None for a cache that has no
+        # trial_counts.npy -- i.e. a complete-only cache, where every row is
+        # full by construction. Read eagerly in _attach_cache: it is one int per
+        # sim (a few kB), not a tensor, so there is nothing to fork-share.
+        self._cache_trial_counts: Optional[np.ndarray] = None
         if self.cache_dir is not None:
             self._attach_cache(self.cache_dir)
 
@@ -363,6 +411,7 @@ class CNASimsDataset(Dataset):
                 if self._subsample_k is not None
                 else ""
             )
+            + (f" min_trials={self.min_trials}" if self.min_trials is not None else "")
         )
 
     def _attach_cache(self, cache_dir: str) -> None:
@@ -384,6 +433,16 @@ class CNASimsDataset(Dataset):
                 partial cache is the one failure mode that would silently
                 change every published number, so all six raise rather than
                 falling back to the slow path.
+
+        Note:
+            ``min_trials`` is checked through the membership test rather than
+            by comparing the two numbers directly. A cache is usable exactly
+            when it holds every sim this dataset serves; its ``min_trials``
+            only explains *why* it does not when it does not (a complete-only
+            cache, ``min_trials`` 25, cannot hold the partial sims a dataset
+            asking for 5 keeps). Refusing on the numbers alone would also
+            reject the harmless case where the relaxed rule happens to keep
+            nothing the cache lacks, and would refuse without naming a sim.
         """
         manifest_path = os.path.join(cache_dir, CACHE_MANIFEST_FILENAME)
         if not os.path.exists(manifest_path):
@@ -438,6 +497,22 @@ class CNASimsDataset(Dataset):
 
         self._cache_rows = {str(name): int(row) for row, name in enumerate(sim_ids)}
 
+        # A cache with no min_trials key predates the flag and holds only
+        # complete sims, which is the published cache and must keep working
+        # untouched: 25 (its num_trials) is exactly the rule it was built under.
+        cached_min = int(manifest.get("min_trials", manifest.get("num_trials", self.num_trials)))
+        counts_path = os.path.join(cache_dir, CACHE_TRIAL_COUNTS_FILENAME)
+        if os.path.exists(counts_path):
+            counts = np.load(counts_path)
+            if len(counts) != x_shape[0]:
+                raise ValueError(
+                    f"Clone cache at {cache_dir} is inconsistent: "
+                    f"{CACHE_TRIAL_COUNTS_FILENAME} has {len(counts)} entries "
+                    f"but {CACHE_X_FILENAME} has {x_shape[0]} rows. Rebuild "
+                    f"the cache."
+                )
+            self._cache_trial_counts = np.asarray(counts, dtype=np.int64)
+
         # Every sim this dataset will serve has to be in the cache. Checked here
         # rather than at the first __getitem__ that misses, because a partial
         # cache should fail before the job is queued, not four hours in -- and
@@ -451,10 +526,19 @@ class CNASimsDataset(Dataset):
         if missing:
             shown = ", ".join(missing[:10])
             more = "" if len(missing) <= 10 else f", ... and {len(missing) - 10} more"
+            why = ""
+            if cached_min > self._required_trials:
+                why = (
+                    f" The cache was built with min_trials={cached_min} but this "
+                    f"dataset asks for min_trials={self._required_trials}, so the "
+                    f"cache simply does not contain the partial sims the looser "
+                    f"rule keeps; rebuild it with "
+                    f"--min-trials {self._required_trials} or lower."
+                )
             raise ValueError(
                 f"Clone cache at {cache_dir} is missing {len(missing)} of the "
                 f"{len(self.items)} sims this dataset serves: {shown}{more}. "
-                f"Rebuild the cache for this split."
+                f"Rebuild the cache for this split.{why}"
             )
 
     def __len__(self) -> int:
@@ -525,6 +609,14 @@ class CNASimsDataset(Dataset):
             )
             trial_mask = torch.zeros((len(selection),), dtype=torch.bool)
             for out_slot, slot in enumerate(selection):
+                # A slot past this sim's real trials can only happen under
+                # min_trials, where the sim has fewer than num_trials files; it
+                # keeps its NaN and its False, exactly like the unfilled slots
+                # of the published padding path below. With the default rule
+                # every sim has all num_trials trials, so the test is always
+                # true and the branch is bit-identical to what it replaced.
+                if slot >= len(avail):
+                    continue
                 # Only the chosen trials are read: with K=16 that is 16 gzipped
                 # files per item instead of 25, which is the one place this
                 # augmentation is also cheaper than the published path.
@@ -592,10 +684,20 @@ class CNASimsDataset(Dataset):
                 ``None`` for every trial (the published path).
 
         Returns:
-            The same 3-tuple as :meth:`__getitem__`. ``trial_mask`` is all True:
-            the cache only ever contains sims that passed the "all
+            The same 3-tuple as :meth:`__getitem__`. ``trial_mask`` is all True
+            for a complete-only cache -- every row there passed the "all
             ``num_trials`` trials present" filter, so there is no NaN-padded
-            slot to mask.
+            slot to mask. For a cache built with ``--min-trials`` the mask comes
+            from ``trial_counts.npy``: slot ``t`` is True iff ``t < count``,
+            because the builder fills a partial sim's real trials into slots
+            ``0..count-1`` and leaves the rest NaN.
+
+        Note:
+            The mask is derived from the recorded counts rather than by testing
+            the slice for all-NaN rows. Both are correct; the counts are an
+            integer lookup per item, while all-NaN detection would page in and
+            scan the whole ``(num_trials, top_k, 45)`` block -- 450 kB per item
+            -- which is most of what the cache exists to avoid.
 
         Raises:
             KeyError: If this sim is not in the cache. That means the cache was
@@ -626,16 +728,26 @@ class CNASimsDataset(Dataset):
         # and torch.from_numpy on it yields a non-writable tensor plus a
         # UserWarning on every item. One copy per item is the price of a writable
         # tensor -- the values are identical either way.
+        # None == a complete-only cache: every slot is real, which is the
+        # published path and stays an all-ones mask built the same way it was.
+        n_real = (
+            self.num_trials
+            if self._cache_trial_counts is None
+            else int(self._cache_trial_counts[row])
+        )
+
         if selection is None:
             x_trials = torch.from_numpy(np.array(self._cache_x[row], copy=True))
-            trial_mask = torch.ones((self.num_trials,), dtype=torch.bool)
+            trial_mask = torch.arange(self.num_trials) < n_real
         else:
             # Fancy-indexing the memmap reads only the chosen trial planes, and
             # the result is already a fresh array -- hence no second copy.
             x_trials = torch.from_numpy(
                 np.asarray(self._cache_x[row][selection], dtype=np.float32)
             )
-            trial_mask = torch.ones((len(selection),), dtype=torch.bool)
+            trial_mask = torch.as_tensor(
+                [slot < n_real for slot in selection], dtype=torch.bool
+            )
         y = torch.from_numpy(np.array(self._cache_theta[row], copy=True))
         return x_trials, trial_mask, y
 
@@ -665,4 +777,5 @@ __all__ = [
     "CACHE_THETA_FILENAME",
     "CACHE_SIM_IDS_FILENAME",
     "CACHE_MANIFEST_FILENAME",
+    "CACHE_TRIAL_COUNTS_FILENAME",
 ]

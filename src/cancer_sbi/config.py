@@ -80,6 +80,15 @@ class DataConfig:
             condition and the number every reported score is on. Read by the
             ``clone_sets`` path only; the dominant-clone builder ignores it
             (``cli/train.py`` warns).
+        min_trials: Matrix 7. ``None`` -- the default and the published
+            behaviour -- keeps only sims with all ``num_trials`` trial files
+            (trap 10). An int ``K`` keeps every sim with at least ``K`` of
+            them, NaN-padding the rest. Applied to the TRAINING and VALIDATION
+            datasets only: the test set stays the published complete-sim set so
+            every reported number remains comparable
+            (``data/loaders.py``). Read by the ``clone_sets`` path only; the
+            dominant-clone builder ignores it (``cli/train.py`` warns), because
+            that family has its own NaN-pad rule already.
         require_all_trials: Restrict DominantClone to sims with every trial file
             present, i.e. the clone-set models' sim set. Off (the default) is
             the published behaviour: NaN-pad the missing trials and keep the
@@ -119,6 +128,9 @@ class DataConfig:
     # Added 2026-09-24 (matrix 3). None == every trial, the published
     # behaviour; see the docstring. TRAINING loaders only.
     trial_subsample: Optional[int] = None
+    # Added 2026-09-24 (matrix 7). None == the published trap-10 rule; see the
+    # docstring. TRAINING and VALIDATION loaders only -- never the test set.
+    min_trials: Optional[int] = None
 
 
 @dataclass(frozen=True)

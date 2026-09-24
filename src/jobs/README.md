@@ -315,3 +315,45 @@ For `hybrid`, `--d-model`, `--n-heads`, `--num-inducing`, `--freq-mode` and `--a
 `--require-all-trials` are warned about and ignored. One `--n-heads` serves both branches, so it must
 divide the clone branch's `d_model` (256) *and* the arm branch's `d_token` (64); 8 does both and
 `cli/train.py` refuses a value that does not.
+
+## Matrix 7 — partial sims (`train7.sh`, `prepare_partial.sh`)
+
+This matrix changes the **data**, not the model. Trap 10 drops a simulation whole when even one of
+its 25 replicate tumours is missing a `CNratios_all.pkl.gz`, so the 441 of the cluster's 3,600 sims
+that have 1–24 complete replicates (94 more have 0) have never been seen by a clone-set model.
+`--min-trials 5` keeps them: the slots with no file stay NaN and the encoders mask them — ArmToken
+natively (`models/arm_tokens.py`), CloneAtt/CloneMLP through sbi's NaN-aware trial pooling
+(`models/trials.py`) — so not one encoder needs a line changed. Roughly +12% training sims. The bar
+is 5 rather than 1 because a sim summarised from one or two replicates carries almost none of the
+between-replicate spread, which is half of what the per-arm moments measure.
+
+**The rule: train and validation gain the partial sims; the test set does not.**
+`build_clone_set_dataloaders` gives `min_trials` to the training and validation datasets only and
+takes a separate `test_min_trials`, which no caller sets, so the test dataset keeps the published
+complete-sim rule and stays the same 651 cases every earlier matrix reported on. A gain here is
+therefore a gain from more training data, not from an easier test set. Validation follows training
+rather than test: early stopping should see the kind of item the model is being fitted on, and the
+validation set is never reported.
+
+Run `sbatch jobs/prepare_partial.sh` first — it builds `data/cache/clone_top100_partial_v1` with
+`--min-trials 5` from the split `prepare.sh` already carved, and verifies it (the verifier also
+checks the NaN padding and the recorded trial counts). `jobs/prepare.sh` and
+`data/cache/clone_top100_v1` are untouched and still complete-only; a partial cache additionally
+carries `trial_counts.npy` and `min_trials` in its manifest, and a dataset asking for `min_trials=5`
+against the complete-only cache refuses at construction, naming the sims that cache lacks.
+
+All four share `--min-epochs 1 --stop-after-epochs 15 --max-epochs 60 --num-workers 8 --tail-bound 5
+--min-trials 5`, default `CACHE_DIR` to the partial cache, and take seed 20260924 except where the
+table says. `--array=0-3`.
+
+| idx | run | flags on top of the preset | what it tests |
+| --- | --- | --- | --- |
+| 0 | AT10 | `--model armtoken` | matrix 5's yardstick (R² 0.898) on the bigger training set — the row the matrix is read against |
+| 1 | AT10s1 | `--model armtoken --seed 1` | the seed spread (±0.05 on R²), without which no difference from AT0 can be called real |
+| 2 | R27 | `--model cloneatt --z-score-x structured --input-space copy --freq-mode feature --attn-ln --flow-num-transforms 3 --d-model 256` | R26, the best CloneAtt ever run (R² 0.568), plus the partial sims — is CloneAtt data-starved rather than mis-specified? |
+| 3 | H1 | `--model hybrid` | matrix 6's hybrid, same question |
+
+R27 names R26's six flags explicitly because the `cloneatt` preset, unlike `armtoken`'s, does not
+carry matrices 2–4's findings. `--min-trials` defaults to unset everywhere else, so every earlier
+matrix's behaviour is byte-identical; it is warned about and ignored for `dominantclone`, which
+NaN-pads missing trials already and so has no bar to lower.

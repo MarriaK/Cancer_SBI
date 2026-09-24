@@ -49,6 +49,12 @@ the run it produced before:
     Clone-set models only. The TRAINING dataset draws K of the 25 trials per
     sim, fresh every epoch; validation and test keep all 25. Runs R13 and R15.
     Default: unset, i.e. all 25 everywhere.
+``--min-trials K``
+    Clone-set models only. Keep simulations with at least K of the 25 replicate
+    trials instead of only the complete ones (trap 10); the missing slots are
+    NaN and the encoders mask them. Applied to the TRAINING and VALIDATION sets
+    only -- the test set keeps the published complete-sim rule, so the scores
+    stay comparable with every earlier matrix. Matrix 7. Default: unset.
 ``--attn-scale {published,standard}``
     CloneAtt only. ``standard`` divides the attention logits by
     ``sqrt(d_model / n_heads)`` instead of ``sqrt(d_model)`` (trap 6), which
@@ -433,6 +439,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     repairs.add_argument(
+        "--min-trials",
+        type=int,
+        default=None,
+        help=(
+            "Clone-set models only: keep sims with at least this many of the "
+            "25 trial files instead of only the complete ones (matrix 7). The "
+            "missing trials are NaN slots the encoders mask. TRAINING and "
+            "VALIDATION only -- the test set keeps the published rule so the "
+            "reported numbers stay comparable. Default: unset. "
+            "Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
         "--freq-renorm",
         action="store_true",
         default=None,
@@ -629,6 +648,15 @@ def build_config(
             if getattr(args, "trial_subsample", None) is not None
             and preset.data.dataset == "clone_sets"
             else preset.data.trial_subsample
+        ),
+        # Matrix 7, the same rule again: CNASimsDataset is the only class that
+        # reads it, so a dominant-clone preset keeps its own value and the
+        # warning below says the flag was dropped.
+        min_trials=(
+            args.min_trials
+            if getattr(args, "min_trials", None) is not None
+            and preset.data.dataset == "clone_sets"
+            else preset.data.min_trials
         ),
     )
     train_cfg = replace(
@@ -900,6 +928,16 @@ def build_config(
     ):
         print(f"[warn] --trial-subsample is not used by {preset.name}; ignoring it.")
 
+    # Matrix 7: DominantClone already keeps the sims this flag would recover --
+    # SimulationDataset NaN-pads a missing trial and drops a sim only when every
+    # trial is missing -- so there is no bar here to lower, and recording the
+    # value would put a number in the checkpoint that nothing applied.
+    if (
+        getattr(args, "min_trials", None) is not None
+        and preset.data.dataset != "clone_sets"
+    ):
+        print(f"[warn] --min-trials is not used by {preset.name}; ignoring it.")
+
     # Matrix 4. --tail-bound is deliberately absent: every preset's flow reads
     # it, so there is no preset for which it would be decorative.
     if getattr(args, "attn_scale", None) is not None and not has_attention:
@@ -992,6 +1030,9 @@ def effective_config_payload(
         "flow_hidden_features": getattr(args, "flow_hidden_features", None),
         "lr_plateau": bool(getattr(args, "lr_plateau", False)),
         "trial_subsample": getattr(args, "trial_subsample", None),
+        # Matrix 7. min_trials also lands in the snapshotted `data` block;
+        # this is the flag as typed.
+        "min_trials": getattr(args, "min_trials", None),
         # Matrix 4. attn_scale, trial_pool, d_model, n_heads and num_inducing
         # also land in the snapshotted `encoder` block and tail_bound in
         # `flow`; these are the flags as typed.
@@ -1094,6 +1135,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             cache_dir=cfg.data.cache_dir,
             # Training only -- the builder gives it to the train dataset alone.
             trial_subsample=cfg.data.trial_subsample,
+            # Training and validation only; the builder's test_min_trials keeps
+            # its default, i.e. the published complete-sim test set.
+            min_trials=cfg.data.min_trials,
         )
     else:
         train_loader, val_loader, test_loader = build_dominant_clone_dataloaders(

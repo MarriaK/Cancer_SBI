@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cancer_sbi.data.clone_sets import (  # noqa: E402
     CACHE_MANIFEST_FILENAME,
+    CACHE_TRIAL_COUNTS_FILENAME,
     CACHE_SIM_IDS_FILENAME,
     CACHE_THETA_FILENAME,
     CACHE_X_FILENAME,
@@ -111,6 +112,21 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     sim_ids = [str(name) for name in np.load(cache_dir / CACHE_SIM_IDS_FILENAME)]
     rows = {name: idx for idx, name in enumerate(sim_ids)}
+    # A manifest with no min_trials key predates the flag: it holds complete
+    # sims only, i.e. the rule num_trials describes.
+    cache_min_trials = manifest.get("min_trials")
+    counts_path = cache_dir / CACHE_TRIAL_COUNTS_FILENAME
+    trial_counts = np.load(counts_path) if counts_path.exists() else None
+    if (cache_min_trials is None) != (trial_counts is None):
+        failures.append(
+            f"manifest min_trials={cache_min_trials!r} but "
+            f"{CACHE_TRIAL_COUNTS_FILENAME} is "
+            f"{'absent' if trial_counts is None else 'present'} -- a partial "
+            f"cache needs both, a complete-only cache neither"
+        )
+    if cache_min_trials is not None:
+        print(f"[verify] cache is a PARTIAL cache: min_trials={cache_min_trials}")
+
     x_mm = np.load(cache_dir / CACHE_X_FILENAME, mmap_mode="r")
     theta_mm = np.load(cache_dir / CACHE_THETA_FILENAME, mmap_mode="r")
     print(f"[verify] cache holds {len(sim_ids)} sims, X shape {x_mm.shape}")
@@ -134,7 +150,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if missing_from_cache:
         print(
             f"[verify] note: {len(missing_from_cache)} split sims are not cached "
-            f"(the builder drops sims without all trials), e.g. "
+            f"(the builder drops sims below its trial bar), e.g. "
             f"{', '.join(missing_from_cache[:5])}"
         )
     if not in_split:
@@ -155,6 +171,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         num_trials_per_sim=int(manifest["num_trials"]),
         top_k=int(manifest["top_k"]),
         sim_ids=sampled,
+        min_trials=cache_min_trials,
     )
     by_name = {os.path.basename(item["sim_dir"]): item for item in dataset.items}
 
@@ -177,6 +194,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                 failures.append(
                     f"X mismatch at {name} (row {row}) trial slot {int(slot)}: "
                     f"{n_diff} of {live_np.size} values differ"
+                )
+
+        # A partial sim's unwritten slots are the one thing a value-by-value
+        # comparison of the real trials cannot see: a cache that forgot to
+        # NaN-fill them would serve zero clone rows, which the encoders read as
+        # real clones of frequency 0 rather than as an absent replicate.
+        if trial_counts is not None:
+            if int(trial_counts[row]) != len(avail):
+                failures.append(
+                    f"trial_counts mismatch at {name} (row {row}): cache says "
+                    f"{int(trial_counts[row])}, the live dataset has {len(avail)}"
+                )
+            pad = np.asarray(x_mm[row, len(avail):])
+            if pad.size and not np.isnan(pad).all():
+                failures.append(
+                    f"padding not NaN at {name} (row {row}): slots "
+                    f"{len(avail)}..{dataset.num_trials - 1} must be all NaN"
                 )
 
         params = load_pickle(os.path.join(item["sim_dir"], dataset.params_filename))

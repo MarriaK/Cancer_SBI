@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cancer_sbi.data.clone_sets import (  # noqa: E402
     CACHE_MANIFEST_FILENAME,
+    CACHE_TRIAL_COUNTS_FILENAME,
     CACHE_SIM_IDS_FILENAME,
     CACHE_THETA_FILENAME,
     CACHE_X_FILENAME,
@@ -82,6 +83,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--num-trials", type=int, default=25, help="Trials per sim (the T dimension)."
     )
     parser.add_argument(
+        "--min-trials",
+        type=int,
+        default=None,
+        help=(
+            "Cache sims with at least this many complete trial files instead "
+            "of only the complete ones (trap 10). The missing slots are stored "
+            "as NaN and the real count per sim is written to "
+            "trial_counts.npy. Default: unset, i.e. complete sims only, which "
+            "is byte-identical to a cache built before this flag existed."
+        ),
+    )
+    parser.add_argument(
         "--start-method",
         choices=["fork", "spawn", "forkserver"],
         default="fork",
@@ -100,7 +113,12 @@ _WORKER: Dict[str, object] = {}
 
 
 def _init_worker(
-    root: str, top_k: int, num_trials: int, out_dir: str, sim_names: Sequence[str]
+    root: str,
+    top_k: int,
+    num_trials: int,
+    out_dir: str,
+    sim_names: Sequence[str],
+    min_trials: Optional[int] = None,
 ) -> None:
     """Build this worker's dataset view and open the output memmaps.
 
@@ -112,12 +130,16 @@ def _init_worker(
         sim_names: The sims this worker is responsible for. The dataset is
             restricted to them so the constructor does not re-read every
             ``parameters.pkl`` in the tree once per worker.
+        min_trials: Passed straight to the dataset, so this worker keeps the
+            same sims the parent's scan kept. ``None`` is the complete-only
+            rule.
     """
     dataset = CNASimsDataset(
         root,
         num_trials_per_sim=num_trials,
         top_k=top_k,
         sim_ids=list(sim_names),
+        min_trials=min_trials,
     )
     _WORKER["dataset"] = dataset
     _WORKER["by_name"] = {
@@ -128,6 +150,14 @@ def _init_worker(
     )
     _WORKER["theta"] = np.lib.format.open_memmap(
         os.path.join(out_dir, CACHE_THETA_FILENAME), mode="r+"
+    )
+    counts_path = os.path.join(out_dir, CACHE_TRIAL_COUNTS_FILENAME)
+    # Same disjoint-row discipline as X and theta: one row per sim, and no two
+    # workers own the same sim.
+    _WORKER["counts"] = (
+        np.lib.format.open_memmap(counts_path, mode="r+")
+        if os.path.exists(counts_path)
+        else None
     )
 
 
@@ -150,11 +180,18 @@ def _fill_rows(task: Tuple[str, int]) -> Tuple[str, int]:
     item = _WORKER["by_name"][sim_name]  # type: ignore[index]
     x_mm = _WORKER["x"]
     theta_mm = _WORKER["theta"]
+    counts_mm = _WORKER.get("counts")
 
     sim_dir = item["sim_dir"]
-    for slot, trial_idx in enumerate(item["available_trials"][: dataset.num_trials]):
+    avail = item["available_trials"][: dataset.num_trials]
+    for slot, trial_idx in enumerate(avail):
         # The live code path, not a copy of it.
         x_mm[row, slot] = dataset._load_and_process_trial(sim_dir, trial_idx).numpy()
+    # Slots len(avail)..num_trials-1 are left exactly as main() pre-filled them,
+    # i.e. NaN -- the same sentinel the uncached __getitem__ writes. With the
+    # complete-only rule there are none, so nothing is left unwritten.
+    if counts_mm is not None:
+        counts_mm[row] = len(avail)
     theta_mm[row] = item["y"].numpy()
     return task
 
@@ -199,6 +236,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         num_trials_per_sim=args.num_trials,
         top_k=args.top_k,
         sim_ids=sorted(wanted_set),
+        min_trials=args.min_trials,
     )
     sim_names = [os.path.basename(item["sim_dir"]) for item in scan.items]
     n_sims = len(sim_names)
@@ -216,6 +254,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     theta_mm = np.lib.format.open_memmap(
         theta_path, mode="w+", dtype=np.float32, shape=(n_sims, 44)
     )
+    if args.min_trials is not None:
+        # open_memmap zero-fills, and a zero clone row is a *legal* padded clone
+        # (trap 8's first sentinel), so a partial sim's unwritten trial slots
+        # have to be set to the trial-level sentinel before the workers start.
+        # Skipped entirely with the complete-only rule, where every slot of
+        # every row is overwritten -- which is what keeps that cache
+        # byte-identical to one built before this flag existed.
+        x_mm[:] = np.nan
+        x_mm.flush()
+    counts_mm = None
+    if args.min_trials is not None:
+        counts_mm = np.lib.format.open_memmap(
+            out_dir / CACHE_TRIAL_COUNTS_FILENAME,
+            mode="w+",
+            dtype=np.int32,
+            shape=(n_sims,),
+        )
+        del counts_mm
     del x_mm, theta_mm  # workers reopen their own handles
 
     np.save(out_dir / CACHE_SIM_IDS_FILENAME, np.array(sim_names))
@@ -228,7 +284,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     started = time.time()
     if n_workers == 1:
-        _run_chunk((root, args.top_k, args.num_trials, str(out_dir), sim_names, tasks))
+        _run_chunk(
+            (
+                root,
+                args.top_k,
+                args.num_trials,
+                str(out_dir),
+                sim_names,
+                tasks,
+                args.min_trials,
+            )
+        )
     else:
         by_chunk = {name: idx for idx, chunk in enumerate(chunks) for name in chunk}
         jobs = []
@@ -237,7 +303,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 continue
             chunk_tasks = [t for t in tasks if by_chunk[t[0]] == idx]
             jobs.append(
-                (root, args.top_k, args.num_trials, str(out_dir), chunk, chunk_tasks)
+                (
+                    root,
+                    args.top_k,
+                    args.num_trials,
+                    str(out_dir),
+                    chunk,
+                    chunk_tasks,
+                    args.min_trials,
+                )
             )
         ctx = mp.get_context(args.start_method)
         with ctx.Pool(processes=len(jobs)) as pool:
@@ -259,6 +333,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "top_frequent_rows_tensor_sha1": top_frequent_rows_source_sha1(),
     }
+    if args.min_trials is not None:
+        # Written only when the flag is given, so a complete-only cache's
+        # manifest is unchanged. A reader that finds no key falls back to
+        # num_trials, which is exactly the rule such a cache was built under.
+        manifest["min_trials"] = int(args.min_trials)
     with (out_dir / CACHE_MANIFEST_FILENAME).open("w") as handle:
         json.dump(manifest, handle, indent=2, sort_keys=True)
 
@@ -271,11 +350,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
-def _run_chunk(job: Tuple[str, int, int, str, Sequence[str], Sequence[Tuple[str, int]]]) -> int:
+def _run_chunk(
+    job: Tuple[
+        str, int, int, str, Sequence[str], Sequence[Tuple[str, int]], Optional[int]
+    ]
+) -> int:
     """Worker entry point: initialise this chunk's dataset, then fill its rows.
 
     Args:
-        job: ``(root, top_k, num_trials, out_dir, chunk, tasks)``. ``chunk`` is
+        job: ``(root, top_k, num_trials, out_dir, chunk, tasks, min_trials)``.
+            ``chunk`` is
             the sim names this worker owns and ``tasks`` the ``(sim_name, row)``
             pairs for exactly those sims -- disjoint from every other chunk's,
             which is what makes concurrent writes into one ``open_memmap`` safe.
@@ -283,12 +367,14 @@ def _run_chunk(job: Tuple[str, int, int, str, Sequence[str], Sequence[Tuple[str,
     Returns:
         How many rows this worker wrote.
     """
-    root, top_k, num_trials, out_dir, chunk, tasks = job
-    _init_worker(root, top_k, num_trials, out_dir, chunk)
+    root, top_k, num_trials, out_dir, chunk, tasks, min_trials = job
+    _init_worker(root, top_k, num_trials, out_dir, chunk, min_trials)
     for task in tasks:
         _fill_rows(task)
     _WORKER["x"].flush()  # type: ignore[union-attr]
     _WORKER["theta"].flush()  # type: ignore[union-attr]
+    if _WORKER.get("counts") is not None:
+        _WORKER["counts"].flush()  # type: ignore[union-attr]
     return len(tasks)
 
 

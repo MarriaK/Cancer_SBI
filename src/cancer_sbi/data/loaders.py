@@ -98,6 +98,8 @@ def build_clone_set_dataloaders(
     num_workers: int = 0,
     cache_dir: Optional[str] = None,
     trial_subsample: Optional[int] = None,
+    min_trials: Optional[int] = None,
+    test_min_trials: Optional[int] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
     """Build the train, validation and test loaders for CloneMLP/CloneAtt-NPE.
 
@@ -127,6 +129,19 @@ def build_clone_set_dataloaders(
             measured under and because early stopping on a randomly-thinned
             validation set would compare each epoch against a different target.
             Keyword-only.
+        min_trials: Matrix 7, the trap-10 bar. ``None`` (the published
+            behaviour) keeps only sims with all 25 trial files. An int ``K``
+            also keeps sims with at least ``K``, NaN-padding the missing slots.
+            **It is given to the training and validation datasets only**;
+            ``test_min_trials`` decides the test set, separately and on
+            purpose. Keyword-only.
+        test_min_trials: The same bar for the TEST dataset, kept a separate
+            argument so that relaxing training can never relax evaluation by
+            accident. ``None``, the default, is the published rule and the
+            fixed set of complete test sims every reported number is on. There
+            is no caller that passes anything else; it exists so the asymmetry
+            is a value in the signature rather than a hard-coded ``None``
+            three lines down. Keyword-only.
 
     Returns:
         ``(train_loader, val_loader, test_loader)``; ``val_loader`` is ``None``
@@ -151,6 +166,8 @@ def build_clone_set_dataloaders(
         ``CNASimsDataset`` already drops every sim that is missing a trial file,
         so this family's sim set *is* the restricted one. The flag exists only
         on the dominant-clone builder, which is the side that has to opt in.
+        ``min_trials`` is the opposite lever: it *lowers* that bar, for train
+        and validation only.
     """
     # Preserved from Base_NPE/utils.py:232-233: only root_dir, top_k and sim_ids
     # are given, so every other dataset option keeps its class default --
@@ -162,9 +179,18 @@ def build_clone_set_dataloaders(
         cache_dir=cache_dir,
         # The ONLY dataset that gets it -- see the argument's docstring.
         trial_subsample=trial_subsample,
+        min_trials=min_trials,
     )
+    # Deliberately test_min_trials and not min_trials: the test set is the
+    # published evaluation condition (651 complete sims on the cluster), so a
+    # matrix that trains on partial sims is still scored on exactly the cases
+    # every earlier matrix was scored on.
     test_dataset = CNASimsDataset(
-        root_dir, top_k=top_k, sim_ids=test_ids, cache_dir=cache_dir
+        root_dir,
+        top_k=top_k,
+        sim_ids=test_ids,
+        cache_dir=cache_dir,
+        min_trials=test_min_trials,
     )
 
     loader_kwargs = _worker_kwargs(num_workers)
@@ -186,8 +212,15 @@ def build_clone_set_dataloaders(
 
     val_loader: Optional[DataLoader] = None
     if val_ids is not None:
+        # Validation follows TRAINING, not test: early stopping should see the
+        # same kind of item the model is being fitted on, and the val set is
+        # never reported.
         val_dataset = CNASimsDataset(
-            root_dir, top_k=top_k, sim_ids=val_ids, cache_dir=cache_dir
+            root_dir,
+            top_k=top_k,
+            sim_ids=val_ids,
+            cache_dir=cache_dir,
+            min_trials=min_trials,
         )
         val_loader = DataLoader(
             val_dataset,

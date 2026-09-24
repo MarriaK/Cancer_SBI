@@ -1395,3 +1395,44 @@ def test_armtoken_is_a_model_choice():
     ).model
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--model", "armtokens"])
+
+
+# --- matrix 7: --min-trials ------------------------------------------------
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "armtoken", "hybrid"])
+def test_min_trials_reaches_the_clone_set_presets(model):
+    cfg = config_from_argv(["--min-trials", "5"], model=model)
+    assert cfg.data.min_trials == 5
+
+
+@pytest.mark.parametrize(
+    "model", ["clonemlp", "cloneatt", "armtoken", "hybrid", "dominantclone"]
+)
+def test_min_trials_defaults_to_the_published_rule(model):
+    assert config_from_argv([], model=model).data.min_trials is None
+
+
+def test_min_trials_is_warned_and_ignored_for_dominantclone(capsys):
+    """SimulationDataset NaN-pads already; there is no bar to lower."""
+    cfg = config_from_argv(["--min-trials", "5"], model="dominantclone")
+    assert cfg.data.min_trials is None
+    assert "--min-trials is not used by dominantclone" in capsys.readouterr().out
+
+
+def test_min_trials_is_recorded_in_the_effective_config():
+    from cancer_sbi.cli.train import effective_config_payload
+
+    argv = ["--min-trials", "5"]
+    args = build_parser().parse_args(["--model", "armtoken"] + argv)
+    cfg = config_from_argv(argv, model="armtoken")
+    payload = effective_config_payload(cfg, args, Path("/d"), Path("/s.pkl"))
+    assert payload["data"]["min_trials"] == 5
+    assert payload["cli_flags"]["min_trials"] == 5
+
+    plain = build_parser().parse_args(["--model", "armtoken"])
+    plain_payload = effective_config_payload(
+        config_from_argv([], model="armtoken"), plain, Path("/d"), Path("/s.pkl")
+    )
+    assert plain_payload["data"]["min_trials"] is None
+    assert plain_payload["cli_flags"]["min_trials"] is None
