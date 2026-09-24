@@ -784,3 +784,318 @@ def test_fewer_transforms_is_a_smaller_flow():
     # architecture fails here rather than in a 12-hour array task.
     assert (five, three) == (421840, 253104), (five, three)
     assert three < five
+
+
+# --------------------------------------------------------------------------- #
+# Matrix 4: the attention temperature, the flow's tail bound, and pooling the
+# trials with a PMA instead of a mean.
+#
+# Trap 6 is the one published oddity matrix 2 left alone: every MAB divides its
+# logits by sqrt(dim_V) rather than by sqrt of the width one head sees, so the
+# attention is sqrt(num_heads) = 2.83x flatter than the formula it is written
+# as. `attn_scale="standard"` is that put right, opt-in.
+# --------------------------------------------------------------------------- #
+
+
+def test_attn_scale_defaults_to_published_everywhere():
+    """The default is trap 6, in the encoder and in every block under it."""
+    enc = CloneSetEmbedding()
+    assert enc.attn_scale == "published"
+    assert enc.pma.mab.attn_scale == "published"
+    for layer in enc.layers:
+        assert layer.mab0.attn_scale == "published"
+        assert layer.mab1.attn_scale == "published"
+
+    with pytest.raises(ValueError, match="attn_scale"):
+        CloneSetEmbedding(attn_scale="sqrt")
+    with pytest.raises(ValueError, match="attn_scale"):
+        new_st.MAB(8, 8, 8, 2, attn_scale="textbook")
+
+
+def test_attn_scale_standard_reaches_every_block():
+    enc = CloneSetEmbedding(attn_scale="standard")
+    assert enc.pma.mab.attn_scale == "standard"
+    for layer in enc.layers:
+        assert layer.mab0.attn_scale == "standard"
+        assert layer.mab1.attn_scale == "standard"
+
+
+def test_attn_scale_default_is_bitwise_identical(real_batch):
+    """Naming the default explicitly must not move a single bit."""
+    published = _seeded(CloneSetEmbedding)
+    named = _seeded(lambda: CloneSetEmbedding(attn_scale="published"))
+    with torch.no_grad():
+        assert torch.equal(published(real_batch), named(real_batch))
+
+
+def test_attn_scale_adds_no_parameters(real_batch):
+    """A divisor is not a layer: R17 changes the state_dict not at all."""
+    off = _seeded(CloneSetEmbedding)
+    on = _seeded(lambda: CloneSetEmbedding(attn_scale="standard"))
+    assert _param_spec(on) == _param_spec(off)
+    with torch.no_grad():
+        # Same weights, different arithmetic.
+        assert not torch.equal(on(real_batch), off(real_batch))
+
+
+def test_attn_scale_standard_widens_the_attention_logit_spread(
+    real_batch, monkeypatch, capsys
+):
+    """The point of R17, measured the way R4 was measured."""
+    published = _seeded(CloneSetEmbedding)
+    standard = _seeded(lambda: CloneSetEmbedding(attn_scale="standard"))
+
+    spread_published = _attention_logit_spread(published, real_batch, monkeypatch)
+    spread_standard = _attention_logit_spread(standard, real_batch, monkeypatch)
+
+    with capsys.disabled():
+        print(
+            f"\n[R17] attention logit spread: published {spread_published:.6e}"
+            f"  standard {spread_standard:.6e}"
+            f"  (ratio {spread_standard / spread_published:.2f}x)"
+        )
+
+    assert spread_standard > spread_published
+    # sqrt(dim_V) / sqrt(dim_V / num_heads) = sqrt(8) for the published
+    # 128-wide, 8-head stack: the logits are the same numbers, rescaled.
+    assert math.isclose(
+        spread_standard / spread_published, math.sqrt(8.0), rel_tol=1e-4
+    )
+
+
+# --- the flow's tail bound (R18) ------------------------------------------- #
+
+
+def test_tail_bound_reaches_the_flows_spline_transforms():
+    """Published 3.0, and --tail-bound really moves it.
+
+    Found by walking ``flow.net.modules()`` and looking for a ``tail_bound``
+    attribute: nflows stores it on every
+    ``PiecewiseRationalQuadraticCouplingTransform``, which is the layer the
+    spline lives in.
+    """
+    from cancer_sbi.config import get_preset
+
+    assert get_preset("clonemlp").flow.tail_bound == 3.0
+
+    def _bounds(flow):
+        return {
+            m.tail_bound
+            for m in flow.net.modules()
+            if hasattr(m, "tail_bound") and hasattr(m, "tails")
+        }
+
+    published = _bounds(_flow_with())
+    widened = _bounds(_flow_with(tail_bound=5.0))
+    assert published == {3.0}
+    assert widened == {5.0}
+
+
+def test_tail_bound_does_not_change_the_parameter_count():
+    """R18 widens the spline's support, it does not resize the network."""
+    three = sum(p.numel() for p in _flow_with().net.parameters())
+    five = sum(p.numel() for p in _flow_with(tail_bound=5.0).net.parameters())
+    assert three == five
+
+
+# --- pooling the trials with a PMA (R20) ----------------------------------- #
+
+
+def _trials_embedding(**kwargs):
+    """A ``TrialsSBIEmbedding`` over a published CloneAtt encoder."""
+    from cancer_sbi.models.trials import TrialsSBIEmbedding
+
+    torch.manual_seed(1234)
+    module = TrialsSBIEmbedding(
+        trial_encoder=CloneSetEmbedding(),
+        aggregation_fn="mean",
+        num_hiddens=256,
+        num_layers=2,
+        output_dim=256,
+        **kwargs,
+    )
+    module.eval()
+    return module
+
+
+@pytest.fixture(scope="module")
+def real_sims():
+    """A real ``(B, T, K, 45)`` batch -- what TrialsSBIEmbedding is fed."""
+    if not DATA_ROOT.is_dir():
+        pytest.skip(f"local simulation subsample not found at {DATA_ROOT}")
+
+    from torch.utils.data import DataLoader
+
+    from cancer_sbi.data.clone_sets import CNASimsDataset, discover_sim_trials
+
+    sim_names = sorted(
+        Path(p).name for p in discover_sim_trials(str(DATA_ROOT), r"^sim\d+$")
+    )[:2]
+    ds = CNASimsDataset(
+        root_dir=str(DATA_ROOT), num_trials_per_sim=25, top_k=100, sim_ids=sim_names
+    )
+    if len(ds) < 2:
+        pytest.skip("fewer than 2 usable sims in the local subsample")
+    x, _mask, _theta = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+    return x
+
+
+def test_trial_pool_defaults_to_the_published_mean():
+    module = _trials_embedding()
+    assert module.trial_pool == "mean"
+    assert module.pool_attn is None
+    assert module.perm_embed is not None
+
+    with pytest.raises(ValueError, match="trial_pool"):
+        _trials_embedding(trial_pool="max")
+
+
+def test_trial_pool_mean_is_bitwise_identical_to_head(real_sims, tmp_path_factory):
+    """The published path must not move: it is what every run so far used."""
+    old = _load_pre_edit_module(
+        "src/cancer_sbi/models/trials.py",
+        "_wpd_old_trials",
+        tmp_path_factory.mktemp("pre_edit_trials"),
+    )
+
+    torch.manual_seed(1234)
+    new_mod = _trials_embedding()
+    torch.manual_seed(1234)
+    old_mod = old.TrialsSBIEmbedding(
+        trial_encoder=CloneSetEmbedding(),
+        aggregation_fn="mean",
+        num_hiddens=256,
+        num_layers=2,
+        output_dim=256,
+    )
+    old_mod.eval()
+
+    assert _param_spec(new_mod) == _param_spec(old_mod)
+    with torch.no_grad():
+        assert torch.equal(new_mod(real_sims), old_mod(real_sims))
+
+
+def test_attention_pooling_keeps_the_context_width(real_sims):
+    """The whole constraint: the flow must see the same 256 numbers."""
+    mean = _trials_embedding()
+    attn = _trials_embedding(trial_pool="attention")
+    with torch.no_grad():
+        out_mean = mean(real_sims)
+        out_attn = attn(real_sims)
+    assert out_mean.shape == out_attn.shape == (real_sims.shape[0], 256)
+    assert torch.isfinite(out_attn).all()
+    assert not torch.allclose(out_mean, out_attn)
+
+
+def test_attention_pooling_is_permutation_invariant_over_trials(real_sims):
+    """A PMA pools a set; the 25 trials of a sim have no order."""
+    attn = _trials_embedding(trial_pool="attention")
+    perm = torch.randperm(real_sims.shape[1])
+    with torch.no_grad():
+        straight = attn(real_sims)
+        shuffled = attn(real_sims[:, perm])
+    assert torch.allclose(straight, shuffled, atol=1e-5)
+
+
+def test_attention_pooling_ignores_an_invalid_trial(real_sims):
+    """A NaN trial slot must be masked out, not attended to as data.
+
+    Nineteen real trials plus a NaN slot has to give exactly what the same
+    nineteen real trials give on their own -- including the trial count the
+    post-pooling MLP is handed.
+    """
+    attn = _trials_embedding(trial_pool="attention")
+
+    kept = real_sims[:, :19]
+    padded = torch.cat(
+        [kept, torch.full_like(real_sims[:, :1], float("nan"))], dim=1
+    )
+
+    with torch.no_grad():
+        assert torch.allclose(attn(kept), attn(padded), atol=1e-6)
+
+
+def test_attention_pooling_uses_the_valid_trials(real_sims):
+    """The mask is not simply ignoring everything: 19 trials != 25."""
+    attn = _trials_embedding(trial_pool="attention")
+    with torch.no_grad():
+        assert not torch.allclose(attn(real_sims[:, :19]), attn(real_sims))
+
+
+def test_attention_pooling_survives_a_sim_with_no_valid_trial(real_sims):
+    """An all-NaN row would be an all -inf softmax; MAB un-masks it instead."""
+    attn = _trials_embedding(trial_pool="attention")
+    x = real_sims.clone()
+    x[0] = float("nan")
+    with torch.no_grad():
+        out = attn(x)
+    assert torch.isfinite(out).all()
+
+
+def test_attention_pooling_follows_the_encoders_ln_and_scale():
+    """The pooling PMA must match the stack it sits on."""
+    from cancer_sbi.models.trials import TrialsSBIEmbedding
+
+    module = TrialsSBIEmbedding(
+        trial_encoder=CloneSetEmbedding(attn_ln=True, attn_scale="standard"),
+        aggregation_fn="mean",
+        trial_pool="attention",
+        n_heads=8,
+        attn_ln=True,
+        attn_scale="standard",
+    )
+    mab = module.pool_attn.pma.mab
+    assert mab.attn_scale == "standard"
+    assert getattr(mab, "ln0", None) is not None
+
+
+def test_attention_pooling_falls_back_to_its_own_head_count():
+    """CloneMLP's EncoderConfig carries no n_heads; the PMA still needs one."""
+    from cancer_sbi.models.trials import DEFAULT_TRIAL_POOL_HEADS, TrialsSBIEmbedding
+
+    module = TrialsSBIEmbedding(
+        trial_encoder=BaselineCloneEmbedding(),
+        aggregation_fn="mean",
+        trial_pool="attention",
+        n_heads=None,
+    )
+    assert module.pool_attn.pma.mab.num_heads == DEFAULT_TRIAL_POOL_HEADS
+
+
+def test_attention_pooling_adds_the_pma_and_drops_sbis_pooling():
+    """Different state_dict keys, which is why the checkpoint must say which."""
+    mean = _trials_embedding()
+    attn = _trials_embedding(trial_pool="attention")
+    mean_keys = set(mean.state_dict())
+    attn_keys = set(attn.state_dict())
+    assert any(k.startswith("perm_embed.") for k in mean_keys)
+    assert not any(k.startswith("perm_embed.") for k in attn_keys)
+    assert any(k.startswith("pool_attn.pma.") for k in attn_keys)
+    # The post-pooling MLP is the same shape in both, which is what keeps the
+    # flow's context width fixed.
+    assert sum(p.numel() for p in mean.perm_embed.fc_subnet.parameters()) == sum(
+        p.numel() for p in attn.pool_attn.fc_subnet.parameters()
+    )
+
+
+# --- capacity knobs (R21-R24) ---------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "kwargs, published",
+    [
+        ({"d_model": 256}, {"d_model": 128}),
+        ({"num_inducing": 64}, {"num_inducing": 32}),
+    ],
+)
+def test_capacity_knobs_grow_the_encoder(kwargs, published):
+    base = sum(p.numel() for p in _seeded(lambda: CloneSetEmbedding(**published)).parameters())
+    grown = sum(p.numel() for p in _seeded(lambda: CloneSetEmbedding(**kwargs)).parameters())
+    assert grown > base
+
+
+def test_head_count_alone_does_not_change_the_parameter_count():
+    """Heads reshape the same projections; only the arithmetic differs."""
+    eight = _seeded(lambda: CloneSetEmbedding(n_heads=8))
+    four = _seeded(lambda: CloneSetEmbedding(n_heads=4))
+    assert _param_spec(eight) == _param_spec(four)

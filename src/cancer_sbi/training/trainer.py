@@ -411,6 +411,13 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
             freq_mode=cfg.freq_mode,
             attn_ln=cfg.attn_ln,
             attn_dropout_active=cfg.attn_dropout_active,
+            # Matrix 4 / run R17, trap 6 made opt-out. "published" is the
+            # published sqrt(d_model) divisor, so this argument changes nothing
+            # unless --attn-scale standard is passed. Forwarded here for the
+            # same reason as the four above: evaluation rebuilds through this
+            # function, and a missing argument would score a run as a network
+            # it never was.
+            attn_scale=cfg.attn_scale,
         ).to(device)
     elif cfg.kind == "deepset":
         # Plain_NPE/model.py:55 passes only the three dimensions; every other
@@ -437,6 +444,15 @@ def build_embedding_net(cfg: EncoderConfig, device: str) -> torch.nn.Module:
         num_hiddens=cfg.trials_num_hiddens,
         num_layers=cfg.trials_num_layers,
         output_dim=cfg.trials_output_dim,
+        # Matrix 4 / run R20. "mean" is the published pooling, so these four
+        # arguments change nothing unless --trial-pool attention is passed.
+        # The three attention settings follow the encoder's so that the
+        # pooling PMA matches the stack under it; n_heads is None for the MLP
+        # encoder, where TrialsSBIEmbedding falls back to its own default.
+        trial_pool=cfg.trial_pool,
+        n_heads=cfg.n_heads,
+        attn_ln=cfg.attn_ln,
+        attn_scale=cfg.attn_scale,
     ).to(device)
 
 

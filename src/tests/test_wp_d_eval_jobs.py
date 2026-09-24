@@ -743,3 +743,188 @@ def test_jobs_readme_documents_matrix_three():
         assert run in text
     for flag in ("--flow-dropout", "--flow-num-transforms", "--trial-subsample"):
         assert flag in text
+
+
+# ------------------------------------------------------------------ train4.sh
+#
+# Matrix 4: twelve runs, all cloneatt, each BASE_R12 plus the one thing it
+# tests. Same reasoning as train2.sh and train3.sh -- the dry run is the only
+# place the per-run flag sets can be checked without a GPU.
+
+
+def _train4_dry_run(env=None):
+    full = {"DRY_RUN": "1", "CANCER": str(CODE_ROOT)}
+    full.update(env or {})
+    r = _run(JOBS / "train4.sh", full)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+def _train4_dry_run_lines():
+    return [
+        ln for ln in _train4_dry_run().stdout.splitlines() if ln.startswith("python ")
+    ]
+
+
+RUN4_NAMES = ("R17", "R18", "R19", "R20", "R20s1", "R21",
+              "R22", "R23", "R24", "R12s1", "R12s2", "R25")
+
+#: BASE_R12, the matrix-3 best model every run here is built on.
+BASE_R12 = ("--input-space copy", "--freq-mode feature", "--attn-ln",
+            "--flow-num-transforms 3")
+
+
+def test_train4_sh_header_matches_the_matrix():
+    text = (JOBS / "train4.sh").read_text()
+    for run in RUN4_NAMES:
+        assert run in text
+    assert "--array=0-11" in text
+    assert "--min-epochs 1" in text
+    assert "-C a100" in text
+    assert "general-gpu" in text
+    assert "--gres=gpu:1" in text
+    assert "-t 12:00:00" in text
+    # The three earlier matrices must not have been edited into this one.
+    assert "--array=0-4" in (JOBS / "train.sh").read_text()
+    assert "--array=0-6" in (JOBS / "train2.sh").read_text()
+    assert "--array=0-13" in (JOBS / "train3.sh").read_text()
+
+
+def test_train4_sh_is_executable():
+    assert os.access(JOBS / "train4.sh", os.X_OK)
+
+
+def test_train4_sh_defaults_to_the_three_key_split():
+    text = (JOBS / "train4.sh").read_text()
+    assert "CANCER_SBI_SPLIT:-$CANCER/data/train_val_test_split.pkl" in text
+
+
+def test_train4_dry_run_reports_the_split_gate_as_ok():
+    assert "split gate: OK" in _train4_dry_run().stdout
+
+
+def test_train4_sh_hard_fails_on_a_split_without_val_ids(tmp_path):
+    r = _run(
+        JOBS / "train4.sh",
+        {
+            "CANCER": str(CODE_ROOT),
+            "CANCER_SBI_SPLIT": str(CODE_ROOT / "data" / "train_test_split.pkl"),
+            "RUNS_ROOT": str(tmp_path),
+            "SLURM_ARRAY_TASK_ID": "0",
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "val_ids" in r.stderr
+
+
+def test_train4_sh_refuses_a_non_empty_checkpoint_dir(tmp_path):
+    ckpt = tmp_path / "R20" / "checkpoints"
+    ckpt.mkdir(parents=True)
+    (ckpt / "best.pt").write_text("not really a checkpoint")
+    r = _run(JOBS / "train4.sh",
+             {"RUNS_ROOT": str(tmp_path), "SLURM_ARRAY_TASK_ID": "3"})
+    assert r.returncode != 0
+    assert "REFUSING" in r.stderr
+
+
+def test_train4_dry_run_prints_twelve_commands():
+    assert len(_train4_dry_run_lines()) == 12
+
+
+def test_train4_dry_run_flags_per_run():
+    cmds = _train4_dry_run_lines()
+    (r17, r18, r19, r20, r20s1, r21, r22, r23, r24, r12s1, r12s2, r25) = cmds
+
+    for name, cmd in zip(RUN4_NAMES, cmds):
+        assert "-m cancer_sbi.cli.train" in cmd
+        assert "--model cloneatt" in cmd, name
+        assert "--min-epochs 1" in cmd
+        assert "--stop-after-epochs 15" in cmd
+        assert "--max-epochs 60" in cmd
+        assert "--num-workers 8" in cmd
+        for flag in BASE_R12:
+            assert flag in cmd, (name, flag)
+        # Refused by build_config, so it must never appear beside --freq-mode.
+        assert "--freq-renorm" not in cmd
+        # R19 is the one run that moves a base flag; everything else is
+        # BASE_R12's structured whitening.
+        expected_z = "independent" if name == "R19" else "structured"
+        assert f"--z-score-x {expected_z}" in cmd, name
+
+    # The one switch each run adds, and nothing more.
+    only = {
+        "R17": ["--attn-scale standard"],
+        "R18": ["--tail-bound 5"],
+        "R19": [],
+        "R20": ["--trial-pool attention"],
+        "R20s1": ["--trial-pool attention"],
+        "R21": ["--d-model 256"],
+        "R22": ["--n-heads 4"],
+        "R23": ["--num-inducing 64"],
+        "R24": ["--d-model 256", "--num-inducing 64"],
+        "R12s1": [],
+        "R12s2": [],
+        "R25": ["--attn-scale standard", "--tail-bound 5", "--trial-pool attention"],
+    }
+    matrix4_flags = ["--attn-scale", "--tail-bound", "--trial-pool",
+                     "--d-model", "--n-heads", "--num-inducing"]
+    for name, cmd in zip(RUN4_NAMES, cmds):
+        for added in only[name]:
+            assert added in cmd, (name, added)
+        for flag in matrix4_flags:
+            if not any(a.startswith(flag + " ") for a in only[name]):
+                assert flag not in cmd, (name, flag)
+
+    # The three seed replicates, by token: "--seed 20260924" contains
+    # "--seed 2".
+    seeds = {name: _seed_of(cmd) for name, cmd in zip(RUN4_NAMES, cmds)}
+    assert seeds["R20s1"] == "1"
+    assert seeds["R12s1"] == "1"
+    assert seeds["R12s2"] == "2"
+    for name in ("R17", "R18", "R19", "R20", "R21", "R22", "R23", "R24", "R25"):
+        assert seeds[name] == "20260924", name
+
+    # R20s1 is R20 with a different seed and nothing else; the same for R12s1
+    # and R12s2 against each other. Compared on the flags alone: --out and
+    # --ckpt-dir carry the run name and are checked separately below.
+    def _architecture_flags(cmd):
+        parts = cmd.split()
+        drop = set()
+        for flag in ("--out", "--ckpt-dir", "--seed"):
+            i = parts.index(flag)
+            drop |= {i, i + 1}
+        return [p for i, p in enumerate(parts) if i not in drop]
+
+    assert _architecture_flags(r20) == _architecture_flags(r20s1)
+    assert _architecture_flags(r12s1) == _architecture_flags(r12s2)
+
+    # Each run gets its own checkpoint directory.
+    dirs = []
+    for name, cmd in zip(RUN4_NAMES, cmds):
+        parts = cmd.split()
+        d = parts[parts.index("--ckpt-dir") + 1]
+        assert d.endswith(f"/{name}/checkpoints")
+        dirs.append(d)
+    assert len(set(dirs)) == 12
+
+
+def test_train4_gives_every_run_the_clone_cache():
+    """All twelve are cloneatt -- there is no DominantClone exception here."""
+    cmds = [
+        ln
+        for ln in _train4_dry_run({"CACHE_DIR": "/some/cache"}).stdout.splitlines()
+        if ln.startswith("python ")
+    ]
+    assert len(cmds) == 12
+    assert all("--cache-dir /some/cache" in c for c in cmds)
+
+
+def test_jobs_readme_documents_matrix_four():
+    text = (JOBS / "README.md").read_text()
+    assert "train4.sh" in text
+    assert "Matrix 4" in text
+    for run in RUN4_NAMES:
+        assert run in text
+    for flag in ("--attn-scale", "--tail-bound", "--trial-pool", "--d-model",
+                 "--n-heads", "--num-inducing"):
+        assert flag in text

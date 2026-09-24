@@ -33,6 +33,7 @@ class MAB(nn.Module):
         dim_V: int,
         num_heads: int,
         ln: bool = True,
+        attn_scale: str = "published",
     ) -> None:
         """Build the four projections and, optionally, the two LayerNorms.
 
@@ -43,10 +44,26 @@ class MAB(nn.Module):
             num_heads: Number of attention heads. Must divide ``dim_V``.
             ln: Add LayerNorm after each residual. Defaults to True, but every
                 call site in this package passes False -- see the trap-5 note.
+            attn_scale: Matrix 4, run R17. ``"published"`` -- the default --
+                divides the logits by ``sqrt(dim_V)``, which is trap 6 below.
+                ``"standard"`` divides by ``sqrt(dim_V / num_heads)``, the
+                per-head scale the formula is supposed to use. Holds no
+                parameters either way, so the two builds have the same
+                ``state_dict``.
+
+        Raises:
+            ValueError: If ``attn_scale`` is neither ``"published"`` nor
+                ``"standard"``.
         """
         super(MAB, self).__init__()
+        if attn_scale not in ("published", "standard"):
+            raise ValueError(
+                f"attn_scale must be 'published' or 'standard', got "
+                f"{attn_scale!r}."
+            )
         self.dim_V = dim_V
         self.num_heads = num_heads
+        self.attn_scale = attn_scale
         self.fc_q = nn.Linear(dim_Q, dim_V)
         self.fc_k = nn.Linear(dim_K, dim_V)
         self.fc_v = nn.Linear(dim_K, dim_V)
@@ -62,7 +79,7 @@ class MAB(nn.Module):
             self.ln1 = nn.LayerNorm(dim_V)
         self.fc_o = nn.Linear(dim_V, dim_V)
 
-    def forward(self, Q: Tensor, K: Tensor) -> Tensor:
+    def forward(self, Q: Tensor, K: Tensor, key_mask: Tensor = None) -> Tensor:
         """Attend ``Q`` to ``K``.
 
         Heads are emulated by splitting the feature dimension and stacking the
@@ -72,6 +89,14 @@ class MAB(nn.Module):
         Args:
             Q: ``(B, n_q, dim_Q)`` float32 query set.
             K: ``(B, n_k, dim_K)`` float32 key/value set.
+            key_mask: Optional ``(B, n_k)`` bool, ``True`` where a key must be
+                ignored. ``None`` -- what every published call site passes --
+                takes the branch below unchanged. Added for matrix 4's
+                attention pooling over trials, where a sim's unfilled trial
+                slots must not be attended to. A row that masks *every* key is
+                un-masked again rather than producing an all ``-inf`` softmax;
+                its keys are zero vectors by then, so the result is finite and
+                carries no trial's information.
 
         Returns:
             ``(B, n_q, dim_V)`` float32.
@@ -90,7 +115,23 @@ class MAB(nn.Module):
         # therefore ~2.83x flatter than textbook scaled dot-product attention.
         # This looks wrong but it is what the published model does; changing it
         # changes the results. See docs/REFACTOR_NOTES.md.
-        A = torch.softmax(Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.dim_V), 2)
+        # Matrix 4 / run R17 makes the divisor a switch. "published" is the
+        # literal below; "standard" is sqrt(dim_split), i.e. sqrt of the width
+        # ONE head actually sees.
+        denom = (
+            math.sqrt(self.dim_V)
+            if self.attn_scale == "published"
+            else math.sqrt(dim_split)
+        )
+        logits = Q_.bmm(K_.transpose(1, 2)) / denom
+        if key_mask is not None:
+            # (B, n_k) -> (num_heads * B, 1, n_k), matching the head-stacked
+            # batch the bmm above produced.
+            keep_any = ~key_mask.all(dim=-1, keepdim=True)
+            masked = key_mask & keep_any
+            masked = masked.repeat(self.num_heads, 1).unsqueeze(1)
+            logits = logits.masked_fill(masked, float("-inf"))
+        A = torch.softmax(logits, 2)
         O = torch.cat((Q_ + A.bmm(V_)).split(Q.size(0), 0), 2)
         O = O if getattr(self, "ln0", None) is None else self.ln0(O)
         O = O + F.relu(self.fc_o(O))
@@ -113,6 +154,7 @@ class ISAB(nn.Module):
         num_heads: int,
         num_inds: int,
         ln: bool = True,
+        attn_scale: str = "published",
     ) -> None:
         """Build the inducing points and the two attention blocks.
 
@@ -122,12 +164,13 @@ class ISAB(nn.Module):
             num_heads: Attention heads for both MABs.
             num_inds: Number of learned inducing points.
             ln: Forwarded to both MABs. False in the published model (trap 5).
+            attn_scale: Forwarded to both MABs. ``"published"`` is trap 6.
         """
         super(ISAB, self).__init__()
         self.I = nn.Parameter(torch.Tensor(1, num_inds, dim_out))
         nn.init.xavier_uniform_(self.I)
-        self.mab0 = MAB(dim_out, dim_in, dim_out, num_heads, ln=ln)
-        self.mab1 = MAB(dim_in, dim_out, dim_out, num_heads, ln=ln)
+        self.mab0 = MAB(dim_out, dim_in, dim_out, num_heads, ln=ln, attn_scale=attn_scale)
+        self.mab1 = MAB(dim_in, dim_out, dim_out, num_heads, ln=ln, attn_scale=attn_scale)
 
     def forward(self, X: Tensor) -> Tensor:
         """Run the two-stage induced attention.
@@ -149,7 +192,14 @@ class PMA(nn.Module):
     that makes the encoder permutation-*invariant*.
     """
 
-    def __init__(self, dim: int, num_heads: int, num_seeds: int, ln: bool = True) -> None:
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_seeds: int,
+        ln: bool = True,
+        attn_scale: str = "published",
+    ) -> None:
         """Build the learned seed vectors and the attention block.
 
         Args:
@@ -157,22 +207,26 @@ class PMA(nn.Module):
             num_heads: Attention heads.
             num_seeds: Number of output vectors. 1 in the published model.
             ln: Forwarded to the MAB. False in the published model (trap 5).
+            attn_scale: Forwarded to the MAB. ``"published"`` is trap 6.
         """
         super(PMA, self).__init__()
         self.S = nn.Parameter(torch.Tensor(1, num_seeds, dim))
         nn.init.xavier_uniform_(self.S)
-        self.mab = MAB(dim, dim, dim, num_heads, ln=ln)
+        self.mab = MAB(dim, dim, dim, num_heads, ln=ln, attn_scale=attn_scale)
 
-    def forward(self, X: Tensor) -> Tensor:
+    def forward(self, X: Tensor, key_mask: Tensor = None) -> Tensor:
         """Pool a set into ``num_seeds`` vectors.
 
         Args:
             X: ``(B, n, dim)`` float32 set.
+            key_mask: Optional ``(B, n)`` bool, ``True`` where an element must
+                be left out of the pooling. ``None`` -- every published call
+                site -- pools over all of them.
 
         Returns:
             ``(B, num_seeds, dim)`` float32.
         """
-        return self.mab(self.S.repeat(X.size(0), 1, 1), X)
+        return self.mab(self.S.repeat(X.size(0), 1, 1), X, key_mask=key_mask)
 
 
 class CloneSetEmbedding(nn.Module):
@@ -201,6 +255,7 @@ class CloneSetEmbedding(nn.Module):
         freq_mode: str = "weight",
         attn_ln: bool = False,
         attn_dropout_active: bool = False,
+        attn_scale: str = "published",
     ) -> None:
         """Build the input projection, the ISAB stack and the PMA head.
 
@@ -255,6 +310,12 @@ class CloneSetEmbedding(nn.Module):
                 LayerNorm has no frequency weighting left to erase.
             attn_dropout_active: Wire ``dropout`` up (run R8). ``False`` -- the
                 default -- is trap 4: the value is accepted and discarded.
+            attn_scale: Matrix 4 / run R17, trap 6 made opt-out. ``"published"``
+                -- the default -- keeps the ``sqrt(d_model)`` divisor every
+                published run used; ``"standard"`` uses ``sqrt(d_model /
+                n_heads)``, which makes the attention ``sqrt(n_heads)`` times
+                sharper. Forwarded to every ISAB and to the PMA, so the whole
+                stack moves together. No parameters either way.
 
         Raises:
             ValueError: If ``input_space`` or ``freq_mode`` is not one of its
@@ -277,6 +338,9 @@ class CloneSetEmbedding(nn.Module):
         self.freq_mode = freq_mode
         self.attn_ln = attn_ln
         self.attn_dropout_active = attn_dropout_active
+        # Validated by MAB itself; stored here so a built encoder can be asked
+        # what it is, the way freq_mode and attn_ln can.
+        self.attn_scale = attn_scale
         # 44 in the published "weight" mode, where the frequency is a multiplier
         # and never reaches the projection; 45 in "feature" mode, where the
         # log10 frequency is the extra column. The width therefore moves only
@@ -311,6 +375,7 @@ class CloneSetEmbedding(nn.Module):
                 num_heads=n_heads,
                 num_inds=num_inducing,
                 ln=attn_ln,
+                attn_scale=attn_scale,
             )
             for _ in range(num_layers)
         ])
@@ -318,7 +383,13 @@ class CloneSetEmbedding(nn.Module):
         # PMA -> permutation-invariant pooling.
         # Preserved from SetTransformer_NPE/set_transformer.py:103 (trap 5):
         # ln=False, which is what attn_ln defaults to.
-        self.pma = PMA(dim=d_model, num_heads=n_heads, num_seeds=1, ln=attn_ln)
+        self.pma = PMA(
+            dim=d_model,
+            num_heads=n_heads,
+            num_seeds=1,
+            ln=attn_ln,
+            attn_scale=attn_scale,
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         """Embed and pool one batch of clone sets.

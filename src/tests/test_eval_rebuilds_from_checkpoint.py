@@ -801,3 +801,129 @@ def test_a_three_transform_checkpoint_does_not_load_into_a_preset_built_flow(
         log_progress=False,
     ).density_estimator
     rebuilt.load_state_dict(state)
+
+
+# ---------------------------------------------------------------------------
+# 9. Matrix 4: the attention temperature, the tail bound, PMA pooling over
+#    trials and the three capacity knobs.
+#
+# `--trial-pool attention` and the capacity knobs change the state_dict (a PMA
+# where sbi's pooling was; different widths), and `--tail-bound` changes what
+# the same parameters mean. `--attn-scale` is this matrix's quiet one, like
+# `--encoder-dropout` in section 7: it changes no parameter name at all, so a
+# rebuild that forgot it would report numbers from a network that never
+# existed.
+# ---------------------------------------------------------------------------
+
+
+@needs_data
+def test_matrix_four_cloneatt_checkpoint_round_trips_through_the_sampler(
+    tmp_path, monkeypatch
+):
+    """Train R25's network small for one epoch, then really sample from it."""
+    from cancer_sbi.training.trainer import build_embedding_net
+
+    extra = [
+        "--attn-scale", "standard",
+        "--trial-pool", "attention",
+        "--tail-bound", "5",
+        "--d-model", "64",
+        "--n-heads", "4",
+        "--num-inducing", "8",
+    ]
+    ckpt_dir, split_path = _train_tiny(tmp_path, "cloneatt", extra, "M4")
+
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["encoder"]["attn_scale"] == "standard"
+    assert stored["encoder"]["trial_pool"] == "attention"
+    assert stored["encoder"]["d_model"] == 64
+    assert stored["encoder"]["n_heads"] == 4
+    assert stored["encoder"]["num_inducing"] == 8
+    assert stored["flow"]["tail_bound"] == 5.0
+    assert stored["flow"]["hidden_features"] == 50, "must stay 50"
+
+    path, meta = _sample(
+        tmp_path, "cloneatt", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists()
+    assert meta["config_from_checkpoint"] is True
+    assert meta["encoder_config"]["attn_scale"] == "standard"
+    assert meta["encoder_config"]["trial_pool"] == "attention"
+
+    # Every field, on the modules the sampler's rebuild actually produces.
+    rebuilt = posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "cloneatt").preset
+    assert rebuilt.flow.tail_bound == 5.0
+    net = build_embedding_net(rebuilt.encoder, "cpu")
+    encoder = net.trial_encoder
+    assert encoder.attn_scale == "standard"
+    assert encoder.pma.mab.attn_scale == "standard"
+    assert encoder.layers[0].mab0.attn_scale == "standard"
+    assert encoder.d_model == 64
+    assert encoder.layers[0].mab0.num_heads == 4
+    assert encoder.layers[0].I.shape == (1, 8, 64)
+    assert net.trial_pool == "attention"
+    assert net.perm_embed is None
+    assert net.pool_attn is not None
+    assert net.pool_attn.pma.mab.num_heads == 4
+    # The context width the flow was built on is the preset's, unchanged.
+    assert net.pool_attn.output_dim == get_preset("cloneatt").encoder.trials_output_dim
+
+
+@needs_data
+def test_a_matrix_four_checkpoint_does_not_load_into_a_default_cloneatt(tmp_path):
+    """The proof that rebuilding from the checkpoint is necessary, not tidy."""
+    from cancer_sbi.data.loaders import build_clone_set_dataloaders
+    from cancer_sbi.training.trainer import build_training_components
+
+    ckpt_dir, _ = _train_tiny(
+        tmp_path,
+        "cloneatt",
+        ["--trial-pool", "attention", "--d-model", "64", "--n-heads", "4",
+         "--num-inducing", "8", "--tail-bound", "5", "--attn-scale", "standard"],
+        "M4load",
+    )
+    state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
+
+    names = _sim_names(3)
+    train_loader, _, _ = build_clone_set_dataloaders(
+        str(DATA_ROOT), names, names, top_k=100, batch_size=2
+    )
+    preset_built = build_training_components(
+        get_preset("cloneatt"), train_loader, device="cpu", log_progress=False
+    ).density_estimator
+
+    with pytest.raises(RuntimeError):
+        preset_built.load_state_dict(state)
+
+    # ... and the checkpoint's own config does build something that loads.
+    rebuilt = build_training_components(
+        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "cloneatt").preset,
+        train_loader,
+        device="cpu",
+        log_progress=False,
+    ).density_estimator
+    rebuilt.load_state_dict(state)
+
+
+@needs_data
+def test_z_score_x_independent_trains_and_samples_for_cloneatt(tmp_path, monkeypatch):
+    """R19: the third whitening mode was a choice no test had ever built."""
+    ckpt_dir, split_path = _train_tiny(
+        tmp_path, "cloneatt", ["--z-score-x", "independent"], "R19"
+    )
+    stored = torch.load(ckpt_dir / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+    assert stored["flow"]["z_score_x"] == "independent"
+
+    path, meta = _sample(
+        tmp_path, "cloneatt", ckpt_dir / "best.pt", split_path,
+        monkeypatch=monkeypatch,
+    )
+    assert path.exists()
+    assert meta["config_from_checkpoint"] is True
+    assert (
+        posterior_mod.resolve_eval_config(
+            ckpt_dir / "best.pt", "cloneatt"
+        ).preset.flow.z_score_x
+        == "independent"
+    )

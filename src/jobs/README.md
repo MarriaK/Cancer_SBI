@@ -14,6 +14,7 @@ Cluster tree: `~/cancer/{src,data,runs,results,cache,logs}` — there is no `cod
 | `train2.sh` | The seven-run matrix 2 (R3/R2s1/R2s2/R5/R6/R7/R8) as a `--array=0-6` job. Same split gate, same non-empty-checkpoint refusal, same 12 h a100 as `train.sh`. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
 | `train3.sh` | The fourteen-run matrix 3 (R3s1/R3s2/R6s1/R6s2/D0s1/D0s2/R9–R16) as a `--array=0-13` job. Adds `--flow-dropout`, `--flow-num-transforms`, `--trial-subsample` and `--freq-mode feature` for clonemlp. Same split gate, same non-empty-checkpoint refusal, same 12 h a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
 | `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. For one run: `--array=<i>` or `MODEL=`; `CKPT` with the full 0-2 array is refused. | `MODEL`, `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `EXTRA` (extra flags, last-wins), `DRY_RUN` |
+| `ensemble.sh` | Stage 1b: pools several seeds' stage-1 `.npz` files into one equal-weight mixture posterior, `posteriors_<MODEL>_<RUN_TAG>.npz`, which `analyze.sh` then reads unchanged. CPU, minutes. | `INPUTS` (space-separated `.npz` paths, required), `OUT` (output dir), `MODEL`, `RUN_TAG`, `NUM_SAMPLES` (subsample, equal share per member), `EXTRA`, `DRY_RUN` |
 | `analyze.sh` | Stage 2: `poster_metrics` — every metric, table and figure, from stage 1's `.npz`. CPU, minutes. | `POST` (input dir), `OUT` (results dir), `DRY_RUN` |
 | `shrink.sh` | Figure D (`fig_shrinkage`), screen and poster builds. CPU. | `POST`, `OUT`, `DRY_RUN` |
 | `treetest.sh` | Smoke test: all three models sample 4 cases from the reorganised tree. | — |
@@ -165,3 +166,41 @@ OUT=$HOME/cancer/results/2026-09-24/$RUN sbatch jobs/analyze.sh
 POST=$HOME/cancer/results/2026-09-24/$RUN/posteriors \
 OUT=$HOME/cancer/results/2026-09-24/$RUN sbatch jobs/shrink.sh
 ```
+
+## Matrix 4 (`train4.sh`)
+
+Matrix 3's best model is CloneAtt **R12** (R² = 0.413, 8/44 SBC failures), and the per-arm analysis
+says the best-learned arms carry a small consistent posterior-mean bias. Two things are suspected of
+it: the flow's `tail_bound = 3` clipping the spline's support, and the single scalar `structured`
+θ standardisation. Matrix 4 tests those two, the one published oddity matrix 2 left alone
+(trap 6's attention temperature), the mean over the 25 trials, and CloneAtt's capacity — each on top
+of one base, one switch at a time, so a difference in R² is attributable.
+
+- **BASE_R12** (cloneatt) `--z-score-x structured --input-space copy --freq-mode feature --attn-ln --flow-num-transforms 3`
+
+All twelve are `cloneatt`, share `--min-epochs 1 --stop-after-epochs 15 --max-epochs 60
+--num-workers 8`, and use the clone cache when `CACHE_DIR` is set — there is no DominantClone
+exception in this matrix. The seed is 20260924 except where the table names another.
+
+| idx | run | flags on top of BASE_R12 | what it tests |
+| --- | --- | --- | --- |
+| 0 | R17 | `--attn-scale standard` | trap 6: logits scaled by `sqrt(d_model/n_heads)`, so the attention is 2.83× sharper |
+| 1 | R18 | `--tail-bound 5` | is the posterior-mean bias the flow clipping θ at the spline's tail? |
+| 2 | R19 | `--z-score-x independent` (replaces `structured`) | the other suspect: per-dimension θ whitening instead of one scalar |
+| 3 | R20 | `--trial-pool attention` | pool the 25 trial embeddings with a PMA instead of sbi's masked mean |
+| 4 | R20s1 | `--trial-pool attention --seed 1` | R20 on a second seed — it is the one run that adds a module |
+| 5 | R21 | `--d-model 256` | capacity: a wider per-trial embedding |
+| 6 | R22 | `--n-heads 4` | capacity: fewer, wider heads (same parameter count) |
+| 7 | R23 | `--num-inducing 64` | capacity: a wider ISAB bottleneck |
+| 8 | R24 | `--d-model 256 --num-inducing 64` | the two capacity knobs together |
+| 9 | R12s1 | `--seed 1` | the base itself, the yardstick every row above is read against |
+| 10 | R12s2 | `--seed 2` | the second point of that spread (±0.05 on R²) |
+| 11 | R25 | `--attn-scale standard --trial-pool attention --tail-bound 5` | do the three independent switches compose? |
+
+`--attn-scale`, `--n-heads` and `--num-inducing` are CloneAtt-only; `--trial-pool` and `--d-model`
+are read by both clone-set models; `--tail-bound` by all three. Every one of them defaults to the
+published behaviour, and `--d-model` must stay divisible by `--n-heads` — `cli/train.py` refuses the
+pair rather than letting the attention silently drop the remainder of every token. `--trial-pool
+attention` keeps the post-pooling MLP and therefore the flow's context width, so R20 is comparable
+with the base on everything else; it does change the `state_dict`, so its checkpoints must be
+evaluated with the config they carry (which `sample_posteriors.py` does by default).

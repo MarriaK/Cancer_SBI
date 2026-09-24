@@ -49,6 +49,23 @@ the run it produced before:
     Clone-set models only. The TRAINING dataset draws K of the 25 trials per
     sim, fresh every epoch; validation and test keep all 25. Runs R13 and R15.
     Default: unset, i.e. all 25 everywhere.
+``--attn-scale {published,standard}``
+    CloneAtt only. ``standard`` divides the attention logits by
+    ``sqrt(d_model / n_heads)`` instead of ``sqrt(d_model)`` (trap 6), which
+    makes the attention ``sqrt(n_heads)`` times sharper. Run R17. Default:
+    ``published``.
+``--tail-bound X``
+    All three models. ``FlowConfig.tail_bound``; published 3.0. Outside
+    ``[-X, X]`` the spline is linear, so a theta beyond it cannot be resolved
+    -- a suspect for the per-arm posterior-mean bias. Run R18.
+``--trial-pool {mean,attention}``
+    Clone-set models only. ``attention`` pools the 25 per-trial embeddings with
+    a one-seed PMA instead of sbi's masked mean; the post-pooling MLP and the
+    flow's context width are unchanged. Run R20. Default: ``mean``.
+``--d-model N`` / ``--n-heads N`` / ``--num-inducing N``
+    Encoder capacity (runs R21-R24). ``--d-model`` is read by both clone-set
+    encoders; the other two are CloneAtt's attention only. ``d_model`` must
+    stay divisible by ``n_heads``.
 ``--freq-mode {weight,feature}``
     CloneAtt only. ``feature`` drops the frequency multiply altogether and
     feeds ``log10(freq)`` to the input projection as a 45th column (runs
@@ -400,6 +417,73 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    repairs.add_argument(
+        "--attn-scale",
+        choices=["published", "standard"],
+        default=None,
+        help=(
+            "CloneAtt only: how the attention logits are scaled in every MAB. "
+            "'published' divides by sqrt(d_model) = 11.31 (trap 6); "
+            "'standard' divides by sqrt(d_model / n_heads) = 4, the per-head "
+            "scale, so the attention is sqrt(n_heads) times sharper (run "
+            "R17). Default: published."
+        ),
+    )
+    repairs.add_argument(
+        "--tail-bound",
+        type=float,
+        default=None,
+        help=(
+            "Half-width of the flow's spline support, all three models "
+            "(published: 3.0, sbi's default). The transform is linear outside "
+            "[-X, X], so a widely-spread theta is clipped there -- one of the "
+            "two suspects for the per-arm posterior-mean bias (run R18). "
+            "Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--trial-pool",
+        choices=["mean", "attention"],
+        default=None,
+        help=(
+            "Clone-set models only: how the 25 per-trial embeddings become "
+            "one context vector. 'mean' is sbi's NaN-masked mean, the "
+            "published behaviour; 'attention' pools them with a one-seed PMA "
+            "instead and keeps the post-pooling MLP, so the flow's context "
+            "width does not move (run R20). Default: mean. Ignored by "
+            "dominantclone, which has no per-trial encoder."
+        ),
+    )
+    repairs.add_argument(
+        "--d-model",
+        type=int,
+        default=None,
+        help=(
+            "Width of the per-trial embedding, both clone-set encoders "
+            "(published: 128). Runs R21 and R24. Must stay divisible by "
+            "--n-heads for cloneatt. Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--n-heads",
+        type=int,
+        default=None,
+        help=(
+            "Attention heads in every ISAB and in the PMA, cloneatt only "
+            "(published: 8). Run R22. Must divide --d-model. Ignored by the "
+            "other two models, neither of whose encoders has attention."
+        ),
+    )
+    repairs.add_argument(
+        "--num-inducing",
+        type=int,
+        default=None,
+        help=(
+            "Inducing points per ISAB, cloneatt only (published: 32). Runs "
+            "R23 and R24. Ignored by the other two models."
+        ),
+    )
+
     pickling = parser.add_mutually_exclusive_group()
     pickling.add_argument(
         "--final-pickle",
@@ -517,6 +601,9 @@ def build_config(
         flow_cfg = replace(flow_cfg, dropout_probability=args.flow_dropout)
     if getattr(args, "flow_num_transforms", None) is not None:
         flow_cfg = replace(flow_cfg, num_transforms=args.flow_num_transforms)
+    # Matrix 4 / run R18. Read by all three presets, like the two above it.
+    if getattr(args, "tail_bound", None) is not None:
+        flow_cfg = replace(flow_cfg, tail_bound=args.tail_bound)
     # --freq-renorm scales the weights of a multiply that --freq-mode feature
     # removes, so the pair describes no network at all. Refused rather than
     # resolved: silently dropping either half is how a run gets launched
@@ -559,6 +646,60 @@ def build_config(
             # setting the probability is not enough -- the run has to say that
             # the layers should exist at all. clonemlp already applies it.
             encoder_cfg = replace(encoder_cfg, attn_dropout_active=True)
+    # Matrix 4. Same rule as matrix 2's attention-only switches: each one is
+    # recorded only on a preset whose encoder reads it, so a checkpoint never
+    # carries a value describing a network nothing built.
+    if getattr(args, "attn_scale", None) is not None and is_attention:
+        encoder_cfg = replace(encoder_cfg, attn_scale=args.attn_scale)
+    if (
+        getattr(args, "trial_pool", None) is not None
+        and preset.encoder.kind in ("mlp", "attention")
+    ):
+        encoder_cfg = replace(encoder_cfg, trial_pool=args.trial_pool)
+    # --d-model is read by BaselineCloneEmbedding as well as CloneSetEmbedding
+    # (both take it as the per-trial embedding width), so it is a clone-set
+    # flag, not an attention-only one. --n-heads and --num-inducing size the
+    # attention itself and have nothing to reach on the other two paths.
+    if getattr(args, "d_model", None) is not None and preset.encoder.kind in (
+        "mlp",
+        "attention",
+    ):
+        encoder_cfg = replace(encoder_cfg, d_model=args.d_model)
+    if getattr(args, "n_heads", None) is not None and is_attention:
+        encoder_cfg = replace(encoder_cfg, n_heads=args.n_heads)
+    if getattr(args, "num_inducing", None) is not None and is_attention:
+        encoder_cfg = replace(encoder_cfg, num_inducing=args.num_inducing)
+
+    # MAB splits d_model evenly across the heads with an integer division, so
+    # an indivisible pair does not raise -- it silently drops the remainder of
+    # every token. Refused here, where the flags are still named, rather than
+    # 20 minutes into an array task.
+    if encoder_cfg.kind == "attention" and encoder_cfg.d_model % encoder_cfg.n_heads:
+        raise ValueError(
+            f"--d-model {encoder_cfg.d_model} is not divisible by --n-heads "
+            f"{encoder_cfg.n_heads}: the attention splits the embedding evenly "
+            f"across the heads, so an indivisible pair would silently discard "
+            f"{encoder_cfg.d_model % encoder_cfg.n_heads} of every token's "
+            f"features. Pick a d_model that is a multiple of n_heads."
+        )
+    # The pooling PMA has the same constraint, on whichever head count it will
+    # actually use -- which for clonemlp is TrialsSBIEmbedding's own default,
+    # its EncoderConfig carrying no n_heads at all.
+    if encoder_cfg.trial_pool == "attention":
+        # Local import: models.trials pulls in torch and sbi, and this module
+        # keeps every heavy import inside a function so `--help` works without
+        # them (see the module docstring).
+        from cancer_sbi.models.trials import DEFAULT_TRIAL_POOL_HEADS
+
+        pool_heads = encoder_cfg.n_heads or DEFAULT_TRIAL_POOL_HEADS
+        if encoder_cfg.d_model % pool_heads:
+            raise ValueError(
+                f"--trial-pool attention pools the trial embeddings with a "
+                f"{pool_heads}-head PMA, and --d-model {encoder_cfg.d_model} is "
+                f"not divisible by {pool_heads}. Pick a d_model that is a "
+                f"multiple of it, or set --n-heads to a divisor of d_model."
+            )
+
     optim_cfg = preset.optim
     if preset.optim.use_param_groups:
         if getattr(args, "embed_lr", None) is not None:
@@ -615,6 +756,27 @@ def build_config(
         and preset.data.dataset != "clone_sets"
     ):
         print(f"[warn] --trial-subsample is not used by {preset.name}; ignoring it.")
+
+    # Matrix 4. --tail-bound is deliberately absent: every preset's flow reads
+    # it, so there is no preset for which it would be decorative.
+    if getattr(args, "attn_scale", None) is not None and not is_attention:
+        print(f"[warn] --attn-scale is not used by {preset.name}; ignoring it.")
+    if (
+        getattr(args, "trial_pool", None) is not None
+        and preset.encoder.kind not in ("mlp", "attention")
+    ):
+        print(f"[warn] --trial-pool is not used by {preset.name}; ignoring it.")
+    if getattr(args, "d_model", None) is not None and preset.encoder.kind not in (
+        "mlp",
+        "attention",
+    ):
+        print(f"[warn] --d-model is not used by {preset.name}; ignoring it.")
+    for flag, value in (
+        ("--n-heads", getattr(args, "n_heads", None)),
+        ("--num-inducing", getattr(args, "num_inducing", None)),
+    ):
+        if value is not None and not is_attention:
+            print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
 
     if args.top_k is not None and preset.data.top_k is None:
         print(f"[warn] --top-k is not used by {preset.name}; ignoring it.")
@@ -674,6 +836,15 @@ def effective_config_payload(
         "flow_dropout": getattr(args, "flow_dropout", None),
         "flow_num_transforms": getattr(args, "flow_num_transforms", None),
         "trial_subsample": getattr(args, "trial_subsample", None),
+        # Matrix 4. attn_scale, trial_pool, d_model, n_heads and num_inducing
+        # also land in the snapshotted `encoder` block and tail_bound in
+        # `flow`; these are the flags as typed.
+        "attn_scale": getattr(args, "attn_scale", None),
+        "tail_bound": getattr(args, "tail_bound", None),
+        "trial_pool": getattr(args, "trial_pool", None),
+        "d_model": getattr(args, "d_model", None),
+        "n_heads": getattr(args, "n_heads", None),
+        "num_inducing": getattr(args, "num_inducing", None),
         "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,

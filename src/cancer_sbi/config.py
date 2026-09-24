@@ -30,6 +30,8 @@ ReloadBestPolicy = Literal["never", "on_early_stop", "always"]
 ZScoreMode = Literal["none", "structured", "independent"]
 InputSpace = Literal["log2", "copy"]
 FreqMode = Literal["weight", "feature"]
+AttnScale = Literal["published", "standard"]
+TrialPool = Literal["mean", "attention"]
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,13 @@ class EncoderConfig:
             ``CloneSetEmbedding`` apply ``nn.Dropout(dropout)`` after each ISAB
             and after the PMA (run R8). ``False`` -- the default -- is trap 4,
             where ``dropout`` is accepted and silently discarded.
+        attn_scale: ``"attention"`` only, matrix 4. ``"published"`` -- the
+            default -- is trap 6's ``sqrt(dim_V)`` logit scaling;
+            ``"standard"`` is the textbook ``sqrt(dim_V / num_heads)`` (run
+            R17).
+        trial_pool: Both clone-set encoders, matrix 4. ``"mean"`` -- the
+            default -- is sbi's masked mean over the 25 trial embeddings;
+            ``"attention"`` pools them with a one-seed PMA instead (run R20).
         input_dim / hidden_dim_phi / hidden_dim_rho / output_dim / aggregation_fn
             / aggregation_dim / num_heads_deepset: DeepSet only.
         trials_*: The ``TrialsSBIEmbedding`` wrapper (clone-set models only);
@@ -225,6 +234,21 @@ class EncoderConfig:
     # Trap 4 made opt-out: True wires `dropout` into CloneSetEmbedding, which
     # published CloneAtt never did. False keeps the value decorative (run R8).
     attn_dropout_active: bool = False     # CloneSetEmbedding (CloneAtt)
+    # --- repair switches, matrix 4 (added 2026-09-24) ------------------------
+    # Trap 6 made opt-out. "published" divides the attention logits by
+    # sqrt(dim_V) -- sqrt(128) = 11.31 -- in every MAB, which is what
+    # SetTransformer_NPE/set_transformer.py:35 does; "standard" divides by
+    # sqrt(dim_V / num_heads) = sqrt(16) = 4, the textbook per-head scale, so
+    # the logits (and hence the attention) are ~2.83x sharper (run R17).
+    # CloneSetEmbedding only; the MLP encoder has no attention to scale.
+    attn_scale: AttnScale = "published"   # CloneSetEmbedding (CloneAtt)
+    # Both clone-set encoders. "mean" is the published pooling over the T=25
+    # per-trial embeddings -- sbi's PermutationInvariantEmbedding, which takes
+    # a NaN-masked mean. "attention" replaces that mean with a one-seed PMA
+    # over the same (B, T, d_model) stack (run R20), keeping the post-pooling
+    # MLP and therefore the flow's context width. See
+    # cancer_sbi.models.trials.AttentionTrialPooling.
+    trial_pool: TrialPool = "mean"        # both clone-set encoders
 
     # --- DeepSet (DominantClone) --------------------------------------------
     input_dim: Optional[int] = None
@@ -744,6 +768,8 @@ def get_preset(name: str) -> ModelPreset:
 
 __all__ = [
     "EFFECTIVE_CONFIG_KEY",
+    "AttnScale",
+    "TrialPool",
     "FreqMode",
     "InputSpace",
     "ZScoreMode",

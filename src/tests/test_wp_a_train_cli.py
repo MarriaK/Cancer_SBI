@@ -1020,3 +1020,219 @@ def test_a_checkpoint_without_the_matrix_three_keys_still_rebuilds():
     assert rebuilt.flow.dropout_probability == 0.2
     assert rebuilt.flow.num_transforms == 5
     assert rebuilt.encoder.freq_mode == "weight"
+
+
+# ---------------------------------------------------------------------------
+# 10. Matrix 4: --attn-scale, --tail-bound, --trial-pool and the three
+#     capacity knobs.
+# ---------------------------------------------------------------------------
+
+
+def test_matrix_four_flags_absent_keeps_published_defaults():
+    """Omit all six and every preset keeps the run it produced before."""
+    for model in ("clonemlp", "cloneatt", "dominantclone"):
+        cfg = config_from_argv([], model=model)
+        assert cfg.encoder.attn_scale == "published", model
+        assert cfg.encoder.trial_pool == "mean", model
+        assert cfg.flow.tail_bound == 3.0, model
+    published = config_from_argv([], model="cloneatt").encoder
+    assert (published.d_model, published.n_heads, published.num_inducing) == (
+        128,
+        8,
+        32,
+    )
+
+
+def test_attn_scale_flag_reaches_the_encoder():
+    cfg = config_from_argv(["--attn-scale", "standard"], model="cloneatt")
+    assert cfg.encoder.attn_scale == "standard"
+    # Trap 6's documentary neighbour is untouched: attn_scale is the wired one.
+    assert cfg.encoder.layer_norm_in_attention is False
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt", "dominantclone"])
+def test_tail_bound_reaches_every_preset(model):
+    cfg = config_from_argv(["--tail-bound", "5"], model=model)
+    assert cfg.flow.tail_bound == 5.0
+    # Nothing else in the flow block moves with it.
+    assert cfg.flow.num_transforms == 5
+    assert cfg.flow.hidden_features == 50
+
+
+@pytest.mark.parametrize("model", ["clonemlp", "cloneatt"])
+def test_trial_pool_reaches_the_clone_set_presets(model):
+    cfg = config_from_argv(["--trial-pool", "attention"], model=model)
+    assert cfg.encoder.trial_pool == "attention"
+
+
+def test_capacity_knobs_reach_the_encoder():
+    cfg = config_from_argv(
+        ["--d-model", "256", "--n-heads", "4", "--num-inducing", "64"],
+        model="cloneatt",
+    )
+    assert (cfg.encoder.d_model, cfg.encoder.n_heads, cfg.encoder.num_inducing) == (
+        256,
+        4,
+        64,
+    )
+
+
+def test_d_model_reaches_clonemlp_too():
+    """BaselineCloneEmbedding takes d_model as well; only DeepSet does not."""
+    cfg = config_from_argv(["--d-model", "64"], model="clonemlp")
+    assert cfg.encoder.d_model == 64
+    assert build_embedding_net(cfg.encoder, "cpu").trial_encoder.d_model == 64
+
+
+def test_indivisible_d_model_and_n_heads_is_refused():
+    """MAB's integer split would silently drop the remainder of every token."""
+    with pytest.raises(ValueError, match="not divisible"):
+        config_from_argv(["--d-model", "100", "--n-heads", "8"], model="cloneatt")
+    with pytest.raises(ValueError, match="not divisible"):
+        config_from_argv(["--n-heads", "12"], model="cloneatt")
+
+
+def test_trial_pool_attention_checks_the_pooling_head_count():
+    """The pooling PMA has the constraint too, on the heads it will use."""
+    with pytest.raises(ValueError, match="trial-pool attention"):
+        config_from_argv(
+            ["--trial-pool", "attention", "--d-model", "100"], model="clonemlp"
+        )
+
+
+@pytest.mark.parametrize(
+    "argv, model, needle",
+    [
+        (["--attn-scale", "standard"], "clonemlp", "--attn-scale"),
+        (["--attn-scale", "standard"], "dominantclone", "--attn-scale"),
+        (["--trial-pool", "attention"], "dominantclone", "--trial-pool"),
+        (["--d-model", "64"], "dominantclone", "--d-model"),
+        (["--n-heads", "4"], "clonemlp", "--n-heads"),
+        (["--n-heads", "4"], "dominantclone", "--n-heads"),
+        (["--num-inducing", "64"], "clonemlp", "--num-inducing"),
+        (["--num-inducing", "64"], "dominantclone", "--num-inducing"),
+    ],
+)
+def test_matrix_four_flag_the_preset_ignores_is_warned_about(
+    argv, model, needle, capsys
+):
+    cfg = config_from_argv(argv, model=model)
+    assert f"[warn] {needle} is not used by {model}" in capsys.readouterr().out
+    # And nothing is recorded: a value in the checkpoint would describe a
+    # network nothing built.
+    assert cfg.encoder == get_preset(model).encoder
+
+
+@pytest.mark.parametrize(
+    "argv, model",
+    [
+        (["--attn-scale", "standard"], "cloneatt"),
+        (["--trial-pool", "attention"], "cloneatt"),
+        (["--trial-pool", "attention"], "clonemlp"),
+        (["--d-model", "64"], "cloneatt"),
+        (["--d-model", "64"], "clonemlp"),
+        (["--n-heads", "4"], "cloneatt"),
+        (["--num-inducing", "64"], "cloneatt"),
+        # --tail-bound is read by every preset's flow, so it never warns.
+        (["--tail-bound", "5"], "cloneatt"),
+        (["--tail-bound", "5"], "dominantclone"),
+    ],
+)
+def test_matrix_four_flag_the_preset_uses_is_not_warned_about(argv, model, capsys):
+    config_from_argv(argv, model=model)
+    assert "[warn]" not in capsys.readouterr().out
+
+
+def test_matrix_four_switches_reach_the_built_modules():
+    """The flags have to reach the layers, not only the dataclass."""
+    cfg = config_from_argv(
+        [
+            "--attn-scale", "standard",
+            "--trial-pool", "attention",
+            "--d-model", "64",
+            "--n-heads", "4",
+            "--num-inducing", "8",
+        ],
+        model="cloneatt",
+    )
+    net = build_embedding_net(cfg.encoder, "cpu")
+    encoder = net.trial_encoder
+    assert encoder.attn_scale == "standard"
+    assert encoder.d_model == 64
+    assert encoder.layers[0].mab0.num_heads == 4
+    assert encoder.layers[0].I.shape == (1, 8, 64)
+    # The pooling PMA follows the encoder, and the context width does not move.
+    assert net.trial_pool == "attention"
+    assert net.pool_attn.pma.mab.attn_scale == "standard"
+    assert net.pool_attn.pma.mab.num_heads == 4
+    assert net.pool_attn.output_dim == get_preset("cloneatt").encoder.trials_output_dim
+
+
+def test_capacity_knobs_change_the_parameter_count():
+    """R21/R23 are bigger networks, R22 is the same one differently split."""
+
+    def _count(argv):
+        cfg = config_from_argv(argv, model="cloneatt")
+        return sum(p.numel() for p in build_embedding_net(cfg.encoder, "cpu").parameters())
+
+    published = _count([])
+    assert _count(["--d-model", "256"]) > published
+    assert _count(["--num-inducing", "64"]) > published
+    assert _count(["--n-heads", "4"]) == published
+    # Attention pooling replaces sbi's mean with a PMA plus the same MLP.
+    assert _count(["--trial-pool", "attention"]) > published
+
+
+def test_matrix_four_flags_ride_into_the_effective_config():
+    """Round trip: flags -> preset -> checkpoint dict -> preset again."""
+    from cancer_sbi.cli.train import effective_config_payload
+    from cancer_sbi.config import preset_from_effective_config
+
+    argv = [
+        "--attn-scale", "standard",
+        "--tail-bound", "5",
+        "--trial-pool", "attention",
+        "--d-model", "256",
+        "--n-heads", "4",
+        "--num-inducing", "64",
+    ]
+    args = build_parser().parse_args(["--model", "cloneatt"] + argv)
+    cfg = config_from_argv(argv, model="cloneatt")
+    payload = effective_config_payload(cfg, args, Path("/d"), Path("/s.pkl"))
+
+    assert payload["encoder"]["attn_scale"] == "standard"
+    assert payload["encoder"]["trial_pool"] == "attention"
+    assert payload["encoder"]["d_model"] == 256
+    assert payload["encoder"]["n_heads"] == 4
+    assert payload["encoder"]["num_inducing"] == 64
+    assert payload["flow"]["tail_bound"] == 5.0
+    assert payload["flow"]["hidden_features"] == 50, "must stay 50"
+    for flag, value in (
+        ("attn_scale", "standard"), ("tail_bound", 5.0), ("trial_pool", "attention"),
+        ("d_model", 256), ("n_heads", 4), ("num_inducing", 64),
+    ):
+        assert payload["cli_flags"][flag] == value
+
+    rebuilt = preset_from_effective_config(payload)
+    assert rebuilt.encoder.attn_scale == "standard"
+    assert rebuilt.encoder.trial_pool == "attention"
+    assert rebuilt.encoder.d_model == 256
+    assert rebuilt.encoder.n_heads == 4
+    assert rebuilt.encoder.num_inducing == 64
+    assert rebuilt.flow.tail_bound == 5.0
+
+
+def test_a_checkpoint_without_the_matrix_four_keys_still_rebuilds():
+    """Every checkpoint on the cluster predates these fields."""
+    from cancer_sbi.config import preset_from_effective_config
+
+    rebuilt = preset_from_effective_config(
+        {
+            "model": "cloneatt",
+            "flow": {"z_score_x": "structured"},
+            "encoder": {"kind": "attention"},
+        }
+    )
+    assert rebuilt.encoder.attn_scale == "published"
+    assert rebuilt.encoder.trial_pool == "mean"
+    assert rebuilt.flow.tail_bound == 3.0
