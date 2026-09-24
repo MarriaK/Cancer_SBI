@@ -11,7 +11,7 @@ Cluster tree: `~/cancer/{src,data,runs,results,cache,logs}` — there is no `cod
 | script | what it does | env overrides |
 | --- | --- | --- |
 | `train.sh` | The five-run matrix R0/R1/R2/R4/D0 as a `--array=0-4` job. Refuses to start if the run's checkpoint directory is non-empty, or if the split carries no `val_ids`. 12 h, a100. | `RUNS_ROOT`, `SEED`, `NUM_WORKERS`, `CACHE_DIR`, `ALLOW_TEST_AS_VAL`, `CANCER_SBI_DATA_ROOT`, `CANCER_SBI_SPLIT`, `DRY_RUN` |
-| `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. | `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `EXTRA` (extra flags, last-wins), `DRY_RUN` |
+| `sample.sh` | Stage 1: 5000 posterior draws per held-out tumour, one array task per model. 12 h, a100. For one run: `--array=<i>` or `MODEL=`; `CKPT` with the full 0-2 array is refused. | `MODEL`, `CKPT` (the checkpoint to sample — **always pass it for a matrix run**), `POST` (output dir), `RUN_TAG`, `EXTRA` (extra flags, last-wins), `DRY_RUN` |
 | `analyze.sh` | Stage 2: `poster_metrics` — every metric, table and figure, from stage 1's `.npz`. CPU, minutes. | `POST` (input dir), `OUT` (results dir), `DRY_RUN` |
 | `shrink.sh` | Figure D (`fig_shrinkage`), screen and poster builds. CPU. | `POST`, `OUT`, `DRY_RUN` |
 | `treetest.sh` | Smoke test: all three models sample 4 cases from the reorganised tree. | — |

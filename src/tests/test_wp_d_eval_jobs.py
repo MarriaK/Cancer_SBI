@@ -300,6 +300,26 @@ def test_sample_sh_passes_run_tag_and_extra_last():
     assert cmd.rstrip().endswith("--limit 4")
 
 
+def test_sample_sh_model_env_overrides_the_array_index():
+    r = _run(JOBS / "sample.sh",
+             {"MODEL": "cloneatt", "SLURM_ARRAY_TASK_ID": "0", "POST": "/y", "DRY_RUN": "1"})
+    assert r.returncode == 0, r.stderr
+    assert "--model cloneatt" in r.stdout
+
+
+def test_sample_sh_refuses_a_ckpt_with_a_multi_task_array():
+    r = _run(JOBS / "sample.sh",
+             {"CKPT": "/x/best.pt", "SLURM_ARRAY_TASK_ID": "1", "SLURM_ARRAY_TASK_COUNT": "3",
+              "POST": "/y", "DRY_RUN": "1"})
+    assert r.returncode == 1
+    assert "REFUSING" in r.stderr
+    # A single-task array with a CKPT is the documented per-run path and must still work.
+    ok = _run(JOBS / "sample.sh",
+              {"CKPT": "/x/best.pt", "SLURM_ARRAY_TASK_ID": "1", "SLURM_ARRAY_TASK_COUNT": "1",
+               "POST": "/y", "DRY_RUN": "1"})
+    assert ok.returncode == 0 and "--model cloneatt" in ok.stdout
+
+
 def test_sample_sh_wall_clock_is_above_the_estimate():
     assert "-t 12:00:00" in (JOBS / "sample.sh").read_text()
 
