@@ -1,0 +1,19 @@
+[
+  {
+    "model": "cloneatt",
+    "run_tag": "R26s1",
+    "atc": 0.02059688391485623,
+    "atc_signed": -0.7024358130348899,
+    "ks_stat": 0.05584546850998473,
+    "ks_p": 0.03313749759110537,
+    "num_sims": 651,
+    "num_samples": 5000,
+    "num_references": 1,
+    "distance": "l2",
+    "z_score": "theta_sd",
+    "reference": "random",
+    "n_alpha": 50,
+    "n_boot": 200,
+    "seed": 0
+  }
+]
