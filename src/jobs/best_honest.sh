@@ -22,7 +22,7 @@
 #   <run>/posteriors/), OUT (collection dir, must be a sibling of RESULTS),
 #   DRY_RUN=1.
 set -euo pipefail
-CANCER="$HOME/cancer"
+CANCER="${CANCER:-$HOME/cancer}"   # overridable like train*.sh, so DRY_RUN works off-cluster
 MANIFEST="${MANIFEST:-$CANCER/src/cancer_sbi/evaluation/manifests/best_honest_2026-09-24.json}"
 RESULTS="${RESULTS:-$CANCER/results/2026-09-24}"
 OUT="${OUT:-$CANCER/results/best_honest}"
