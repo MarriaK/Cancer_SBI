@@ -553,10 +553,22 @@ class ModelPreset:
 
 # ---------------------------------------------------------------------------
 # The three published models.
+#
+# These three are frozen history. They reproduce, field for field, what
+# Base_NPE/, SetTransformer_NPE/ and Plain_NPE/ actually did, and nothing in
+# this file may change them again. Until 2026-09-25 they were also what
+# ``--model clonemlp`` meant; they are now reached with ``--published`` or with
+# ``--model clonemlp_published``, and the repaired presets below -- built from
+# these with ``dataclasses.replace``, so the diff is exactly the changed fields
+# -- are the defaults. See "The repaired defaults" further down.
 # ---------------------------------------------------------------------------
 
-CLONEMLP = ModelPreset(
-    name="clonemlp",
+#: CloneMLP-NPE as published (Base_NPE/); select with ``--published`` or
+#: ``--model clonemlp_published``. True R^2 0.472, 39 of 44 arms failing SBC,
+#: 95 % coverage 0.922, pooled std z 0.86, log p 21.96
+#: (docs/CAMPAIGN_REPORT_2026-09-24.md, §3 and §4).
+CLONEMLP_PUBLISHED = ModelPreset(
+    name="clonemlp_published",
     paper_name="CloneMLP-NPE",
     origin="Base_NPE/",
     data=DataConfig(
@@ -601,8 +613,12 @@ CLONEMLP = ModelPreset(
     ),
 )
 
-CLONEATT = ModelPreset(
-    name="cloneatt",
+#: CloneAtt-NPE as published (SetTransformer_NPE/); select with ``--published``
+#: or ``--model cloneatt_published``. True R^2 0.049, log p 9.12 -- the
+#: frequency multiply shrinks every token to ~1/100 of its scale
+#: (docs/CAMPAIGN_REPORT_2026-09-24.md, finding 4).
+CLONEATT_PUBLISHED = ModelPreset(
+    name="cloneatt_published",
     paper_name="CloneAtt-NPE",
     origin="SetTransformer_NPE/",
     data=DataConfig(
@@ -651,8 +667,12 @@ CLONEATT = ModelPreset(
     ),
 )
 
-DOMINANTCLONE = ModelPreset(
-    name="dominantclone",
+#: DominantClone-NPE as published (Plain_NPE/); select with ``--published`` or
+#: ``--model dominantclone_published``. True R^2 0.170 -- but on 707 test cases,
+#: not the 651 every other model is scored on, because of trap 10 above
+#: (docs/CAMPAIGN_REPORT_2026-09-24.md, finding 8).
+DOMINANTCLONE_PUBLISHED = ModelPreset(
+    name="dominantclone_published",
     paper_name="DominantClone-NPE",
     origin="Plain_NPE/",
     data=DataConfig(
@@ -709,6 +729,168 @@ DOMINANTCLONE = ModelPreset(
 )
 
 # ---------------------------------------------------------------------------
+# The repaired defaults (2026-09-25).
+#
+# Policy change. ``--model clonemlp`` no longer means "the model as published";
+# it means the best HONEST configuration the 2026-09-24 campaign found for that
+# encoder. The published ones are preserved above, byte for byte, and are
+# reached with ``--published`` or ``--model <name>_published``; every job script
+# that reproduces a campaign run passes ``--published`` (see jobs/README.md).
+#
+# The rule used to choose each configuration, in this order:
+#   1. calibration first. A model whose 95 % coverage is 0.945 and whose pooled
+#      std of z is 1.00 beats a sharper one that fails SBC on 39 of 44 arms,
+#      because a posterior that does not mean what it says is not an answer --
+#      and the project's goal is real-data inference, where the error bars are
+#      the product.
+#   2. accuracy second, and only where the difference is OUTSIDE the seed band
+#      the campaign measured: +-0.05 R^2 for the clone-set models, +-0.002 for
+#      ArmToken (docs/CAMPAIGN_REPORT_2026-09-24.md, finding 3). Anything inside
+#      that band is not adopted on its number alone.
+#
+# Each preset below is a ``replace`` on the published one above it, so the
+# source diff IS the change: a field not named here still carries its published
+# value, traps and all. Evidence for every number quoted:
+# docs/CAMPAIGN_REPORT_2026-09-24.md -- §4 (the seed-averaged comparison) and
+# findings 2, 4, 7 and 8.
+# ---------------------------------------------------------------------------
+
+#: CloneMLP-NPE, repaired: run **R2**.
+#:
+#: Published as true R^2 0.472 -- but with 39 of 44 arms failing SBC, 95 %
+#: coverage 0.922 and pooled std z 0.86. It is sharp because it is
+#: OVERCONFIDENT, and the 0.472 was itself selected on the test set it was
+#: scored on (report §2.2). R2's seed family is 0.363 +- 0.053 with coverage
+#: 0.945 and std z 1.00: a third of the headline R^2 traded for posteriors that
+#: mean what they say. By rule 1 that is the trade this preset makes.
+#:
+#: Two fields change. Whitening theta is the solid half (report, finding 2).
+#: Copy space is the weaker half and is kept on its mechanism rather than its
+#: size: the +0.087 that a single-run R1-vs-R2 comparison suggested did NOT
+#: replicate -- at the seed level the difference is +0.035, inside one seed sd
+#: -- but copy space never hurt a single run in the campaign, it costs nothing,
+#: and matrix 8 finally measured it at +0.006 in ArmToken, the one model whose
+#: +-0.002 band is tight enough to see an effect that small (runs AT11/AT11s1).
+CLONEMLP = replace(
+    CLONEMLP_PUBLISHED,
+    name="clonemlp",
+    flow=replace(
+        CLONEMLP_PUBLISHED.flow,
+        # R1 -> R2. Trap 1 left theta unwhitened for this model. Whitening it
+        # halves the SBC failures (37 -> 16 on the control seed) and puts the
+        # pooled std of z on 1.0, at a cost of about 0.13 R^2. Report, finding 2.
+        z_score_x="structured",
+    ),
+    encoder=replace(
+        CLONEMLP_PUBLISHED.encoder,
+        # R2. Converts the log2 ratios to copy-number space INSIDE the encoder,
+        # which removes the sentinel that is 16-21 % of all input values and
+        # sits ~15 sd from the rest (models/mlp_encoder.py:163-175). Report,
+        # finding 2, and matrix 8 for its size.
+        input_space="copy",
+    ),
+)
+
+#: CloneAtt-NPE, repaired: run **R26**.
+#:
+#: Published at true R^2 0.049 and log p 9.12; R26 reaches 0.579 +- 0.015 over
+#: two seeds with log p 29.97. This is the one model the campaign repaired
+#: rather than re-balanced, and it took five measured steps, each a run in
+#: report finding 4 and matrices 2-4b:
+#:
+#:   R5      log-frequency as a 45th input FEATURE, and LayerNorm on at last
+#:           (the multiply is what forced trap 5)            0.025 -> 0.363
+#:   R6      + copy-space input                                     -> 0.422
+#:   R12     + a 3-transform flow: fewer parameters, the same fit, 8 of 44 SBC
+#:           failures, and 40 % cheaper                              -> 0.413
+#:   R18     + tail_bound 3 -> 5. The largest flow-side gain of the campaign,
+#:           +0.09 replicated across three seeds at +-0.002     -> 0.507
+#:   R21     + d_model 128 -> 256, on the R12 base (tail_bound still 3.0):
+#:           +0.05 on its own                                   -> 0.455
+#:   R26     + d_model 256 AND tail_bound 5 together: the two stack
+#:                                              -> 0.568, and R26s1 -> 0.589
+#:
+#: Everything else is CloneAtt's published value: n_heads 8, num_inducing 32,
+#: freq_renorm False (R4 showed renormalising the multiply changes nothing --
+#: one unit of mass over 100 clones still leaves every token at ~1/100 scale),
+#: attn_scale "published" (R17: no effect) and trial_pool "mean" (R20: the 25
+#: replicates are exchangeable, so attention has nothing to select over).
+#:
+#: NOT fully calibrated, and this preset does not pretend otherwise: R26 is
+#: slightly overconfident at 95 % coverage 0.930 and std z 1.08. The fix is
+#: post-hoc rather than a preset field -- the per-arm affine recalibration of
+#: jobs/recalibrate.sh takes R27rc to coverage 0.944 and 18 SBC failures from
+#: 32, with R^2 unchanged (report, "post-hoc stages").
+CLONEATT = replace(
+    CLONEATT_PUBLISHED,
+    name="cloneatt",
+    flow=replace(
+        CLONEATT_PUBLISHED.flow,
+        # R1 -> R5 onwards. Trap 1 again; same reasoning as CLONEMLP's.
+        z_score_x="structured",
+        # R12. Fewer parameters, the same fit, and 8 of 44 SBC failures -- the
+        # best-calibrated point of the CloneAtt ladder. Report, matrix 3.
+        num_transforms=3,
+        # R18. sbi's 3.0 defines the spline on +-3 STANDARDISED units, and with
+        # theta of sd 0.2005 that was clipping the tails of exactly the
+        # well-learned arms the SBC analysis had flagged. +0.104 R^2 and
+        # +6.1 nats, replicated over three seeds at +-0.002. Report, finding 4.
+        tail_bound=5.0,
+    ),
+    encoder=replace(
+        CLONEATT_PUBLISHED.encoder,
+        # R6. Same transform, same reason, as CLONEMLP's above.
+        input_space="copy",
+        # R5. Moves the frequency from a token MULTIPLIER to a 45th input
+        # column, log10(clamp(freq, 1e-6)). This is what removes the dependence
+        # on token magnitude -- and therefore what lets attn_ln be switched on.
+        # Report, finding 4.
+        freq_mode="feature",
+        # R5. Trap 5 recorded that the published stack has no LayerNorm
+        # anywhere; with freq_mode "feature" there is no longer a ~0.003-scale
+        # multiply for a LayerNorm to fight, so it goes on. The DOCUMENTARY
+        # field `layer_norm_in_attention` stays False: it records what the
+        # published model did and verify_refactor.py reads it for that.
+        attn_ln=True,
+        # R21 (0.455, d_model 256 alone on the R12 base) and R26 (0.568, and
+        # R26s1 0.589, with tail_bound 5): wider tokens through the ISAB stack,
+        # +0.05 alone, and the gain stacks with the tail bound. More heads
+        # (R22, 0.408) and more inducing points (R23 0.363, R24 0.431) did not
+        # help, so those two keep their published values.
+        d_model=256,
+    ),
+)
+
+#: DominantClone-NPE, repaired: run **D0**.
+#:
+#: The only change is WHICH SIMULATIONS it is trained and scored on, and that
+#: is a comparability repair, not a model repair. Trap 10 above: CNASimsDataset
+#: drops a sim with fewer than 25 trial files while SimulationDataset NaN-pads
+#: it and keeps it, so the published DominantClone was measured on 707 test
+#: cases while every other model in this file was measured on 651.
+#: ``require_all_trials=True`` puts it on the same 651, which is the only thing
+#: that makes the ranking in report finding 8 mean anything: 0.177 +- 0.017 over
+#: three seeds, against the published 0.170 on its larger set.
+#:
+#: **No model repair was ever applied to DeepSet.** No matrix in the campaign
+#: touched this encoder, its flow or its optimiser -- theta whitening was
+#: already on here (trap 1 points the other way for this one model), and
+#: nothing else was tried. Its place at the bottom of finding 8's ranking is a
+#: statement about the dominant clone as an INPUT, not a measurement of the best
+#: DeepSet that could be built. Anyone quoting it should say so.
+DOMINANTCLONE = replace(
+    DOMINANTCLONE_PUBLISHED,
+    name="dominantclone",
+    data=replace(
+        DOMINANTCLONE_PUBLISHED.data,
+        # D0. The clone-set models' sim set, so the three models are compared
+        # on identical data. Report, finding 8.
+        require_all_trials=True,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # Matrix 5: a fourth model, not a published one.
 # ---------------------------------------------------------------------------
 
@@ -724,6 +906,26 @@ DOMINANTCLONE = ModelPreset(
 #: apply -- `attn_ln` is True (trap 5 has nothing to protect here; see
 #: ArmTokenEmbedding.__init__) and `z_score_x` is "structured", which matrices
 #: 2-4 established as better than the published "none" for every model.
+#:
+#: This preset IS run AT0: true R^2 0.898 +- 0.002 over three seeds, log p
+#: 65.53 +- 0.02, 95 % coverage 0.939 (docs/CAMPAIGN_REPORT_2026-09-24.md, §4).
+#: It has no `_published` twin, because it was never published -- `--published`
+#: is an error for this model rather than a synonym for itself.
+#:
+#: Two things that belong to AT0 and are deliberately NOT fields here:
+#:
+#: * The **3-seed ensemble** AT0ens3 -- R^2 0.904, 95 % coverage 0.961, log p
+#:   67.97, the best result in the campaign -- is an EVALUATION-time procedure,
+#:   not a configuration. `jobs/ensemble.sh` pools three finished runs'
+#:   posterior draws into one equal-weight mixture; no single training run can
+#:   be it, and a preset field claiming it would be a lie about what one
+#:   checkpoint contains.
+#: * Matrix 8 closed this encoder's two open questions and both answers are
+#:   "leave the default": copy space is worth +0.006 R^2 and +2.2 nats over
+#:   log2 (AT11/AT11s1, replicated, 3x the seed band), and normalising the
+#:   moment features does not help -- `arm_feature_norm` layernorm is within
+#:   noise (AT12), batchnorm is slightly worse (AT13), and `arm_context_norm`
+#:   costs a nat and 0.013 of coverage (AT14). Both stay off.
 ARMTOKEN = ModelPreset(
     name="armtoken",
     paper_name="ArmToken-NPE",
@@ -775,6 +977,14 @@ ARMTOKEN = ModelPreset(
         dropout_probability=0.2,
         num_transforms=3,        # matrix 3's R12 finding, kept
         hidden_features=50,      # the published width, in every run
+        # AT0, added to the preset 2026-09-25. Matrix 4's R18 established 5.0
+        # (+0.104 R^2 and +6.1 nats over tail_bound 3, replicated across three
+        # seeds at +-0.002) and EVERY ArmToken run in matrices 5-8 passed
+        # `--tail-bound 5` on the command line -- so sbi's 3.0 sitting here
+        # described a run nobody ever made, and a command line that forgot the
+        # flag was not comparable with AT0. Same value, same reason, as
+        # HYBRID's below. Report, finding 4 and matrix 5.
+        tail_bound=5.0,
     ),
     optim=OptimConfig(
         use_param_groups=True,
@@ -815,6 +1025,15 @@ ARMTOKEN = ModelPreset(
 #: `n_heads` is shared by the two branches, as it is for every other preset:
 #: 8 divides CloneAtt's d_model 256 and ArmToken's d_token 64, so R26's head
 #: count is usable by the arm branch unchanged.
+#:
+#: **It never beat ArmToken, and it is kept for the record, not as a
+#: recommendation.** H0 family 0.893 +- 0.002 against AT0 family
+#: 0.898 +- 0.002, and <= ArmToken in 4 of 4 configurations
+#: (docs/CAMPAIGN_REPORT_2026-09-24.md, findings 5 and 8.3). That is the
+#: answer to the narrow question above, and a negative answer is why this
+#: preset stays in the file: it is the cleanest evidence the campaign has that
+#: within-clone cross-arm structure carries nothing the per-arm moments threw
+#: away. Like ARMTOKEN it has no `_published` twin.
 #:
 #: NOT a published model, so none of the traps apply.
 HYBRID = ModelPreset(
@@ -896,14 +1115,98 @@ HYBRID = ModelPreset(
 )
 
 
-#: Lookup by CLI name.
+#: Lookup by CLI name. The three ``*_published`` entries are the models as
+#: published; the bare names are the repaired defaults (2026-09-25).
 PRESETS = {
     CLONEMLP.name: CLONEMLP,
     CLONEATT.name: CLONEATT,
     DOMINANTCLONE.name: DOMINANTCLONE,
     ARMTOKEN.name: ARMTOKEN,
     HYBRID.name: HYBRID,
+    CLONEMLP_PUBLISHED.name: CLONEMLP_PUBLISHED,
+    CLONEATT_PUBLISHED.name: CLONEATT_PUBLISHED,
+    DOMINANTCLONE_PUBLISHED.name: DOMINANTCLONE_PUBLISHED,
 }
+
+#: Suffix naming the published twin of a repaired preset.
+PUBLISHED_SUFFIX = "_published"
+
+#: The presets whose defaults changed on 2026-09-25, and which therefore have a
+#: ``<name>_published`` twin. ``armtoken`` and ``hybrid`` are absent on purpose:
+#: neither was ever published, so there is no earlier configuration to fall back
+#: to and ``--published`` is an error for them rather than a no-op.
+REPAIRED_PRESETS = (CLONEMLP.name, CLONEATT.name, DOMINANTCLONE.name)
+
+
+def has_published_twin(name: str) -> bool:
+    """Whether ``name`` names a model that also exists in a published version.
+
+    Args:
+        name: A preset name, repaired or published (case-insensitive).
+
+    Returns:
+        ``True`` for the three published models and for their ``_published``
+        twins (which are their own); ``False`` for ``armtoken`` and ``hybrid``.
+    """
+    key = name.strip().lower()
+    return key in REPAIRED_PRESETS or key in {
+        n + PUBLISHED_SUFFIX for n in REPAIRED_PRESETS
+    }
+
+
+def published_preset_name(name: str) -> str:
+    """The name of ``name``'s published twin.
+
+    Args:
+        name: A preset name (case-insensitive). A name that already ends in
+            ``_published`` is its own twin and is returned unchanged.
+
+    Returns:
+        ``"<name>_published"``.
+
+    Raises:
+        KeyError: If the model has no published version. ``armtoken`` and
+            ``hybrid`` were introduced by the 2026-09-24 campaign and were never
+            published, so there is nothing to fall back to and asking for it is
+            a mistake worth naming rather than a request to be silently granted.
+    """
+    key = name.strip().lower()
+    if key.endswith(PUBLISHED_SUFFIX):
+        return key
+    twin = key + PUBLISHED_SUFFIX
+    if twin not in PRESETS:
+        raise KeyError(
+            f"{name!r} has no published version: it was introduced by the "
+            f"2026-09-24 campaign and never published. --published applies to "
+            f"{', '.join(REPAIRED_PRESETS)} only."
+        )
+    return twin
+
+
+def resolve_model_name(name: str, published: bool = False) -> str:
+    """Map ``--model`` and ``--published`` onto the preset actually wanted.
+
+    One function for all three entry points (``cli.train``, ``cli.evaluate`` and
+    ``evaluation.sample_posteriors``) so that ``--published`` cannot mean three
+    slightly different things.
+
+    Args:
+        name: The ``--model`` value.
+        published: Whether ``--published`` was passed.
+
+    Returns:
+        ``name`` unchanged when ``published`` is false, otherwise its
+        ``_published`` twin. ``--model clonemlp_published`` works with or
+        without the flag.
+
+    Raises:
+        KeyError: If ``name`` is not a preset, or if ``published`` is asked for
+            a model that has no published version.
+    """
+    key = name.strip().lower()
+    if key not in PRESETS:
+        raise KeyError(f"Unknown model {name!r}. Choose one of {sorted(PRESETS)}.")
+    return published_preset_name(key) if published else key
 
 
 # ---------------------------------------------------------------------------
@@ -1027,15 +1330,18 @@ def get_preset(name: str) -> ModelPreset:
 
     Args:
         name: One of ``"clonemlp"``, ``"cloneatt"``, ``"dominantclone"`` --
-            the three published models -- or ``"armtoken"`` (matrix 5) or
+            which since 2026-09-25 name the REPAIRED configurations, not the
+            published ones -- or one of ``"clonemlp_published"``,
+            ``"cloneatt_published"``, ``"dominantclone_published"``, which are
+            the models as published, or ``"armtoken"`` (matrix 5) or
             ``"hybrid"`` (matrix 6), neither of which reproduces an original
-            folder (case-insensitive).
+            folder and neither of which has a published twin (case-insensitive).
 
     Returns:
         The frozen :class:`ModelPreset`.
 
     Raises:
-        KeyError: If ``name`` is not one of the five presets.
+        KeyError: If ``name`` is not one of the eight presets.
     """
     key = name.strip().lower()
     if key not in PRESETS:
@@ -1060,10 +1366,18 @@ __all__ = [
     "CLONEMLP",
     "CLONEATT",
     "DOMINANTCLONE",
+    "CLONEMLP_PUBLISHED",
+    "CLONEATT_PUBLISHED",
+    "DOMINANTCLONE_PUBLISHED",
     "ARMTOKEN",
     "HYBRID",
     "PRESETS",
+    "PUBLISHED_SUFFIX",
+    "REPAIRED_PRESETS",
     "get_preset",
+    "has_published_twin",
+    "published_preset_name",
+    "resolve_model_name",
     "config_to_dict",
     "preset_from_effective_config",
 ]

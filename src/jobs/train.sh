@@ -86,11 +86,22 @@ REQUIRE_ALL_TRIALS=(0 0 0 0 1)        # the same-sims retrain is D0 only
 USES_CACHE=(1 1 1 1 0)                # the clone cache holds (25, top_k, 45) clone
                                       # sets, which DominantClone does not read
 
+# Every run here is clonemlp, cloneatt or dominantclone, and every one of them
+# relied on the PUBLISHED preset defaults for the fields it does not pass --
+# R0 names --z-score-x none but never names --input-space, R4 names
+# --freq-renorm but neither --freq-mode nor --attn-ln nor --tail-bound, D0
+# names --require-all-trials and nothing else. On 2026-09-25 --model clonemlp
+# and friends were repointed at the repaired configurations, so --published is
+# added below to every run: it restores exactly the defaults these five
+# command lines were written against. A per-run flag still wins over it (D0's
+# --require-all-trials is applied on top of the published preset and gives
+# D0's config either way), so no run's effective config changes.
 # Build the full command for one run index into the global array CMD.
 build_cmd() {
   local i="$1"
   CMD=(python -m cancer_sbi.cli.train
        --model "${MODEL[$i]}"
+       --published
        --data-root "$CANCER_SBI_DATA_ROOT"
        --split "$CANCER_SBI_SPLIT"
        --ckpt-dir "$RUNS/${RUNNAME[$i]}/checkpoints"

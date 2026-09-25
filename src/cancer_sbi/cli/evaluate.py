@@ -46,12 +46,13 @@ from cancer_sbi.cli import (
     add_data_root_argument,
     add_device_argument,
     add_model_argument,
+    add_published_argument,
     add_split_argument,
     default_run_dir,
     require_path,
     resolve_device,
 )
-from cancer_sbi.config import get_preset
+from cancer_sbi.config import get_preset, resolve_model_name
 
 #: Checkpoint directory name every evaluation script read, on every model
 #: (``Base_NPE/z-score_violin.py:105``, ``SetTransformer_NPE/z-score_violin.py``,
@@ -82,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_model_argument(parser)
+    add_published_argument(parser)
     add_data_root_argument(parser)
     add_split_argument(parser)
     add_device_argument(parser)
@@ -272,7 +274,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     split_path = require_path(args.split, "--split", SPLIT_ENV)
     device = resolve_device(args.device)
 
-    preset = get_preset(args.model)
+    # --published maps --model X onto X_published (the model as published);
+    # without it --model X is the repaired default of 2026-09-25. `preset.name`
+    # carries the resolved name from here on, and it is that name -- not
+    # args.model -- that resolve_eval_config cross-checks against the
+    # checkpoint and falls back on.
+    try:
+        preset = get_preset(resolve_model_name(args.model, args.published))
+    except KeyError as exc:
+        raise SystemExit(str(exc).strip('"')) from exc
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(preset.name)
     ckpt_path = Path(args.ckpt) if args.ckpt else run_dir / EVAL_CKPT_DIRNAME / "best.pt"
     # None unless --resume-dir was given: see the Trainer block below for why

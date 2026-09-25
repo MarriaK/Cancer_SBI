@@ -120,11 +120,16 @@ NUM_INDUCING=("" "" "" "" "" "" "" 64 64 "" "" "")
 RUNSEED=("" "" "" "" 1 "" "" "" "" 1 2 "")
 USES_CACHE=(1 1 1 1 1 1 1 1 1 1 1 1)   # every run reads clone sets
 
+# All twelve runs are cloneatt and were written against the PUBLISHED preset
+# defaults, so --published is added to every one of them: see the note in
+# train.sh. R18's --tail-bound 5 and R21/R24's --d-model 256 still win; what
+# --published restores is the 3.0 and the 128 the other runs rely on.
 # Build the full command for one run index into the global array CMD.
 build_cmd() {
   local i="$1"
   CMD=(python -m cancer_sbi.cli.train
        --model "${MODEL[$i]}"
+       --published
        --data-root "$CANCER_SBI_DATA_ROOT"
        --split "$CANCER_SBI_SPLIT"
        --ckpt-dir "$RUNS/${RUNNAME[$i]}/checkpoints"

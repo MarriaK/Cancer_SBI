@@ -80,7 +80,12 @@ from cancer_sbi.cli import (  # noqa: E402
     require_path,
     resolve_device,
 )
-from cancer_sbi.config import PRESETS, config_to_dict, get_preset  # noqa: E402
+from cancer_sbi.config import (  # noqa: E402
+    PRESETS,
+    config_to_dict,
+    get_preset,
+    resolve_model_name,
+)
 
 N_ARMS = 44
 
@@ -164,6 +169,11 @@ def test_sim_ids(dataset, n_expected):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, choices=sorted(PRESETS))
+    ap.add_argument("--published", action="store_true",
+                    help="use the model AS PUBLISHED instead of the repaired default that "
+                         "--model has named since 2026-09-25; equivalent to "
+                         "--model <name>_published. An error for armtoken and hybrid, which "
+                         "have no published version.")
     ap.add_argument("--data-root", type=Path, default=os.environ.get(DATA_ROOT_ENV),
                     help="folder holding sim1/, sim2/, ... "
                          f"Falls back to ${DATA_ROOT_ENV}.")
@@ -223,7 +233,15 @@ def main(argv=None):
     from cancer_sbi.evaluation import posterior as posterior_mod
     from cancer_sbi.training.trainer import build_optimizer, build_training_components
 
-    preset = get_preset(args.model)
+    # --published maps --model X onto X_published. Everything downstream --
+    # the preset, the checkpoint cross-check, the .npz's "model" field and its
+    # file name -- uses the RESOLVED name, so a published-model run and a
+    # repaired-model run never overwrite each other's output file.
+    try:
+        model_name = resolve_model_name(args.model, args.published)
+    except KeyError as exc:
+        raise SystemExit(str(exc).strip('"')) from exc
+    preset = get_preset(model_name)
     data_root = require_path(args.data_root, "--data-root", DATA_ROOT_ENV)
     split_path = require_path(args.split, "--split", SPLIT_ENV)
     out_dir = os.path.abspath(os.path.expanduser(args.out_dir))
@@ -235,7 +253,7 @@ def main(argv=None):
     )
 
     device = resolve_device(args.device)
-    print(f"model={args.model}  origin={preset.origin}  device={device}  seed={args.seed}", flush=True)
+    print(f"model={model_name}  origin={preset.origin}  device={device}  seed={args.seed}", flush=True)
 
     # load_split returns a dict. Evaluation scores the TEST ids by default, so
     # `val_ids` is not passed to the builders and the middle element of the
@@ -267,7 +285,7 @@ def main(argv=None):
     # loader holds.
     eval_cfg = posterior_mod.resolve_eval_config(
         ckpt_path,
-        args.model,
+        model_name,
         z_score_x=args.z_score_x,
         input_space=args.input_space,
         freq_renorm=args.freq_renorm,
@@ -275,6 +293,16 @@ def main(argv=None):
         device=device,
     )
     preset = eval_cfg.preset
+    # The name this run is LABELLED with is the resolved preset's, not the one
+    # typed. They differ on exactly one path: a checkpoint with no
+    # effective_config, where resolve_eval_config falls back to the published
+    # twin (2026-09-25). `--model clonemlp` over the cluster's legacy published
+    # checkpoint therefore writes posteriors_clonemlp_published.npz and records
+    # model="clonemlp_published" -- which is what was actually evaluated, and
+    # keeps that file from colliding with a repaired clonemlp run in the same
+    # --out-dir. poster_metrics.MODEL_ORDER carries both names, so either file
+    # is still discovered.
+    model_name = preset.name
 
     # val_ids is handed to the builders only for --partition val, so the default
     # path builds exactly the loaders it always did.
@@ -391,7 +419,7 @@ def main(argv=None):
 
     _as_dict = config_to_dict(preset)
     meta = {
-        "model": args.model,
+        "model": model_name,
         "folder": preset.origin,
         "checkpoint": str(ckpt_path),
         "checkpoints_not_used": others,
@@ -423,7 +451,7 @@ def main(argv=None):
     }
 
     out_path = os.path.join(
-        out_dir, output_filename(args.model, args.limit, args.run_tag, args.partition))
+        out_dir, output_filename(model_name, args.limit, args.run_tag, args.partition))
     np.savez_compressed(
         out_path,
         theta_true=theta_np,

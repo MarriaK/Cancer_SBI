@@ -53,11 +53,18 @@ def config_from_argv(argv, model="clonemlp"):
 
 # ---------------------------------------------------------------------------
 # 1. Absence of every new flag leaves the published values in place.
+#
+# 2026-09-25: these target the ``*_published`` presets. The bare names
+# `clonemlp`, `cloneatt` and `dominantclone` were repointed at the repaired
+# configurations on that date (cancer_sbi/config.py, "The repaired defaults"),
+# and the claim being tested here -- "an untouched command line reproduces the
+# published run" -- is now a claim about the published presets specifically.
+# The new defaults have their own assertions in section 1b.
 # ---------------------------------------------------------------------------
 
 
 def test_new_flags_absent_keeps_published_defaults():
-    cfg = config_from_argv([])
+    cfg = config_from_argv([], model="clonemlp_published")
     assert cfg.flow.z_score_x == "none"
     assert cfg.encoder.input_space == "log2"
     assert cfg.encoder.freq_renorm is False
@@ -70,7 +77,11 @@ def test_new_flags_absent_keeps_published_defaults():
 def test_new_flags_absent_keeps_published_defaults_for_every_preset():
     # dominantclone is the one preset whose flow already whitens (trap 1); the
     # flags must not flatten that to a single tree-wide value.
-    expected = {"clonemlp": "none", "cloneatt": "none", "dominantclone": "structured"}
+    expected = {
+        "clonemlp_published": "none",
+        "cloneatt_published": "none",
+        "dominantclone_published": "structured",
+    }
     for model, z in expected.items():
         cfg = config_from_argv([], model=model)
         assert cfg.flow.z_score_x == z, model
@@ -78,6 +89,92 @@ def test_new_flags_absent_keeps_published_defaults_for_every_preset():
         assert cfg.encoder.freq_renorm is False, model
         assert cfg.data.num_workers == 0, model
         assert cfg.data.require_all_trials is False, model
+
+
+# ---------------------------------------------------------------------------
+# 1b. The repaired defaults (2026-09-25). Exactly the fields that changed, with
+# the run each one comes from; everything else must still be the published
+# value, which is what makes the `replace`-based presets readable as a diff.
+# Evidence: docs/CAMPAIGN_REPORT_2026-09-24.md section 4 and findings 2, 4, 8.
+# ---------------------------------------------------------------------------
+
+
+def test_clonemlp_defaults_to_run_r2():
+    cfg = config_from_argv([])
+    assert cfg.name == "clonemlp"
+    assert cfg.flow.z_score_x == "structured"       # R1
+    assert cfg.encoder.input_space == "copy"        # R2
+    # ... and nothing else moved.
+    pub = get_preset("clonemlp_published")
+    assert cfg.flow == replace(pub.flow, z_score_x="structured")
+    assert cfg.encoder == replace(pub.encoder, input_space="copy")
+    assert cfg.optim == pub.optim
+    assert cfg.data.require_all_trials is pub.data.require_all_trials
+
+
+def test_cloneatt_defaults_to_run_r26():
+    cfg = config_from_argv([], model="cloneatt")
+    assert cfg.name == "cloneatt"
+    assert cfg.flow.z_score_x == "structured"       # R1 onwards
+    assert cfg.flow.num_transforms == 3             # R12
+    assert cfg.flow.tail_bound == 5.0               # R18
+    assert cfg.encoder.input_space == "copy"        # R6
+    assert cfg.encoder.freq_mode == "feature"       # R5
+    assert cfg.encoder.attn_ln is True              # R5
+    assert cfg.encoder.d_model == 256               # R21 / R26
+    # R26 keeps these four at CloneAtt's published values.
+    assert cfg.encoder.n_heads == 8
+    assert cfg.encoder.num_inducing == 32
+    assert cfg.encoder.freq_renorm is False
+    assert cfg.encoder.attn_scale == "published"
+    assert cfg.encoder.trial_pool == "mean"
+    # Trap 5's DOCUMENTARY field records the published stack and must not be
+    # rewritten by the wired `attn_ln`; verify_refactor.py reads it.
+    assert cfg.encoder.layer_norm_in_attention is False
+    pub = get_preset("cloneatt_published")
+    assert cfg.flow == replace(
+        pub.flow, z_score_x="structured", num_transforms=3, tail_bound=5.0
+    )
+    assert cfg.encoder == replace(
+        pub.encoder,
+        input_space="copy",
+        freq_mode="feature",
+        attn_ln=True,
+        d_model=256,
+    )
+    assert cfg.optim == pub.optim
+
+
+def test_dominantclone_defaults_to_run_d0():
+    cfg = config_from_argv([], model="dominantclone")
+    assert cfg.name == "dominantclone"
+    assert cfg.data.require_all_trials is True      # D0: the same 651 test cases
+    pub = get_preset("dominantclone_published")
+    # The ONLY change. No model repair was ever applied to DeepSet.
+    assert cfg.encoder == pub.encoder
+    assert cfg.flow == pub.flow
+    assert cfg.optim == pub.optim
+    assert cfg.train.reload_best == pub.train.reload_best
+
+
+def test_armtoken_default_carries_the_tail_bound_every_run_passed():
+    cfg = config_from_argv([], model="armtoken")
+    assert cfg.flow.tail_bound == 5.0               # AT0
+    assert cfg.flow.num_transforms == 3
+    assert cfg.flow.z_score_x == "structured"
+    assert cfg.encoder.input_space == "copy"
+    # Matrix 8 said leave both of these off.
+    assert cfg.encoder.arm_feature_norm == "none"
+    assert cfg.encoder.arm_context_norm is False
+
+
+def test_hybrid_default_is_unchanged():
+    """It never beat ArmToken; it is kept for the record, not repaired."""
+    cfg = config_from_argv([], model="hybrid")
+    assert cfg.flow.tail_bound == 5.0
+    assert cfg.flow.num_transforms == 3
+    assert cfg.encoder.input_space == "copy"
+    assert cfg.encoder.d_model == 256
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +198,13 @@ def test_z_score_x_flag_is_the_regression_for_line_229():
     the flag, because the flag did not exist and the ``flow`` block was carried
     through unchanged. R0-vs-R1 turns on exactly this.
     """
-    assert get_preset("clonemlp").flow.z_score_x == "none"
-    assert config_from_argv(["--z-score-x", "structured"]).flow.z_score_x == "structured"
+    assert get_preset("clonemlp_published").flow.z_score_x == "none"
+    assert (
+        config_from_argv(
+            ["--z-score-x", "structured"], model="clonemlp_published"
+        ).flow.z_score_x
+        == "structured"
+    )
 
 
 @pytest.mark.parametrize("space", ["log2", "copy"])
@@ -111,7 +213,11 @@ def test_input_space_flag_reaches_the_encoder(space):
 
 
 def test_freq_renorm_flag_reaches_the_encoder():
-    cfg = config_from_argv(["--freq-renorm"], model="cloneatt")
+    # cloneatt_published, not cloneatt: the repaired preset carries
+    # freq_mode="feature" (run R5), which removes the multiply this flag
+    # renormalises -- so the pair is refused there. See
+    # test_freq_renorm_alone_is_refused_against_the_repaired_cloneatt.
+    cfg = config_from_argv(["--freq-renorm"], model="cloneatt_published")
     assert cfg.encoder.freq_renorm is True
 
 
@@ -122,8 +228,14 @@ def test_num_workers_flag_reaches_the_data_config(n):
 
 def test_require_all_trials_flag_reaches_the_data_config():
     """DominantClone's opt-in to the clone-set models' sim set (trap 10)."""
-    assert config_from_argv([], model="dominantclone").data.require_all_trials is False
-    cfg = config_from_argv(["--require-all-trials"], model="dominantclone")
+    # The published preset keeps trap 10's NaN-padded 707-case set; the
+    # repaired one (run D0) is the flag's value already.
+    assert (
+        config_from_argv([], model="dominantclone_published").data.require_all_trials
+        is False
+    )
+    assert config_from_argv([], model="dominantclone").data.require_all_trials is True
+    cfg = config_from_argv(["--require-all-trials"], model="dominantclone_published")
     assert cfg.data.require_all_trials is True
     # A one-value change: nothing else in the data block moves.
     assert cfg.data.dataset == "dominant_clone"
@@ -147,7 +259,7 @@ def test_deterministic_flag_parses_and_is_off_by_default():
 
 
 def test_matrix_two_flags_absent_keeps_published_defaults():
-    for model in ("clonemlp", "cloneatt", "dominantclone"):
+    for model in ("clonemlp_published", "cloneatt_published", "dominantclone_published"):
         cfg = config_from_argv([], model=model)
         preset = get_preset(model)
         assert cfg.encoder.freq_mode == "weight", model
@@ -247,9 +359,32 @@ def test_freq_mode_feature_and_freq_renorm_are_refused_together():
     """'feature' removes the multiply, so there is nothing left to renormalise."""
     with pytest.raises(ValueError, match="freq-renorm"):
         config_from_argv(["--freq-mode", "feature", "--freq-renorm"], model="cloneatt")
-    # Either one alone is fine.
+    with pytest.raises(ValueError, match="freq-renorm"):
+        config_from_argv(
+            ["--freq-mode", "feature", "--freq-renorm"], model="cloneatt_published"
+        )
+    # Either one alone is fine, on the preset whose mode is the published one.
     assert config_from_argv(["--freq-mode", "feature"], model="cloneatt").encoder.freq_mode == "feature"
-    assert config_from_argv(["--freq-renorm"], model="cloneatt").encoder.freq_renorm is True
+    assert (
+        config_from_argv(["--freq-renorm"], model="cloneatt_published").encoder.freq_renorm
+        is True
+    )
+
+
+def test_freq_renorm_alone_is_refused_against_the_repaired_cloneatt():
+    """2026-09-25: the contradiction can now come from the PRESET, not the flags.
+
+    `cloneatt` carries freq_mode="feature" since the defaults changed, so R4's
+    command line -- `--freq-renorm` and nothing else -- describes a network
+    with no multiply to renormalise. It is refused rather than silently
+    resolved, and the message names --published, which is how R4 is reproduced.
+    """
+    with pytest.raises(ValueError, match="--published"):
+        config_from_argv(["--freq-renorm"], model="cloneatt")
+    # The flag stays a warn-and-ignore for every preset that does not read it,
+    # including the hybrid, whose clone branch carries freq_mode="feature" too.
+    for model in ("clonemlp", "dominantclone", "armtoken", "hybrid"):
+        assert config_from_argv(["--freq-renorm"], model=model).encoder.freq_renorm is False
 
 
 def test_input_space_now_reaches_the_set_transformer_too():
@@ -323,7 +458,9 @@ def test_build_embedding_net_forwards_the_new_encoder_fields():
     assert any(isinstance(m, nn.LayerNorm) for m in encoder.modules())
 
     # And the default still builds the published network.
-    published = build_embedding_net(get_preset("cloneatt").encoder, "cpu").trial_encoder
+    published = build_embedding_net(
+        get_preset("cloneatt_published").encoder, "cpu"
+    ).trial_encoder
     assert published.input_proj.in_features == 44
     assert published.attn_dropout is None
     assert not any(isinstance(m, nn.LayerNorm) for m in published.modules())
@@ -520,7 +657,7 @@ def test_clonemlp_embedding_net_forward_on_a_real_batch():
 
     from cancer_sbi.data.clone_sets import CNASimsDataset
 
-    preset = get_preset("clonemlp")
+    preset = get_preset("clonemlp_published")
     assert preset.encoder.input_space == "log2"
     assert preset.encoder.freq_renorm is False
 
@@ -748,7 +885,9 @@ def test_flag_that_the_preset_ignores_is_warned_about(argv, model, needle, capsy
         (["--input-space", "copy"], "clonemlp"),
         # Matrix 2 made this one a real switch for cloneatt too.
         (["--input-space", "copy"], "cloneatt"),
-        (["--freq-renorm"], "cloneatt"),
+        # cloneatt_published: the repaired cloneatt refuses this flag outright
+        # (its freq_mode is "feature"), which is tested separately.
+        (["--freq-renorm"], "cloneatt_published"),
         (["--top-k", "50"], "clonemlp"),
         (["--require-all-trials"], "dominantclone"),
         (["--freq-mode", "feature"], "cloneatt"),
@@ -890,8 +1029,8 @@ def test_without_deterministic_neither_happens(tmp_path, monkeypatch):
 
 
 def test_matrix_three_flags_absent_keeps_published_defaults():
-    """Omit all three and every preset keeps the run it produced before."""
-    for model in ("clonemlp", "cloneatt", "dominantclone"):
+    """Omit all three and every published preset keeps the run it produced."""
+    for model in ("clonemlp_published", "cloneatt_published", "dominantclone_published"):
         cfg = config_from_argv([], model=model)
         # 0.2, from */main.py:35 -- the published value, not 0.
         assert cfg.flow.dropout_probability == 0.2, model
@@ -905,8 +1044,9 @@ def test_matrix_three_flags_absent_keeps_published_defaults():
 def test_flow_dropout_reaches_every_preset(model):
     cfg = config_from_argv(["--flow-dropout", "0.1"], model=model)
     assert cfg.flow.dropout_probability == 0.1
-    # Nothing else in the flow block moves with it.
-    assert cfg.flow.num_transforms == 5
+    # Nothing else in the flow block moves with it -- whatever the preset's own
+    # num_transforms is (cloneatt's is R12's 3 since 2026-09-25).
+    assert cfg.flow.num_transforms == get_preset(model).flow.num_transforms
     assert cfg.flow.hidden_features == 50
 
 
@@ -1029,13 +1169,13 @@ def test_a_checkpoint_without_the_matrix_three_keys_still_rebuilds():
 
 
 def test_matrix_four_flags_absent_keeps_published_defaults():
-    """Omit all six and every preset keeps the run it produced before."""
-    for model in ("clonemlp", "cloneatt", "dominantclone"):
+    """Omit all six and every published preset keeps the run it produced."""
+    for model in ("clonemlp_published", "cloneatt_published", "dominantclone_published"):
         cfg = config_from_argv([], model=model)
         assert cfg.encoder.attn_scale == "published", model
         assert cfg.encoder.trial_pool == "mean", model
         assert cfg.flow.tail_bound == 3.0, model
-    published = config_from_argv([], model="cloneatt").encoder
+    published = config_from_argv([], model="cloneatt_published").encoder
     assert (published.d_model, published.n_heads, published.num_inducing) == (
         128,
         8,
@@ -1055,7 +1195,7 @@ def test_tail_bound_reaches_every_preset(model):
     cfg = config_from_argv(["--tail-bound", "5"], model=model)
     assert cfg.flow.tail_bound == 5.0
     # Nothing else in the flow block moves with it.
-    assert cfg.flow.num_transforms == 5
+    assert cfg.flow.num_transforms == get_preset(model).flow.num_transforms
     assert cfg.flow.hidden_features == 50
 
 
@@ -1172,7 +1312,9 @@ def test_capacity_knobs_change_the_parameter_count():
     """R21/R23 are bigger networks, R22 is the same one differently split."""
 
     def _count(argv):
-        cfg = config_from_argv(argv, model="cloneatt")
+        # cloneatt_published: the repaired preset already carries R26's
+        # d_model 256, so "bigger than the default" would be vacuous on it.
+        cfg = config_from_argv(argv, model="cloneatt_published")
         return sum(p.numel() for p in build_embedding_net(cfg.encoder, "cpu").parameters())
 
     published = _count([])

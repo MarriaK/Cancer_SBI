@@ -120,11 +120,18 @@ NUM_INDUCING=("" "" "" "")
 RUNSEED=(1 2 "" 1)
 USES_CACHE=(1 1 1 1)
 
+# All four runs are cloneatt and were written against the PUBLISHED preset
+# defaults, so --published is added to every one of them: see the note in
+# train.sh. R26 is the run the repaired `cloneatt` preset now reproduces, and
+# it still reaches that config here by naming its flags on top of the
+# published one -- which is what makes this script a reproduction rather than
+# a restatement of today's defaults.
 # Build the full command for one run index into the global array CMD.
 build_cmd() {
   local i="$1"
   CMD=(python -m cancer_sbi.cli.train
        --model "${MODEL[$i]}"
+       --published
        --data-root "$CANCER_SBI_DATA_ROOT"
        --split "$CANCER_SBI_SPLIT"
        --ckpt-dir "$RUNS/${RUNNAME[$i]}/checkpoints"
@@ -173,13 +180,18 @@ build_cmd() {
 }
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
+  # 0-3, not train4.sh's 0-11: this matrix has FOUR runs (#SBATCH --array=0-3).
+  # The copied 0-11 made `set -u` abort the dry run on RUNNAME[4] after printing
+  # all four commands, so the exit status said "failed" while the output was
+  # complete. Found in the 2026-09-25 audit of these scripts; the sbatch path
+  # was never affected, since SLURM only ever passed 0-3.
+  for i in 0 1 2 3; do
     build_cmd "$i"
     echo "# ${RUNNAME[$i]}  model=${MODEL[$i]}  ckpt=$RUNS/${RUNNAME[$i]}/checkpoints"
     echo "${CMD[@]}"
   done
   # A dry run reports the split gate rather than failing on it: the point of the
-  # dry run is to read the twelve command lines, and it is usually done on a
+  # dry run is to read the four command lines, and it is usually done on a
   # machine that does not have the cluster's split file at all.
   if [ "${ALLOW_TEST_AS_VAL:-0}" = "1" ]; then
     echo "# split gate: WAIVED by ALLOW_TEST_AS_VAL=1 ($CANCER_SBI_SPLIT)"

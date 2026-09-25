@@ -24,10 +24,31 @@ All three are defined as frozen presets in [`src/cancer_sbi/config.py`](src/canc
 one `ModelPreset` each, recording the encoder, flow, optimiser and training settings that the
 original per-folder scripts used.
 
+**Since 2026-09-25 those presets default to the repaired configurations, not the published ones.**
+`--model clonemlp`, `--model cloneatt` and `--model dominantclone` now build the best *calibrated*
+configuration the 2026-09-24 campaign found — runs R2, R26 and D0 — chosen on calibration first and
+on accuracy only where the difference is outside the measured seed band. The published models are
+preserved byte for byte as `clonemlp_published`, `cloneatt_published` and `dominantclone_published`,
+and are selected with `--published` (or by naming the suffixed model directly) on `cli/train.py`,
+`cli/evaluate.py` and `evaluation/sample_posteriors.py`. What changed per model, and why, is written
+beside each preset in `config.py` under "The repaired defaults"; the evidence is
+[`docs/CAMPAIGN_REPORT_2026-09-24.md`](docs/CAMPAIGN_REPORT_2026-09-24.md), §4 and findings 2, 4
+and 8.
+
 ## Results
 
 From 651 held-out simulations (707 for DominantClone), 5,000 posterior draws each. Full tables in
 [`results/`](results/).
+
+**This table is the models as published** — i.e. what `--published` now reproduces. It is not what
+`--model clonemlp` builds any more: the repaired defaults score 0.363 ± 0.053 (CloneMLP-R2),
+0.579 ± 0.015 (CloneAtt-R26) and 0.177 ± 0.017 (DominantClone-D0, on the same 651 cases as everyone
+else). The repaired CloneMLP scores **below** the published 0.472 by design: calibration was
+preferred over sharpness. The published 0.472 came with 39 of 44 arms failing SBC, 95 % coverage
+0.922 and a pooled std of z of 0.86 — it was sharp because it was overconfident — while R2 reaches
+coverage 0.945 and std z 1.00. See
+[`docs/CAMPAIGN_REPORT_2026-09-24.md`](docs/CAMPAIGN_REPORT_2026-09-24.md) §4 for the seed-averaged
+comparison, and ArmToken-NPE (0.898 ± 0.002), which is neither of these three.
 
 | Model | true R² | squared Pearson r² | validation NLL | SBC failures (FDR) |
 | --- | --- | --- | --- | --- |

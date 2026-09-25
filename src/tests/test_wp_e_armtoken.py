@@ -491,8 +491,11 @@ def test_the_three_published_presets_are_untouched():
         assert enc.d_global is None
         assert enc.n_arm_layers is None
         assert enc.arm_num_inducing is None
-    assert get_preset("cloneatt").flow.z_score_x == "none"
-    assert get_preset("cloneatt").encoder.attn_ln is False   # trap 5
+    # The PUBLISHED preset, since 2026-09-25: `cloneatt` now names R26, whose
+    # flow whitens theta and whose attention stack has LayerNorm on (run R5).
+    # Trap 5 is a statement about the published model and is asserted there.
+    assert get_preset("cloneatt_published").flow.z_score_x == "none"
+    assert get_preset("cloneatt_published").encoder.attn_ln is False   # trap 5
 
 
 def test_cloneatt_forward_is_byte_identical_to_head(tmp_path):

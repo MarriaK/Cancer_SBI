@@ -1,5 +1,65 @@
 # `jobs/` — the SLURM scripts
 
+## Defaults changed on 2026-09-25
+
+`--model clonemlp`, `--model cloneatt` and `--model dominantclone` no longer mean "the model as
+published". They now build the best **honest** configuration the 2026-09-24 campaign found — R2,
+R26 and D0 respectively — chosen on calibration first and accuracy only outside the seed band. What
+changed per model, and why, is written beside each preset in `src/cancer_sbi/config.py` under
+"The repaired defaults"; the evidence is `docs/CAMPAIGN_REPORT_2026-09-24.md` §4 and findings 2, 4
+and 8.
+
+| you want | you pass |
+| --- | --- |
+| the repaired default (R2 / R26 / D0) | `--model clonemlp` (nothing else) |
+| the model **as published** | `--model clonemlp --published`, or `--model clonemlp_published` |
+
+`--published` exists on `cli/train.py`, `cli/evaluate.py` and `evaluation/sample_posteriors.py`, and
+is an **error** for `armtoken` and `hybrid`, which were introduced by the campaign and have no
+published version.
+
+Two consequences for this directory:
+
+* **`train.sh`, `train2.sh`, `train3.sh`, `train4.sh` and `train4b.sh` now pass `--published` on
+  every run.** Each of those runs is a campaign run — "the published preset plus the flags this row
+  names" — and each relied on the old defaults for the fields it does not name (R0 never names
+  `--input-space`; R5–R26 never name `--tail-bound` until R18; nothing before matrix 4 names
+  `--d-model`). The flag restores exactly those, so every run's effective config is unchanged. A
+  per-run flag still wins over it, so D0's `--require-all-trials` lands on top of the published
+  DeepSet as before.
+* **`train5.sh`–`train8.sh` are untouched.** They are `armtoken` and `hybrid` runs and every one of
+  them already passes `--tail-bound 5` explicitly, so the ArmToken preset now carrying `5.0` (it
+  always should have — no ArmToken run was ever made at sbi's 3.0) changes nothing they do.
+
+A checkpoint records the **resolved** preset name, so evaluation rebuilds what training built. A
+checkpoint written *before* 2026-09-24 carries no config at all — the three published checkpoints on
+the cluster — and `resolve_eval_config` falls back to the `_published` preset for it, with a warning
+that says so.
+
+### Two things to get right when evaluating
+
+**`--published` selects the preset, not a path.** It does not move any checkpoint. The cluster's
+published checkpoints are still where they always were, under the **bare** name
+(`runs/clonemlp/checkpoints/best.pt`, and likewise for the other two), and they carry no
+`effective_config`. So evaluating them is plain `--model clonemlp` **without** the flag: the
+no-config fallback already picks `clonemlp_published` and says so in a `[warn]` line. Passing
+`--published` as well is harmless for the architecture but changes the default run directory to
+`runs/clonemlp_published/`, where there is nothing — pass `--ckpt` if you do.
+
+**A checkpoint trained with `--published` stores `model=<name>_published`,** and every consumer
+cross-checks that name against `--model`. For such a run, pass `MODEL=<name>_published` to
+`sample.sh`, `recalibrate.sh`, `ensemble.sh`, `finaltest.sh` and `treetest.sh` — not the bare name.
+Get it wrong and nothing is silently mis-scored; you get
+
+```
+<ckpt> was trained as model 'clonemlp_published', but --model says 'clonemlp'.
+Evaluate it as 'clonemlp_published'.
+```
+
+Its stage-1 output is `posteriors_<name>_published[_<tag>].npz`, which `analyze.sh` and `shrink.sh`
+already know about, so a published run and a repaired run of the same model never overwrite each
+other.
+
 `/home` on the cluster is `noexec`, so nothing runs outside SLURM. Every script here activates
 `cancer-sbi`, puts the conda `lib` first on `LD_LIBRARY_PATH` (otherwise scipy dies with a
 `GLIBCXX_3.4.30` ImportError), writes its logs to absolute paths under

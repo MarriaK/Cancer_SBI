@@ -36,6 +36,7 @@ import torch
 from cancer_sbi.config import (
     ARMTOKEN,
     CLONEATT,
+    CLONEATT_PUBLISHED,
     EFFECTIVE_CONFIG_KEY,
     HYBRID,
     PRESETS,
@@ -210,7 +211,9 @@ def test_hybrid_preset_fields():
     assert HYBRID.flow.z_score_x == "structured"
     assert HYBRID.flow.num_transforms == 3
     assert HYBRID.flow.hidden_features == 50
-    # In the preset on purpose, unlike every preset above it -- see config.py.
+    # In the preset on purpose -- see config.py. Since 2026-09-25 ARMTOKEN and
+    # the repaired CLONEATT carry it too; only the `*_published` presets keep
+    # sbi's 3.0.
     assert HYBRID.flow.tail_bound == 5.0
     assert HYBRID.flow.dropout_probability == 0.2
 
@@ -230,11 +233,16 @@ def test_n_heads_divides_both_branches():
 
 
 def test_the_published_presets_are_untouched():
-    for name in ("clonemlp", "cloneatt", "dominantclone"):
+    # The `*_published` names, since 2026-09-25: the bare ones were repointed
+    # at the repaired configurations (cancer_sbi/config.py). Matrix 6 must not
+    # have edited either set.
+    for name in ("clonemlp_published", "cloneatt_published", "dominantclone_published"):
         preset = get_preset(name)
         assert preset.flow.hidden_features == 50
         assert preset.train.lr_plateau is False
-    assert CLONEATT.flow.tail_bound == 3.0
+    assert CLONEATT_PUBLISHED.flow.tail_bound == 3.0
+    # ... and the repaired cloneatt is R26, which carries R18's tail bound.
+    assert CLONEATT.flow.tail_bound == 5.0
     assert ARMTOKEN.encoder.kind == "armtoken"
 
 

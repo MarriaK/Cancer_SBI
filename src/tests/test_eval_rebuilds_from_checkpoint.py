@@ -46,10 +46,18 @@ needs_data = pytest.mark.skipif(
 )
 
 #: The three repair runs as (name, model, extra train flags).
+#:
+#: The models are the ``*_published`` presets, and deliberately so: R1, R2 and
+#: R4 are campaign runs, and a campaign run is "the published preset plus the
+#: flags this row names" -- which is exactly what jobs/train.sh reproduces with
+#: ``--published``. Since 2026-09-25 the bare names carry the repaired
+#: configurations, so running these rows against them would test a different
+#: network from the one the run made, and R2's ``--input-space copy`` would
+#: stop being a difference at all.
 RUNS = [
-    ("R1", "clonemlp", ["--z-score-x", "structured"]),
-    ("R2", "clonemlp", ["--z-score-x", "structured", "--input-space", "copy"]),
-    ("R4", "cloneatt", ["--z-score-x", "structured", "--freq-renorm"]),
+    ("R1", "clonemlp_published", ["--z-score-x", "structured"]),
+    ("R2", "clonemlp_published", ["--z-score-x", "structured", "--input-space", "copy"]),
+    ("R4", "cloneatt_published", ["--z-score-x", "structured", "--freq-renorm"]),
 ]
 
 
@@ -105,8 +113,15 @@ def _train_tiny(tmp_path, model, extra, tag):
     return ckpt_dir, split_path
 
 
-def _sample(tmp_path, model, ckpt, split_path, argv_extra=(), monkeypatch=None):
-    """Drive the real ``sample_posteriors.main()`` and return (path, meta)."""
+def _sample(tmp_path, model, ckpt, split_path, argv_extra=(), monkeypatch=None,
+            expect_model=None):
+    """Drive the real ``sample_posteriors.main()`` and return (path, meta).
+
+    ``expect_model`` is the name the OUTPUT is labelled with, when that differs
+    from the ``--model`` typed: since 2026-09-25 a checkpoint with no
+    effective_config is rebuilt from the published twin, and the .npz is named
+    and labelled for the preset that was actually used.
+    """
     out_dir = tmp_path / "post"
     argv = [
         "sample_posteriors",
@@ -122,7 +137,7 @@ def _sample(tmp_path, model, ckpt, split_path, argv_extra=(), monkeypatch=None):
     ]
     monkeypatch.setattr(sys, "argv", argv)
     sp.main()
-    path = out_dir / sp.output_filename(model, 1, None)
+    path = out_dir / sp.output_filename(expect_model or model, 1, None)
     with np.load(path, allow_pickle=True) as data:
         meta = json.loads(str(data["meta_json"]))
         assert data["samples"].shape == (1, 32, 44)
@@ -194,7 +209,9 @@ def test_r1_checkpoint_does_not_load_into_a_preset_built_flow(tmp_path):
     from cancer_sbi.data.loaders import build_clone_set_dataloaders
     from cancer_sbi.training.trainer import build_training_components
 
-    ckpt_dir, _ = _train_tiny(tmp_path, "clonemlp", ["--z-score-x", "structured"], "R1x")
+    ckpt_dir, _ = _train_tiny(
+        tmp_path, "clonemlp_published", ["--z-score-x", "structured"], "R1x"
+    )
     state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
 
     names = _sim_names(3)
@@ -202,7 +219,7 @@ def test_r1_checkpoint_does_not_load_into_a_preset_built_flow(tmp_path):
         str(DATA_ROOT), names, names, top_k=100, batch_size=2
     )
     preset_built = build_training_components(
-        get_preset("clonemlp"), train_loader, device="cpu", log_progress=False
+        get_preset("clonemlp_published"), train_loader, device="cpu", log_progress=False
     ).density_estimator
 
     with pytest.raises(RuntimeError):
@@ -210,7 +227,9 @@ def test_r1_checkpoint_does_not_load_into_a_preset_built_flow(tmp_path):
 
     # And the checkpoint's own config does build something that loads.
     rebuilt = build_training_components(
-        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "clonemlp").preset,
+        posterior_mod.resolve_eval_config(
+            ckpt_dir / "best.pt", "clonemlp_published"
+        ).preset,
         train_loader,
         device="cpu",
         log_progress=False,
@@ -227,35 +246,126 @@ def test_r1_checkpoint_does_not_load_into_a_preset_built_flow(tmp_path):
 def test_old_style_checkpoint_still_loads_with_a_warning(
     tmp_path, monkeypatch, capsys
 ):
-    """A checkpoint with no ``effective_config`` key -- every one on the cluster."""
-    ckpt_dir, split_path = _train_tiny(tmp_path, "clonemlp", [], "R0")
+    """A checkpoint with no ``effective_config`` key -- every one on the cluster.
+
+    Since 2026-09-25 this is also the test of WHICH preset the fallback picks:
+    the file is a published-CloneMLP checkpoint and it is evaluated as
+    ``--model clonemlp``, whose defaults are now R2's. Falling back to those
+    would put a standardising transform in the flow the file does not have.
+    """
+    ckpt_dir, split_path = _train_tiny(tmp_path, "clonemlp_published", [], "R0")
 
     old_style = ckpt_dir / "old_best.pt"
     payload = torch.load(ckpt_dir / "best.pt", map_location="cpu")
     payload.pop(EFFECTIVE_CONFIG_KEY)
     torch.save(payload, old_style)
 
-    _, meta = _sample(
-        tmp_path, "clonemlp", old_style, split_path, monkeypatch=monkeypatch
+    # Sampled as `--model clonemlp`, exactly as the cluster's legacy published
+    # checkpoints are evaluated -- but labelled, and named, with what was
+    # actually rebuilt.
+    path, meta = _sample(
+        tmp_path, "clonemlp", old_style, split_path, monkeypatch=monkeypatch,
+        expect_model="clonemlp_published",
     )
+    assert path.name == "posteriors_clonemlp_published_limit1.npz"
+    assert meta["model"] == "clonemlp_published"
     out = capsys.readouterr().out
     assert "[warn]" in out and "effective_config" in out
+    # The warning names the preset it actually fell back to, and says the bare
+    # name is no longer it.
+    assert "clonemlp_published" in out and "2026-09-25" in out
     assert meta["config_from_checkpoint"] is False
-    # Fell back to the published preset, which is what R0 used anyway.
+    # Fell back to the PUBLISHED preset, which is what R0 used anyway -- not to
+    # today's `clonemlp`, whose z_score_x is "structured".
     assert meta["flow_config"]["z_score_x"] == "none"
+    assert meta["encoder_config"]["input_space"] == "log2"
+
+
+@needs_data
+def test_the_fallback_is_the_published_preset_for_every_repaired_model(tmp_path):
+    """The same rule at the resolver, for all three, without training three models."""
+    ckpt_dir, _ = _train_tiny(tmp_path, "clonemlp_published", [], "R0f")
+    old_style = ckpt_dir / "old_best.pt"
+    payload = torch.load(ckpt_dir / "best.pt", map_location="cpu")
+    payload.pop(EFFECTIVE_CONFIG_KEY)
+    torch.save(payload, old_style)
+
+    for model in ("clonemlp", "cloneatt", "dominantclone"):
+        resolved = posterior_mod.resolve_eval_config(old_style, model)
+        assert resolved.from_checkpoint is False
+        assert resolved.preset == get_preset(model + "_published"), model
+        assert resolved.preset != get_preset(model), model
+    # A model with no published twin falls back to itself rather than raising.
+    for model in ("armtoken", "hybrid"):
+        resolved = posterior_mod.resolve_eval_config(old_style, model)
+        assert resolved.preset == get_preset(model), model
+
+
+@needs_data
+def test_the_fallback_warning_is_branched_for_a_model_with_no_published_twin(
+    tmp_path, capsys
+):
+    """armtoken and hybrid must not be told a published version exists.
+
+    There is none -- both were introduced by the 2026-09-24 campaign -- so the
+    warning has to say that the preset AS IT STANDS TODAY is what gets built,
+    and for armtoken that its tail_bound became 5.0 on 2026-09-25, which is
+    exactly what such a file could not have been trained with.
+    """
+    ckpt_dir, _ = _train_tiny(tmp_path, "clonemlp_published", [], "R0w")
+    old_style = ckpt_dir / "old_best.pt"
+    payload = torch.load(ckpt_dir / "best.pt", map_location="cpu")
+    payload.pop(EFFECTIVE_CONFIG_KEY)
+    torch.save(payload, old_style)
+
+    capsys.readouterr()
+    posterior_mod.resolve_eval_config(old_style, "armtoken")
+    out = capsys.readouterr().out
+    assert "NO published version" in out
+    assert "as it stands today" in out
+    assert "tail_bound became 5.0" in out
+    # It must NOT claim to have used a published preset, or name one.
+    assert "PUBLISHED preset" not in out
+    assert "armtoken_published" not in out
+
+    posterior_mod.resolve_eval_config(old_style, "hybrid")
+    out = capsys.readouterr().out
+    assert "NO published version" in out and "as it stands today" in out
+    # The tail-bound sentence is armtoken's alone.
+    assert "tail_bound became 5.0" not in out
+    assert "PUBLISHED preset" not in out
+
+    # And the three that do have a twin keep the other wording.
+    posterior_mod.resolve_eval_config(old_style, "cloneatt")
+    out = capsys.readouterr().out
+    assert "PUBLISHED preset 'cloneatt_published'" in out
+    assert "NO published version" not in out
+
+
+@needs_data
+def test_a_checkpoint_with_a_config_is_untouched_by_the_fallback(tmp_path):
+    """The fallback is for files that carry nothing; it must not reach the rest."""
+    ckpt_dir, _ = _train_tiny(tmp_path, "clonemlp", [], "R2d")
+    resolved = posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "clonemlp")
+    assert resolved.from_checkpoint is True
+    # The repaired default, read back off the checkpoint rather than guessed.
+    assert resolved.preset.flow.z_score_x == "structured"
+    assert resolved.preset.encoder.input_space == "copy"
 
 
 @needs_data
 def test_overrides_describe_an_old_checkpoint(tmp_path):
     """With no stored config the flags are the only way to say what a run was."""
-    ckpt_dir, _ = _train_tiny(tmp_path, "clonemlp", ["--z-score-x", "structured"], "R1o")
+    ckpt_dir, _ = _train_tiny(
+        tmp_path, "clonemlp_published", ["--z-score-x", "structured"], "R1o"
+    )
     old_style = ckpt_dir / "old_best.pt"
     payload = torch.load(ckpt_dir / "best.pt", map_location="cpu")
     payload.pop(EFFECTIVE_CONFIG_KEY)
     torch.save(payload, old_style)
 
     resolved = posterior_mod.resolve_eval_config(
-        old_style, "clonemlp", z_score_x="structured", input_space="copy"
+        old_style, "clonemlp_published", z_score_x="structured", input_space="copy"
     )
     assert resolved.from_checkpoint is False
     assert resolved.preset.flow.z_score_x == "structured"
@@ -275,12 +385,18 @@ def test_an_override_that_contradicts_the_checkpoint_raises(
     tmp_path, override, needle
 ):
     """Neither side is trusted silently when they disagree."""
-    ckpt_dir, _ = _train_tiny(tmp_path, "clonemlp", ["--z-score-x", "structured"], "R1c")
+    ckpt_dir, _ = _train_tiny(
+        tmp_path, "clonemlp_published", ["--z-score-x", "structured"], "R1c"
+    )
 
     with pytest.raises(ValueError, match="contradict"):
-        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "clonemlp", **override)
+        posterior_mod.resolve_eval_config(
+            ckpt_dir / "best.pt", "clonemlp_published", **override
+        )
     try:
-        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "clonemlp", **override)
+        posterior_mod.resolve_eval_config(
+            ckpt_dir / "best.pt", "clonemlp_published", **override
+        )
     except ValueError as exc:
         assert needle in str(exc)
 
@@ -504,12 +620,18 @@ def _dominant_keeps(name):
     return SimulationDataset(str(DATA_ROOT), sim_ids=[name])[0] is not None
 
 
-def _train_tiny_dominant(tmp_path, split_path, extra, tag):
-    """One epoch of dominantclone on the given split."""
+def _train_tiny_dominant(tmp_path, split_path, extra, tag, model="dominantclone_published"):
+    """One epoch of a DeepSet model on the given split.
+
+    ``dominantclone_published`` by default: since 2026-09-25 the bare name IS
+    run D0 (``require_all_trials=True``), so "the published behaviour, no flag"
+    -- which is what several tests below are about -- can only be reached
+    through the published preset.
+    """
     ckpt_dir = tmp_path / tag / "checkpoints"
     rc = train_cli.main(
         [
-            "--model", "dominantclone",
+            "--model", model,
             "--data-root", str(DATA_ROOT),
             "--split", str(split_path),
             "--out", str(tmp_path / tag),
@@ -533,8 +655,19 @@ def test_require_all_trials_reaches_the_checkpoints_effective_config(tmp_path):
     """It lives in DataConfig, so config_to_dict carries it -- pinned, not assumed."""
     split_path, _, _ = _mixed_dominant_split(tmp_path)
 
-    on = _train_tiny_dominant(tmp_path, split_path, ["--require-all-trials"], "D0")
+    on = _train_tiny_dominant(
+        tmp_path, split_path, ["--require-all-trials"], "D0",
+        model="dominantclone_published",
+    )
     off = _train_tiny_dominant(tmp_path, split_path, [], "Dpub")
+    # And the repaired preset reaches the same place with no flag at all.
+    default_on = _train_tiny_dominant(tmp_path, split_path, [], "D0d",
+                                      model="dominantclone")
+    assert (
+        torch.load(default_on / "best.pt", map_location="cpu")[EFFECTIVE_CONFIG_KEY]
+        ["data"]["require_all_trials"]
+        is True
+    )
 
     for name in ("best.pt", "latest.pt"):
         stored = torch.load(on / name, map_location="cpu")[EFFECTIVE_CONFIG_KEY]
@@ -550,9 +683,12 @@ def test_sample_posteriors_uses_the_restricted_test_set(tmp_path, monkeypatch):
     split_path, complete_test, all_test = _mixed_dominant_split(tmp_path)
     assert len(all_test) > len(complete_test)
 
-    ckpt_dir = _train_tiny_dominant(tmp_path, split_path, ["--require-all-trials"], "D0")
+    ckpt_dir = _train_tiny_dominant(
+        tmp_path, split_path, ["--require-all-trials"], "D0",
+        model="dominantclone_published",
+    )
     _, meta = _sample(
-        tmp_path, "dominantclone", ckpt_dir / "best.pt", split_path,
+        tmp_path, "dominantclone_published", ckpt_dir / "best.pt", split_path,
         monkeypatch=monkeypatch,
     )
     assert meta["require_all_trials"] is True
@@ -568,7 +704,7 @@ def test_sample_posteriors_keeps_the_published_test_set_without_the_flag(
 
     ckpt_dir = _train_tiny_dominant(tmp_path, split_path, [], "Dpub")
     _, meta = _sample(
-        tmp_path, "dominantclone", ckpt_dir / "best.pt", split_path,
+        tmp_path, "dominantclone_published", ckpt_dir / "best.pt", split_path,
         monkeypatch=monkeypatch,
     )
     assert meta["require_all_trials"] is False
@@ -583,7 +719,7 @@ def test_require_all_trials_override_contradicting_the_checkpoint_raises(tmp_pat
 
     with pytest.raises(ValueError, match="contradict") as excinfo:
         posterior_mod.resolve_eval_config(
-            ckpt_dir / "best.pt", "dominantclone", require_all_trials=True
+            ckpt_dir / "best.pt", "dominantclone_published", require_all_trials=True
         )
     assert "--require-all-trials" in str(excinfo.value)
 
@@ -675,7 +811,11 @@ def test_an_attn_ln_checkpoint_does_not_load_into_a_default_cloneatt(tmp_path):
     from cancer_sbi.data.loaders import build_clone_set_dataloaders
     from cancer_sbi.training.trainer import build_training_components
 
-    ckpt_dir, _ = _train_tiny(tmp_path, "cloneatt", ["--attn-ln"], "R5ln")
+    # cloneatt_published: R5's `--attn-ln` is only a DIFFERENCE against the
+    # published stack, which has no LayerNorm anywhere (trap 5). The repaired
+    # `cloneatt` carries attn_ln=True itself, so the same pair would build the
+    # same network and there would be nothing to fail to load.
+    ckpt_dir, _ = _train_tiny(tmp_path, "cloneatt_published", ["--attn-ln"], "R5ln")
     state = torch.load(ckpt_dir / "best.pt", map_location="cpu")["model_state"]
 
     names = _sim_names(3)
@@ -683,7 +823,7 @@ def test_an_attn_ln_checkpoint_does_not_load_into_a_default_cloneatt(tmp_path):
         str(DATA_ROOT), names, names, top_k=100, batch_size=2
     )
     preset_built = build_training_components(
-        get_preset("cloneatt"), train_loader, device="cpu", log_progress=False
+        get_preset("cloneatt_published"), train_loader, device="cpu", log_progress=False
     ).density_estimator
 
     with pytest.raises(RuntimeError):
@@ -691,7 +831,9 @@ def test_an_attn_ln_checkpoint_does_not_load_into_a_default_cloneatt(tmp_path):
 
     # ... and the checkpoint's own config does build something that loads.
     rebuilt = build_training_components(
-        posterior_mod.resolve_eval_config(ckpt_dir / "best.pt", "cloneatt").preset,
+        posterior_mod.resolve_eval_config(
+            ckpt_dir / "best.pt", "cloneatt_published"
+        ).preset,
         train_loader,
         device="cpu",
         log_progress=False,

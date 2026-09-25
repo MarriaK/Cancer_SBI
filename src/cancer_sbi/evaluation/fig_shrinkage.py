@@ -20,12 +20,20 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 
-MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid"]
+# See the note on poster_metrics.MODEL_ORDER: the "_published" names are where a
+# --published run's posteriors_<model>.npz lands, and a name missing here is a
+# file this script silently skips.
+MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid",
+               "clonemlp_published", "cloneatt_published", "dominantclone_published"]
 LABEL = {"clonemlp": "CloneMLP-NPE", "cloneatt": "CloneAtt-NPE",
          "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE",
-         "hybrid": "Hybrid-NPE"}
+         "hybrid": "Hybrid-NPE",
+         "clonemlp_published": "CloneMLP-NPE (published)",
+         "cloneatt_published": "CloneAtt-NPE (published)",
+         "dominantclone_published": "DominantClone-NPE (published)"}
 C_MLP, C_ATT, C_DOM = "#4c3fa5", "#17a673", "#e8622a"
-COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a", "hybrid": "#e31a1c"}
+COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a", "hybrid": "#e31a1c",
+          "clonemlp_published": C_MLP, "cloneatt_published": C_ATT, "dominantclone_published": C_DOM}
 INK, MUTED, GRID, RULE = "#141412", "#63625c", "#dcdad2", "#4a4a46"
 WARN, GOOD = "#a8443f", "#12714f"
 

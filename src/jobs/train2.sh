@@ -90,11 +90,17 @@ FLOW_WD=(1e-3 "" "" "" "" "" "")                       # R3 only
 RUNSEED=("" 1 2 "" "" "" "")
 USES_CACHE=(1 1 1 1 1 1 1)   # all seven are clone-set models
 
+# All seven runs are clonemlp or cloneatt and were written against the
+# PUBLISHED preset defaults, so --published is added to every one of them:
+# see the note in train.sh. R5-R8 name --freq-mode/--attn-ln explicitly and
+# those still win; what --published restores is what they do NOT name --
+# z_score_x, tail_bound 3.0, num_transforms 5, d_model 128, input_space.
 # Build the full command for one run index into the global array CMD.
 build_cmd() {
   local i="$1"
   CMD=(python -m cancer_sbi.cli.train
        --model "${MODEL[$i]}"
+       --published
        --data-root "$CANCER_SBI_DATA_ROOT"
        --split "$CANCER_SBI_SPLIT"
        --ckpt-dir "$RUNS/${RUNNAME[$i]}/checkpoints"

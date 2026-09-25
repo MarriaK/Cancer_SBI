@@ -119,11 +119,17 @@ REQUIRE_ALL=(0 0 0 0 1 1 0 0 0 0 0 0 0 0)
 RUNSEED=(1 2 1 2 1 2 "" "" "" "" "" "" "" "")
 USES_CACHE=(1 1 1 1 0 0 1 1 1 1 1 1 1 1)   # 0 for the two DominantClone runs
 
+# All fourteen runs are clonemlp, cloneatt or dominantclone and were written
+# against the PUBLISHED preset defaults, so --published is added to every one
+# of them: see the note in train.sh. D0s1/D0s2 pass --require-all-trials
+# explicitly and it is applied on top of the published preset, so their
+# effective config is D0's either way.
 # Build the full command for one run index into the global array CMD.
 build_cmd() {
   local i="$1"
   CMD=(python -m cancer_sbi.cli.train
        --model "${MODEL[$i]}"
+       --published
        --data-root "$CANCER_SBI_DATA_ROOT"
        --split "$CANCER_SBI_SPLIT"
        --ckpt-dir "$RUNS/${RUNNAME[$i]}/checkpoints"

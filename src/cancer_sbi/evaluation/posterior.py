@@ -42,7 +42,9 @@ from cancer_sbi.config import (
     DatasetKind,
     ModelPreset,
     get_preset,
+    has_published_twin,
     preset_from_effective_config,
+    published_preset_name,
 )
 from cancer_sbi.evaluation import diagnostics
 from cancer_sbi.training import checkpoints
@@ -160,7 +162,9 @@ class EvalConfig(NamedTuple):
     Attributes:
         preset: The :class:`~cancer_sbi.config.ModelPreset` to rebuild the
             network from -- the checkpoint's own ``flow`` and ``encoder`` blocks
-            when it carries them, the published preset otherwise.
+            when it carries them, the ``_published`` preset otherwise (a
+            checkpoint with no config predates the 2026-09-25 default change,
+            so it cannot have been trained with the repaired one).
         effective_config: The raw dict read from the checkpoint, or ``None`` for
             a checkpoint written before 2026-09-24.
         from_checkpoint: ``True`` when ``preset`` came from the checkpoint.
@@ -205,8 +209,11 @@ def resolve_eval_config(
 
     Args:
         ckpt_path: The checkpoint about to be evaluated.
-        model: ``--model``, used for the preset fallback and cross-checked
-            against the checkpoint.
+        model: the RESOLVED preset name (``--model`` after ``--published`` has
+            been applied), used for the preset fallback and cross-checked
+            against the checkpoint. Since 2026-09-25 the fallback for a
+            checkpoint that carries no config is that model's ``_published``
+            twin, not the name itself -- see the note in the body.
         z_score_x: ``--z-score-x`` override, or ``None``.
         input_space: ``--input-space`` override, or ``None``.
         freq_renorm: ``--freq-renorm`` override, or ``None``.
@@ -236,15 +243,57 @@ def resolve_eval_config(
     stored = checkpoints.read_effective_config(ckpt_path, device=device)
 
     if stored is None:
+        # A checkpoint with no effective config predates 2026-09-24, and every
+        # file in that category is one of the three PUBLISHED checkpoints on
+        # the cluster. Since 2026-09-25 `--model clonemlp` names the repaired
+        # preset instead, so rebuilding from it would silently give such a file
+        # a standardising layer in the flow (z_score_x "structured") and a
+        # copy-space transform in the encoder that it was never trained with --
+        # the first raises on the state-dict keys, the second would not raise
+        # at all. The fallback is therefore the `_published` twin, not the name
+        # given on the command line.
+        #
+        # armtoken and hybrid have no twin: they were introduced by the
+        # 2026-09-24 campaign, so there is no published configuration to fall
+        # back TO, and there should be no checkpoint of theirs without a config
+        # either. Such a file falls back to the preset as it stands today, and
+        # the warning says exactly that rather than claiming a published
+        # version exists -- which matters for armtoken, whose preset gained
+        # tail_bound 5.0 on 2026-09-25 and so is no longer what any pre-2026-09-24
+        # file could have been built from.
+        has_twin = has_published_twin(model)
+        fallback = published_preset_name(model) if has_twin else model
+        if has_twin:
+            note = (
+                f"Rebuilding from the PUBLISHED preset {fallback!r} -- NOT from "
+                f"{model!r}, whose defaults changed on 2026-09-25 to the "
+                f"repaired configuration (see cancer_sbi/config.py) -- plus "
+            )
+        else:
+            note = (
+                f"{model!r} has NO published version -- it was introduced by "
+                f"the 2026-09-24 campaign -- so there is nothing to fall back "
+                f"to and the network is rebuilt from the {model!r} preset as "
+                f"it stands today"
+                + (
+                    ", whose flow tail_bound became 5.0 on 2026-09-25 (AT0's "
+                    "value, which every ArmToken run passed on the command "
+                    "line). A checkpoint older than that was not trained with "
+                    "it"
+                    if model == "armtoken"
+                    else ""
+                )
+                + ", plus "
+            )
         print(
             f"[warn] {ckpt_path} carries no 'effective_config' (it predates "
-            f"2026-09-24). Rebuilding from the published {model!r} preset plus "
-            f"any --z-score-x / --input-space / --freq-renorm you passed. If "
+            f"2026-09-24). " + note
+            + f"any --z-score-x / --input-space / --freq-renorm you passed. If "
             f"this checkpoint came from a repair run, pass the flags it was "
             f"trained with or the numbers will be wrong.",
             flush=True,
         )
-        preset = get_preset(model)
+        preset = get_preset(fallback)
         if z_score_x is not None:
             preset = _replace(preset, flow=_replace(preset.flow, z_score_x=z_score_x))
         encoder = preset.encoder
@@ -354,6 +403,15 @@ def resolve_eval_config(
         # Matrix 6: --flow-hidden-features moves the flow's residual width, so
         # it belongs beside num_transforms for the same reason.
         f"hidden_features={preset.flow.hidden_features}, "
+        # Matrix 4 / 2026-09-25. tail_bound and d_model are two of the SEVEN
+        # fields the repaired `cloneatt` preset changed -- z_score_x,
+        # num_transforms, tail_bound, input_space, freq_mode, attn_ln, d_model
+        # (R18 and R21/R26 for these two) -- and
+        # d_model decides the shape of every attention weight in the
+        # state_dict, so a line that did not name them would leave the reader
+        # unable to tell a published checkpoint from a repaired one.
+        f"tail_bound={preset.flow.tail_bound}, "
+        f"d_model={preset.encoder.d_model}, "
         f"require_all_trials={resolved_require}",
         flush=True,
     )

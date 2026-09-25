@@ -37,9 +37,21 @@ import matplotlib.patheffects as pe
 # the poster's tokens, inlined so this file has no project dependencies
 INK, INK2, MUTED, GRID, AXIS, PANEL = "#0b0b0b", "#52514e", "#5c5b55", "#c4c3ba", "#8a8982", "#f5f4f0"
 C_MLP, C_DOM, C_ATT = "#4a3aa7", "#eb6834", "#1baf7a"
-MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid"]
-LABEL = {"clonemlp": "CloneMLP-NPE", "cloneatt": "CloneAtt-NPE", "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE", "hybrid": "Hybrid-NPE"}
-COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a", "hybrid": "#e31a1c"}
+# The three "_published" names are the models as published (config.py, 2026-09-25).
+# sample_posteriors labels a run with the RESOLVED preset name, so a file lands
+# under one of them in two cases: a run made with --published, and a run over a
+# checkpoint that carries no effective_config (the cluster's three legacy
+# published checkpoints), where the resolver falls back to the published twin.
+# The bare names are kept beside them, so `posteriors_clonemlp.npz` files that
+# already exist on the cluster are still found. A file for a model missing from
+# this list is silently skipped -- which is exactly what happened to ArmToken on
+# 2026-09-24.
+MODEL_ORDER = ["clonemlp", "cloneatt", "dominantclone", "armtoken", "hybrid",
+               "clonemlp_published", "cloneatt_published", "dominantclone_published"]
+LABEL = {"clonemlp": "CloneMLP-NPE", "cloneatt": "CloneAtt-NPE", "dominantclone": "DominantClone-NPE", "armtoken": "ArmToken-NPE", "hybrid": "Hybrid-NPE",
+         "clonemlp_published": "CloneMLP-NPE (published)", "cloneatt_published": "CloneAtt-NPE (published)", "dominantclone_published": "DominantClone-NPE (published)"}
+COLOUR = {"clonemlp": C_MLP, "cloneatt": C_ATT, "dominantclone": C_DOM, "armtoken": "#6a3d9a", "hybrid": "#e31a1c",
+          "clonemlp_published": C_MLP, "cloneatt_published": C_ATT, "dominantclone_published": C_DOM}
 ARMS = [f"{c}{a}" for c in range(1, 23) for a in "pq"]
 
 plt.rcParams.update({

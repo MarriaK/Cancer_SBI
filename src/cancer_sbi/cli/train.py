@@ -17,8 +17,20 @@ Example:
     exists, so re-running the same command continues the run rather than
     starting over. Point ``--out`` somewhere new to start from scratch.
 
-Everything that is not a path keeps the value the published run used; the flags
-that override them exist for new experiments, not for reproducing old ones.
+**Defaults changed on 2026-09-25.** ``--model clonemlp``, ``--model cloneatt``
+and ``--model dominantclone`` now build the REPAIRED configurations the
+2026-09-24 campaign selected -- R2, R26 and D0 respectively -- and no longer the
+configurations the paper published. Pass ``--published`` (or
+``--model clonemlp_published``) for the model as published; every job script
+that reproduces a campaign run does. What changed per model, and why, is written
+beside each preset in ``cancer_sbi/config.py`` under "The repaired defaults",
+and the evidence is ``docs/CAMPAIGN_REPORT_2026-09-24.md`` §4 and findings 2, 4
+and 8. Checkpoints written before that date carry no effective config and are
+rebuilt from the ``_published`` preset -- see
+:func:`cancer_sbi.evaluation.posterior.resolve_eval_config`.
+
+Everything that is not a path keeps the value the *preset* uses; the flags that
+override them exist for new experiments, not for reproducing old ones.
 
 Repair flags (added 2026-09-24, work package A). **Every one of them defaults to
 the published behaviour**, so a command line that does not mention them produces
@@ -142,12 +154,18 @@ from cancer_sbi.cli import (
     add_data_root_argument,
     add_device_argument,
     add_model_argument,
+    add_published_argument,
     add_split_argument,
     default_run_dir,
     require_path,
     resolve_device,
 )
-from cancer_sbi.config import ModelPreset, config_to_dict, get_preset
+from cancer_sbi.config import (
+    ModelPreset,
+    config_to_dict,
+    get_preset,
+    resolve_model_name,
+)
 
 #: File name CloneAtt's original training loop pickled its density estimator to
 #: (``SetTransformer_NPE/inference_model.py:246``). Kept so the artefact keeps
@@ -172,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_model_argument(parser)
+    add_published_argument(parser)
     add_data_root_argument(parser)
     add_split_argument(parser)
     add_device_argument(parser)
@@ -742,11 +761,31 @@ def build_config(
     # removes, so the pair describes no network at all. Refused rather than
     # resolved: silently dropping either half is how a run gets launched
     # believing it carries a repair it does not.
-    if getattr(args, "freq_mode", None) == "feature" and args.freq_renorm:
+    # 2026-09-25: the test is on the EFFECTIVE mode where the flag is actually
+    # read, not only on the two flags. cloneatt's repaired preset carries
+    # freq_mode="feature" (run R5), so `--freq-renorm` ALONE -- R4's command
+    # line -- now describes the same impossible network that
+    # `--freq-renorm --freq-mode feature` always did. R4 is reproduced with
+    # `--published`, where the mode is "weight" again.
+    #
+    # The second disjunct is restricted to the one encoder kind that reads
+    # freq_renorm at all: for every other preset the flag is warned about and
+    # dropped further down, and turning a warn-and-ignore into a hard error
+    # would be a different change from this one.
+    contradicts_the_preset = (
+        getattr(args, "freq_mode", None) is None
+        and preset.encoder.kind == "attention"
+        and preset.encoder.freq_mode == "feature"
+    )
+    if args.freq_renorm and (
+        getattr(args, "freq_mode", None) == "feature" or contradicts_the_preset
+    ):
         raise ValueError(
             "--freq-renorm and --freq-mode feature contradict each other: "
             "'feature' removes the frequency multiply entirely, so there are "
-            "no per-clone weights left to renormalise. Pass one or the other."
+            "no per-clone weights left to renormalise. Pass one or the other. "
+            f"({preset.name} carries freq_mode={preset.encoder.freq_mode!r} in "
+            "its preset; --published gives the 'weight' one R4 was run with.)"
         )
 
     encoder_cfg = preset.encoder
@@ -1107,6 +1146,10 @@ def effective_config_payload(
         # these are the flags as typed.
         "arm_feature_norm": getattr(args, "arm_feature_norm", None),
         "arm_context_norm": bool(getattr(args, "arm_context_norm", False)),
+        # 2026-09-25. `payload["model"]` already carries the RESOLVED preset
+        # name (clonemlp vs clonemlp_published); this is the flag as typed, so
+        # a checkpoint says both what was asked for and what it got.
+        "published": bool(getattr(args, "published", False)),
         "require_all_trials": bool(args.require_all_trials),
         "num_workers": args.num_workers,
         "cache_dir": args.cache_dir,
@@ -1161,7 +1204,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     split_path = require_path(args.split, "--split", SPLIT_ENV)
     device = resolve_device(args.device)
 
-    preset = get_preset(args.model)
+    # --published maps --model X onto the preset X_published, which is the
+    # model as published; without it --model X is the repaired default adopted
+    # on 2026-09-25 (see cancer_sbi/config.py, "The repaired defaults"). The
+    # RESOLVED name is what `preset.name` carries from here on, so it is what
+    # goes into the run directory's name and -- via config_to_dict -- into
+    # every checkpoint's effective config, which is what evaluation rebuilds
+    # from. A KeyError here means --published was asked for armtoken or hybrid.
+    try:
+        model_name = resolve_model_name(args.model, args.published)
+    except KeyError as exc:
+        raise SystemExit(str(exc).strip('"')) from exc
+    preset = get_preset(model_name)
     out_dir = Path(args.out) if args.out is not None else default_run_dir(preset.name)
     # Trap 11 lives here: the directory NAME comes from the preset, which is the
     # name that model's own training code used. The parent is the user's --out,
