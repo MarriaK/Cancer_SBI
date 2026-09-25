@@ -30,6 +30,7 @@ Nothing here runs at import time.
 import math
 import os
 import tempfile
+from dataclasses import replace as _replace
 from typing import Any, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import torch
@@ -37,7 +38,14 @@ from sbi.inference.posteriors import DirectPosterior
 from torch.distributions import Independent, Normal
 from torch.utils.data import DataLoader
 
-from cancer_sbi.config import DatasetKind
+from cancer_sbi.config import (
+    DatasetKind,
+    ModelPreset,
+    get_preset,
+    has_published_twin,
+    preset_from_effective_config,
+    published_preset_name,
+)
 from cancer_sbi.evaluation import diagnostics
 from cancer_sbi.training import checkpoints
 
@@ -146,6 +154,273 @@ def build_posterior(density_estimator: torch.nn.Module, prior: Independent) -> D
         never happens, so sampling is a plain forward pass through the flow.
     """
     return DirectPosterior(density_estimator, prior)
+
+
+class EvalConfig(NamedTuple):
+    """What a checkpoint says it was trained with, resolved for evaluation.
+
+    Attributes:
+        preset: The :class:`~cancer_sbi.config.ModelPreset` to rebuild the
+            network from -- the checkpoint's own ``flow`` and ``encoder`` blocks
+            when it carries them, the ``_published`` preset otherwise (a
+            checkpoint with no config predates the 2026-09-25 default change,
+            so it cannot have been trained with the repaired one).
+        effective_config: The raw dict read from the checkpoint, or ``None`` for
+            a checkpoint written before 2026-09-24.
+        from_checkpoint: ``True`` when ``preset`` came from the checkpoint.
+        require_all_trials: ``DataConfig.require_all_trials`` of the run being
+            evaluated. It is not part of ``preset`` -- ``preset_from_effective_
+            config`` deliberately restores only the two architecture blocks --
+            but the dominant-clone test loader has to be built with it, or a
+            run trained on the clone-set models' sim set gets scored on a
+            larger test set than it was trained for.
+    """
+
+    preset: ModelPreset
+    effective_config: Optional[dict]
+    from_checkpoint: bool
+    require_all_trials: bool = False
+
+
+def _disagreement(name: str, stored: Any, override: Any) -> Optional[str]:
+    """One line describing an override that contradicts the checkpoint."""
+    if override is None or override == stored:
+        return None
+    return f"  --{name.replace('_', '-')}: checkpoint says {stored!r}, you passed {override!r}"
+
+
+def resolve_eval_config(
+    ckpt_path: PathLike,
+    model: str,
+    z_score_x: Optional[str] = None,
+    input_space: Optional[str] = None,
+    freq_renorm: Optional[bool] = None,
+    require_all_trials: Optional[bool] = None,
+    device: str = "cpu",
+) -> EvalConfig:
+    """Decide which architecture to rebuild before loading ``ckpt_path``.
+
+    Evaluation used to rebuild from :func:`~cancer_sbi.config.get_preset`
+    unconditionally, which is wrong for any run that used a repair flag: a
+    ``z_score_x="structured"`` checkpoint has a standardising transform inside
+    the flow that the preset-built network does not, so ``load_state_dict``
+    raises on the keys; and a ``--input-space copy`` or ``--freq-renorm``
+    checkpoint loads *silently* into an encoder that computes something else.
+
+    Args:
+        ckpt_path: The checkpoint about to be evaluated.
+        model: the RESOLVED preset name (``--model`` after ``--published`` has
+            been applied), used for the preset fallback and cross-checked
+            against the checkpoint. Since 2026-09-25 the fallback for a
+            checkpoint that carries no config is that model's ``_published``
+            twin, not the name itself -- see the note in the body.
+        z_score_x: ``--z-score-x`` override, or ``None``.
+        input_space: ``--input-space`` override, or ``None``.
+        freq_renorm: ``--freq-renorm`` override, or ``None``.
+        require_all_trials: ``--require-all-trials`` override, or ``None``. Only
+            consulted when the checkpoint does not record the key; when it does,
+            the checkpoint wins and an explicit disagreement raises like the
+            others.
+        device: ``map_location`` for reading the checkpoint.
+
+    Returns:
+        An :class:`EvalConfig`.
+
+    Raises:
+        ValueError: If the checkpoint names a different model than ``--model``,
+            or if any override contradicts what the checkpoint records. An
+            override exists to describe an *old* checkpoint that carries no
+            config; silently trusting either side of a contradiction is how a
+            run gets scored as something it is not.
+
+    Note:
+        The overrides are one-directional by design: passing ``--freq-renorm``
+        for a checkpoint that stored ``False`` is a contradiction and raises,
+        while omitting it for a checkpoint that stored ``True`` is not -- the
+        checkpoint is the authority, and the flag is only how a pre-2026-09-24
+        file gets described.
+    """
+    stored = checkpoints.read_effective_config(ckpt_path, device=device)
+
+    if stored is None:
+        # A checkpoint with no effective config predates 2026-09-24, and every
+        # file in that category is one of the three PUBLISHED checkpoints on
+        # the cluster. Since 2026-09-25 `--model clonemlp` names the repaired
+        # preset instead, so rebuilding from it would silently give such a file
+        # a standardising layer in the flow (z_score_x "structured") and a
+        # copy-space transform in the encoder that it was never trained with --
+        # the first raises on the state-dict keys, the second would not raise
+        # at all. The fallback is therefore the `_published` twin, not the name
+        # given on the command line.
+        #
+        # armtoken and hybrid have no twin: they were introduced by the
+        # 2026-09-24 campaign, so there is no published configuration to fall
+        # back TO, and there should be no checkpoint of theirs without a config
+        # either. Such a file falls back to the preset as it stands today, and
+        # the warning says exactly that rather than claiming a published
+        # version exists -- which matters for armtoken, whose preset gained
+        # tail_bound 5.0 on 2026-09-25 and so is no longer what any pre-2026-09-24
+        # file could have been built from.
+        has_twin = has_published_twin(model)
+        fallback = published_preset_name(model) if has_twin else model
+        if has_twin:
+            note = (
+                f"Rebuilding from the PUBLISHED preset {fallback!r} -- NOT from "
+                f"{model!r}, whose defaults changed on 2026-09-25 to the "
+                f"repaired configuration (see cancer_sbi/config.py) -- plus "
+            )
+        else:
+            note = (
+                f"{model!r} has NO published version -- it was introduced by "
+                f"the 2026-09-24 campaign -- so there is nothing to fall back "
+                f"to and the network is rebuilt from the {model!r} preset as "
+                f"it stands today"
+                + (
+                    ", whose flow tail_bound became 5.0 on 2026-09-25 (AT0's "
+                    "value, which every ArmToken run passed on the command "
+                    "line). A checkpoint older than that was not trained with "
+                    "it"
+                    if model == "armtoken"
+                    else ""
+                )
+                + ", plus "
+            )
+        print(
+            f"[warn] {ckpt_path} carries no 'effective_config' (it predates "
+            f"2026-09-24). " + note
+            + f"any --z-score-x / --input-space / --freq-renorm you passed. If "
+            f"this checkpoint came from a repair run, pass the flags it was "
+            f"trained with or the numbers will be wrong.",
+            flush=True,
+        )
+        preset = get_preset(fallback)
+        if z_score_x is not None:
+            preset = _replace(preset, flow=_replace(preset.flow, z_score_x=z_score_x))
+        encoder = preset.encoder
+        if input_space is not None:
+            encoder = _replace(encoder, input_space=input_space)
+        if freq_renorm:
+            encoder = _replace(encoder, freq_renorm=True)
+        preset = _replace(preset, encoder=encoder)
+        return EvalConfig(
+            preset=preset,
+            effective_config=None,
+            from_checkpoint=False,
+            require_all_trials=bool(require_all_trials),
+        )
+
+    stored_model = stored.get("model")
+    if stored_model is not None and stored_model != model:
+        raise ValueError(
+            f"{ckpt_path} was trained as model {stored_model!r}, but --model "
+            f"says {model!r}. Evaluate it as {stored_model!r}."
+        )
+
+    flow = stored.get("flow", {})
+    encoder = stored.get("encoder", {})
+    data = stored.get("data", {})
+    # A checkpoint that predates the flag has no "require_all_trials" key at
+    # all, and an override is then the only description of the run -- so the
+    # clash is only checked when the key is actually there.
+    stored_require = (
+        bool(data["require_all_trials"]) if "require_all_trials" in data else None
+    )
+    clashes = [
+        line
+        for line in (
+            _disagreement("z_score_x", flow.get("z_score_x"), z_score_x),
+            _disagreement("input_space", encoder.get("input_space"), input_space),
+            _disagreement("freq_renorm", encoder.get("freq_renorm"), freq_renorm),
+            None
+            if stored_require is None
+            else _disagreement("require_all_trials", stored_require, require_all_trials),
+        )
+        if line is not None
+    ]
+    if clashes:
+        raise ValueError(
+            f"{ckpt_path} records the config it was trained with, and your "
+            f"overrides contradict it:\n"
+            + "\n".join(clashes)
+            + "\nDrop the flags to use the checkpoint's own config. They exist "
+            "only to describe checkpoints written before 2026-09-24, which "
+            "carry none."
+        )
+
+    preset = preset_from_effective_config(stored)
+    resolved_require = (
+        stored_require if stored_require is not None else bool(require_all_trials)
+    )
+    # Matrix 5. The encoder kind is printed first because it is now the thing
+    # that decides what the rest of the line even means -- armtoken reads
+    # neither freq_mode nor freq_renorm -- and its three shape-bearing fields
+    # follow it, the way flow_dropout/num_transforms follow the flow's.
+    # Matrix 8's two ride in through the same encoder block and each decides
+    # whether the state_dict carries an extra module, so they belong here for
+    # the same reason d_arm does -- a load failure turns on exactly this.
+    arm_norm_note = (
+        f", arm_feature_norm={preset.encoder.arm_feature_norm}"
+        f", arm_context_norm={preset.encoder.arm_context_norm}"
+    )
+    armtoken_note = (
+        f", d_arm={preset.encoder.d_arm}, "
+        f"n_arm_layers={preset.encoder.n_arm_layers}, "
+        f"trial_pool={preset.encoder.trial_pool}" + arm_norm_note
+        if preset.encoder.kind == "armtoken"
+        else ""
+    )
+    # Matrix 6. The hybrid reads BOTH branches' fields, so naming only one set
+    # would leave half the rebuilt network unsaid -- and the two halves are
+    # exactly what a state-dict load failure is about.
+    if preset.encoder.kind == "hybrid":
+        armtoken_note = (
+            f", arm[d_arm={preset.encoder.d_arm}, "
+            f"n_arm_layers={preset.encoder.n_arm_layers}, "
+            f"d_token={preset.encoder.d_token}, "
+            f"arm_num_inducing={preset.encoder.arm_num_inducing}]"
+            f", clone[d_model={preset.encoder.d_model}, "
+            f"n_heads={preset.encoder.n_heads}, "
+            f"num_inducing={preset.encoder.num_inducing}, "
+            f"trials_output_dim={preset.encoder.trials_output_dim}]"
+            f", trial_pool={preset.encoder.trial_pool}" + arm_norm_note
+        )
+    print(
+        f"[config] rebuilt from the checkpoint: kind={preset.encoder.kind}"
+        f"{armtoken_note}, z_score_x="
+        f"{preset.flow.z_score_x}, input_space={preset.encoder.input_space}, "
+        f"freq_renorm={preset.encoder.freq_renorm}, "
+        # Matrix 2. These three ride in through preset_from_effective_config's
+        # encoder block; printing them is how a log says which network was
+        # rebuilt, not only which one was asked for.
+        f"freq_mode={preset.encoder.freq_mode}, "
+        f"attn_ln={preset.encoder.attn_ln}, "
+        f"attn_dropout_active={preset.encoder.attn_dropout_active}, "
+        # Matrix 3. Both ride in through preset_from_effective_config's flow
+        # block and both change the state_dict's shape, so a log that did not
+        # name them would leave the one thing a load failure turns on unsaid.
+        f"flow_dropout={preset.flow.dropout_probability}, "
+        f"num_transforms={preset.flow.num_transforms}, "
+        # Matrix 6: --flow-hidden-features moves the flow's residual width, so
+        # it belongs beside num_transforms for the same reason.
+        f"hidden_features={preset.flow.hidden_features}, "
+        # Matrix 4 / 2026-09-25. tail_bound and d_model are two of the SEVEN
+        # fields the repaired `cloneatt` preset changed -- z_score_x,
+        # num_transforms, tail_bound, input_space, freq_mode, attn_ln, d_model
+        # (R18 and R21/R26 for these two) -- and
+        # d_model decides the shape of every attention weight in the
+        # state_dict, so a line that did not name them would leave the reader
+        # unable to tell a published checkpoint from a repaired one.
+        f"tail_bound={preset.flow.tail_bound}, "
+        f"d_model={preset.encoder.d_model}, "
+        f"require_all_trials={resolved_require}",
+        flush=True,
+    )
+    return EvalConfig(
+        preset=preset,
+        effective_config=stored,
+        from_checkpoint=True,
+        require_all_trials=resolved_require,
+    )
 
 
 def load_checkpoint_for_eval(
@@ -380,6 +655,8 @@ def summarise_test_set(
 
 __all__ = [
     "NUM_PARAMETERS",
+    "EvalConfig",
+    "resolve_eval_config",
     "DEFAULT_NUM_POSTERIOR_SAMPLES",
     "DEFAULT_PRIOR_SD",
     "LEGACY_PRIOR_SD",

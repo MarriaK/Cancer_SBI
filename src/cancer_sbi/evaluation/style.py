@@ -46,6 +46,11 @@ __all__ = [
     "CASE_COLORS",
     "SBC_FAIL_RED",
     "SBC_PASS_BLUE",
+    "ECDF_BAND_FILL",
+    "ECDF_BAND_EDGE",
+    "IDENTITY_GREY",
+    "OLS_FIT_RED",
+    "TARP_BAND_FILL",
 ]
 
 
@@ -114,6 +119,29 @@ CASE_COLORS: tuple[str, ...] = (
 #: bars come out the exact same shade.
 SBC_FAIL_RED: str = "red"
 SBC_PASS_BLUE: str = "blue"
+
+#: Fill of the simultaneous ECDF band in figure C
+#: (``evaluation/poster_metrics.py``, ``fig_sbc``). One step darker than the
+#: gridlines: filled in the grid colour it read as background, not as a band,
+#: under 44 coloured curves.
+ECDF_BAND_FILL: str = "#e4e1d6"
+
+#: The dashed edge of that band, and of the TARP bootstrap band.
+ECDF_BAND_EDGE: str = "#6f6e68"
+
+#: The y = x identity line in a recovery scatter (figure S1) and in the TARP
+#: coverage plot. Deliberately not :data:`REF_ZERO_RED`: in these panels the
+#: identity is the reference and the fitted line is the finding.
+IDENTITY_GREY: str = "#8a8982"
+
+#: The ordinary-least-squares fit drawn over a recovery scatter, the same shade
+#: the original grids used for it (``z-score_violin.py:594``).
+OLS_FIT_RED: str = REF_ZERO_RED
+
+#: Fill of the TARP bootstrap band (``evaluation/tarp.py``). The band is drawn
+#: per model in that model's own colour at low alpha; this is the fallback for a
+#: model with no entry in the poster palette.
+TARP_BAND_FILL: str = "#d8d6cc"
 
 
 # --------------------------------------------------------------------------- #

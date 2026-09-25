@@ -47,6 +47,11 @@ before that would be overwritten and the draws would differ.
         --ckpt      ~/cancer/Base_NPE/checkpoints/best.pt \
         --out-dir   ~/cancer/evaluation/out
     ... --limit 4      # smoke test
+    ... --partition val  # sample the VALIDATION ids instead, into ..._val.npz
+
+`--partition val` exists for one purpose: `recalibrate_posteriors.py` fits its per-arm affine
+correction on a held-out set that is NOT the test set. The default is `test` and every byte of
+that path - loaders, file name, meta - is unchanged.
 """
 import argparse
 import json
@@ -75,7 +80,12 @@ from cancer_sbi.cli import (  # noqa: E402
     require_path,
     resolve_device,
 )
-from cancer_sbi.config import PRESETS, get_preset  # noqa: E402
+from cancer_sbi.config import (  # noqa: E402
+    PRESETS,
+    config_to_dict,
+    get_preset,
+    resolve_model_name,
+)
 
 N_ARMS = 44
 
@@ -85,6 +95,52 @@ EVAL_CKPT_DIRNAME = "checkpoints"
 
 #: The other directory a best.pt can live in. Only used to warn, exactly as the legacy script did.
 ALT_CKPT_DIRNAME = "checkpoints_baseline"
+
+
+def output_filename(model, limit=None, run_tag=None, partition="test"):
+    """Name of the .npz this run writes: ``posteriors_<model>[_<tag>][_val].npz``.
+
+    A full run keeps the plain name, which is the only name
+    ``poster_metrics.py`` discovers (:312-323) - so per-run outputs belong in
+    per-run ``--out-dir``s, not in suffixed filenames in a shared directory.
+
+    The suffix exists for the two cases where a file must NOT be mistaken for a
+    real run:
+      * ``--limit N`` -> ``_limit<N>``. A smoke test used to overwrite the real
+        posteriors of the same model, and the partial file is then silently
+        skipped by the poster export guard (poster_metrics.py:378-380) rather
+        than flagged.
+      * ``--run-tag TAG`` -> ``_<TAG>``, for labelling a file by run (R0/R1/...)
+        when one really must share a directory.
+
+    An explicit ``--run-tag`` wins over the ``--limit`` suffix.
+
+    ``partition="val"`` appends a further ``_val``, AFTER whichever suffix the
+    two rules above chose. A validation-split file is not a run's result - it is
+    the input a recalibration is fitted on - so it must never land on the name
+    ``poster_metrics.posterior_path`` discovers, even when the run is tagged.
+    ``partition="test"`` (the default) changes nothing.
+
+    Args:
+        model: Preset name, e.g. ``"clonemlp"``.
+        limit: The ``--limit`` value, or None for a full run.
+        run_tag: The ``--run-tag`` value, or None.
+        partition: ``"test"`` (default) or ``"val"``.
+
+    Returns:
+        The file name (no directory).
+    """
+    if run_tag:
+        suffix = f"_{run_tag}"
+    elif limit is not None:
+        suffix = f"_limit{int(limit)}"
+    else:
+        suffix = ""
+    if partition == "val":
+        suffix += "_val"
+    elif partition != "test":
+        raise ValueError(f"partition must be 'test' or 'val', not {partition!r}")
+    return f"posteriors_{model}{suffix}.npz"
 
 
 def test_sim_ids(dataset, n_expected):
@@ -110,9 +166,14 @@ def test_sim_ids(dataset, n_expected):
     return ids
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, choices=sorted(PRESETS))
+    ap.add_argument("--published", action="store_true",
+                    help="use the model AS PUBLISHED instead of the repaired default that "
+                         "--model has named since 2026-09-25; equivalent to "
+                         "--model <name>_published. An error for armtoken and hybrid, which "
+                         "have no published version.")
     ap.add_argument("--data-root", type=Path, default=os.environ.get(DATA_ROOT_ENV),
                     help="folder holding sim1/, sim2/, ... "
                          f"Falls back to ${DATA_ROOT_ENV}.")
@@ -130,7 +191,34 @@ def main():
     ap.add_argument("--device", default="auto", help="auto | cpu | cuda")
     ap.add_argument("--limit", type=int, default=None, help="only the first N test cases (smoke test)")
     ap.add_argument("--seed", type=int, default=0)
-    args = ap.parse_args()
+    override = ap.add_argument_group(
+        "architecture overrides (old checkpoints only)",
+        "A checkpoint written since 2026-09-24 carries the config it was trained "
+        "with and the network is rebuilt from that. These flags describe a "
+        "checkpoint that carries none; passing one that contradicts a checkpoint "
+        "which does is an error, not a silent choice.")
+    override.add_argument("--z-score-x", choices=["none", "structured", "independent"],
+                          default=None, help="FlowConfig.z_score_x of the run being evaluated.")
+    override.add_argument("--input-space", choices=["log2", "copy"], default=None,
+                          help="CloneMLP encoder input space of the run being evaluated.")
+    override.add_argument("--freq-renorm", action="store_true", default=None,
+                          help="The run being evaluated used CloneAtt's frequency renormalisation.")
+    override.add_argument("--require-all-trials", action="store_true", default=None,
+                          help="The DominantClone run being evaluated was trained on the clone-set "
+                               "models' sim set (every trial file present). The test loader is then "
+                               "built with the same restriction.")
+    ap.add_argument("--run-tag", default=None,
+                    help="label appended to the output file: posteriors_<model>_<TAG>.npz. "
+                         "Only needed when two runs of one model share an --out-dir; the "
+                         "per-run convention is a per-run --out-dir instead, because "
+                         "poster_metrics.py only discovers the untagged name.")
+    ap.add_argument("--partition", choices=["test", "val"], default="test",
+                    help="which held-out split to sample. 'test' (default) is the reported "
+                         "one and is unchanged. 'val' samples the VALIDATION ids instead and "
+                         "writes posteriors_<model>[_<tag>]_val.npz - the file "
+                         "recalibrate_posteriors.py fits its affine correction on, so that the "
+                         "correction is never fitted on the cases it is scored on.")
+    args = ap.parse_args(argv)
 
     # Heavy imports after the arguments parse, as the rest of the package does, so that
     # --help works on a machine that cannot import torch.
@@ -145,7 +233,15 @@ def main():
     from cancer_sbi.evaluation import posterior as posterior_mod
     from cancer_sbi.training.trainer import build_optimizer, build_training_components
 
-    preset = get_preset(args.model)
+    # --published maps --model X onto X_published. Everything downstream --
+    # the preset, the checkpoint cross-check, the .npz's "model" field and its
+    # file name -- uses the RESOLVED name, so a published-model run and a
+    # repaired-model run never overwrite each other's output file.
+    try:
+        model_name = resolve_model_name(args.model, args.published)
+    except KeyError as exc:
+        raise SystemExit(str(exc).strip('"')) from exc
+    preset = get_preset(model_name)
     data_root = require_path(args.data_root, "--data-root", DATA_ROOT_ENV)
     split_path = require_path(args.split, "--split", SPLIT_ENV)
     out_dir = os.path.abspath(os.path.expanduser(args.out_dir))
@@ -157,32 +253,90 @@ def main():
     )
 
     device = resolve_device(args.device)
-    print(f"model={args.model}  origin={preset.origin}  device={device}  seed={args.seed}", flush=True)
+    print(f"model={model_name}  origin={preset.origin}  device={device}  seed={args.seed}", flush=True)
 
-    train_ids, test_ids = load_split(split_path)
-    print(f"split: {len(train_ids)} train ids / {len(test_ids)} test ids", flush=True)
+    # load_split returns a dict. Evaluation scores the TEST ids by default, so
+    # `val_ids` is not passed to the builders and the middle element of the
+    # 3-tuple they return is None -- unchanged. --partition val is the one
+    # exception: it passes val_ids and takes that middle loader instead, so a
+    # post-hoc recalibration can be fitted on held-out cases that are NOT the
+    # ones it will be scored on.
+    split = load_split(split_path)
+    train_ids = split["train_ids"]
+    test_ids = split["test_ids"]
+    val_ids = split.get("val_ids")
+    if args.partition == "val" and (val_ids is None or len(val_ids) == 0):
+        raise SystemExit(
+            f"--partition val needs a split with val_ids, and {split_path} has none.\n"
+            "  Carve one first:  python -m cancer_sbi.cli.make_split --add-val --frac 0.1 "
+            "--in <split.pkl> --out <train_val_test_split.pkl>")
+    print(f"split: {len(train_ids)} train ids / {len(test_ids)} test ids"
+          + (f" / {len(val_ids)} val ids" if val_ids is not None else ""), flush=True)
+    print(f"partition: {args.partition}", flush=True)
 
+    if not ckpt_path.exists():
+        raise SystemExit(f"checkpoint not found: {ckpt_path}")
+
+    # The architecture comes from the checkpoint, not from get_preset: an R1
+    # checkpoint (z_score_x="structured") will not load into a preset-built flow
+    # at all, and an R2/R4 one loads silently into the wrong encoder. Resolved
+    # before the model is built, because it decides what is built -- and before
+    # the loaders, because data.require_all_trials decides which sims the test
+    # loader holds.
+    eval_cfg = posterior_mod.resolve_eval_config(
+        ckpt_path,
+        model_name,
+        z_score_x=args.z_score_x,
+        input_space=args.input_space,
+        freq_renorm=args.freq_renorm,
+        require_all_trials=args.require_all_trials,
+        device=device,
+    )
+    preset = eval_cfg.preset
+    # The name this run is LABELLED with is the resolved preset's, not the one
+    # typed. They differ on exactly one path: a checkpoint with no
+    # effective_config, where resolve_eval_config falls back to the published
+    # twin (2026-09-25). `--model clonemlp` over the cluster's legacy published
+    # checkpoint therefore writes posteriors_clonemlp_published.npz and records
+    # model="clonemlp_published" -- which is what was actually evaluated, and
+    # keeps that file from colliding with a repaired clonemlp run in the same
+    # --out-dir. poster_metrics.MODEL_ORDER carries both names, so either file
+    # is still discovered.
+    model_name = preset.name
+
+    # val_ids is handed to the builders only for --partition val, so the default
+    # path builds exactly the loaders it always did.
+    builder_val_ids = val_ids if args.partition == "val" else None
     if preset.data.dataset == "clone_sets":
-        train_loader, test_loader = build_clone_set_dataloaders(
+        train_loader, val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
             top_k=preset.data.top_k,
             batch_size=preset.data.batch_size,
             pin_memory=preset.data.pin_memory,
+            val_ids=builder_val_ids,
         )
     else:
-        train_loader, test_loader = build_dominant_clone_dataloaders(
+        train_loader, val_loader, test_loader = build_dominant_clone_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
             test_ids=test_ids,
             batch_size=preset.data.batch_size,
             pin_memory=preset.data.pin_memory,
+            require_all_trials=eval_cfg.require_all_trials,
+            val_ids=builder_val_ids,
         )
 
-    x_all, theta_all = posterior_mod.collect_test_tensors(test_loader, preset.data.dataset)
+    eval_loader = test_loader if args.partition == "test" else val_loader
+    if eval_loader is None:
+        raise SystemExit(
+            f"--partition {args.partition}: the loader builder returned no validation loader "
+            f"for {len(val_ids) if val_ids is not None else 0} val ids")
+
+    x_all, theta_all = posterior_mod.collect_test_tensors(eval_loader, preset.data.dataset)
     n_total = int(x_all.shape[0])
-    sim_ids = test_sim_ids(test_loader.dataset, n_total)
+    sim_ids = test_sim_ids(eval_loader.dataset, n_total)
     n = n_total if args.limit is None else min(args.limit, n_total)
     print(f"held-out cases: {n_total}" + ("" if args.limit is None else f" (using first {n})"), flush=True)
     print(f"X {tuple(x_all.shape)}  theta {tuple(theta_all.shape)}", flush=True)
@@ -204,9 +358,6 @@ def main():
     if others:
         print(f"[warn] another checkpoint also exists and was NOT used: {others} "
               f"(pass --ckpt to choose it)", flush=True)
-    if not ckpt_path.exists():
-        raise SystemExit(f"checkpoint not found: {ckpt_path}")
-
     resumed = posterior_mod.load_checkpoint_for_eval(
         ckpt_path,
         components.density_estimator,
@@ -266,8 +417,9 @@ def main():
     # rank in {0..S}: S+1 possible outcomes, so the quantile position divides by S+1
     sbc_ranks = (samples_out < theta_np[:, None, :]).sum(axis=1).astype(np.int32)
 
+    _as_dict = config_to_dict(preset)
     meta = {
-        "model": args.model,
+        "model": model_name,
         "folder": preset.origin,
         "checkpoint": str(ckpt_path),
         "checkpoints_not_used": others,
@@ -278,17 +430,28 @@ def main():
         "num_samples": int(s),
         "prior_sd": float(args.prior_sd),
         "seed": int(args.seed),
+        "limit": None if args.limit is None else int(args.limit),
+        "run_tag": args.run_tag,
+        "partition": args.partition,
         "device": device,
         "data_root": str(data_root),
         "split_file": str(split_path),
         "n_train_ids": int(len(train_ids)),
         "n_test_ids": int(len(test_ids)),
+        "n_val_ids": None if val_ids is None else int(len(val_ids)),
+        # The architecture these samples came from, so a .npz can be read back
+        # years later without the checkpoint beside it.
+        "flow_config": _as_dict["flow"],
+        "encoder_config": _as_dict["encoder"],
+        "config_from_checkpoint": bool(eval_cfg.from_checkpoint),
+        "require_all_trials": bool(eval_cfg.require_all_trials),
         "written_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "elapsed_s": round(time.time() - t0, 1),
         "built_with": "cancer_sbi",
     }
 
-    out_path = os.path.join(out_dir, f"posteriors_{args.model}.npz")
+    out_path = os.path.join(
+        out_dir, output_filename(model_name, args.limit, args.run_tag, args.partition))
     np.savez_compressed(
         out_path,
         theta_true=theta_np,

@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from cancer_sbi.config import PRESETS
+from cancer_sbi.config import PRESETS, REPAIRED_PRESETS
 
 #: Environment variable consulted when ``--data-root`` is not given.
 DATA_ROOT_ENV = "CANCER_SBI_DATA_ROOT"
@@ -49,7 +49,7 @@ DEFAULT_RUNS_DIRNAME = "runs"
 
 
 def add_model_argument(parser: argparse.ArgumentParser) -> None:
-    """Add ``--model``, the choice of published model.
+    """Add ``--model``, the choice of model.
 
     Args:
         parser: The parser to extend.
@@ -59,12 +59,44 @@ def add_model_argument(parser: argparse.ArgumentParser) -> None:
         required=True,
         choices=sorted(PRESETS),
         help=(
-            "Which published model to use. "
+            "Which model to use. "
             "clonemlp = CloneMLP-NPE (was Base_NPE/), "
             "cloneatt = CloneAtt-NPE (was SetTransformer_NPE/), "
-            "dominantclone = DominantClone-NPE (was Plain_NPE/). "
+            "dominantclone = DominantClone-NPE (was Plain_NPE/), "
+            "armtoken = ArmToken-NPE (new in matrix 5; no original folder), "
+            "hybrid = Hybrid-NPE (new in matrix 6: armtoken's and cloneatt's "
+            "encoders side by side, contexts concatenated). "
+            "NOTE (2026-09-25): the first three now default to the REPAIRED "
+            "configurations of the 2026-09-24 campaign, not to the published "
+            "ones -- see docs/CAMPAIGN_REPORT_2026-09-24.md and the preset "
+            "comments in cancer_sbi/config.py. The '<name>_published' choices, "
+            "and the --published flag, are the models as published. "
             "The choice fixes the encoder, the optimiser, the early-stopping "
             "rules and the checkpoint directory name."
+        ),
+    )
+
+
+def add_published_argument(parser: argparse.ArgumentParser) -> None:
+    """Add ``--published``, the switch back to the model as published.
+
+    It is a switch rather than a fourth set of ``--model`` choices only because
+    a command line reads better that way: ``--model clonemlp --published`` and
+    ``--model clonemlp_published`` produce exactly the same preset, and both
+    work everywhere.
+
+    Args:
+        parser: The parser to extend.
+    """
+    parser.add_argument(
+        "--published",
+        action="store_true",
+        help=(
+            "Use the model AS PUBLISHED instead of the repaired default that "
+            "--model has named since 2026-09-25. Equivalent to passing "
+            "--model <name>_published. An error for armtoken and hybrid, which "
+            "were introduced by the 2026-09-24 campaign and have no published "
+            f"version; it applies to {', '.join(REPAIRED_PRESETS)} only."
         ),
     )
 
@@ -187,6 +219,7 @@ __all__ = [
     "OUT_ROOT_ENV",
     "DEFAULT_RUNS_DIRNAME",
     "add_model_argument",
+    "add_published_argument",
     "add_data_root_argument",
     "add_split_argument",
     "add_device_argument",

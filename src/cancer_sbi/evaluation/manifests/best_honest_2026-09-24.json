@@ -1,0 +1,49 @@
+{
+  "campaign": "2026-09-24",
+  "title": "Best honest configuration per encoder",
+  "description": "The seed families the 2026-09-24 campaign recommends once calibration is required (docs/CAMPAIGN_REPORT_2026-09-24.md, sections 4 and 6). One entry per encoder: the headline run that is quoted as the result, and the member runs -- the same configuration retrained under a different seed -- that give every number its seed spread. This file is the single source of truth: utilities/collect_best_honest.py and cancer_sbi.evaluation.best_honest_figures both read it, and jobs/best_honest.sh takes its run list from here.",
+  "n_test_cases": 651,
+  "arms": 44,
+  "encoders": [
+    {
+      "key": "armtoken",
+      "label": "ArmToken-NPE",
+      "model": "armtoken",
+      "headline": "AT0ens3",
+      "members": ["AT0", "AT0s1", "AT0s2"],
+      "config": "--model armtoken --tail-bound 5; AT0ens3 = equal-weight mixture of the three seeds' posteriors (jobs/ensemble.sh)",
+      "why": "Highest accuracy of the campaign and calibrated; the 3-seed mixture sharpens the mean without over-widening.",
+      "colour": "#2a78d6"
+    },
+    {
+      "key": "cloneatt",
+      "label": "CloneAtt-NPE",
+      "model": "cloneatt",
+      "headline": "R26",
+      "members": ["R26", "R26s1"],
+      "config": "--z-score-x structured --input-space copy --freq-mode feature --attn-ln --flow-num-transforms 3 --tail-bound 5 --d-model 256",
+      "why": "Repaired attention model (published 0.049); slightly over-confident (cov95 0.93) -- R27rc is the recalibrated variant.",
+      "colour": "#eb6834"
+    },
+    {
+      "key": "clonemlp",
+      "label": "CloneMLP-NPE",
+      "model": "clonemlp",
+      "headline": "R2",
+      "members": ["R2", "R2s1", "R2s2"],
+      "config": "--z-score-x structured --input-space copy",
+      "why": "Published model was sharp because over-confident (39/44 SBC failures); R2 trades ~0.05-0.1 R2 (inside seed noise) for honest posteriors.",
+      "colour": "#1baf7a"
+    },
+    {
+      "key": "dominantclone",
+      "label": "DominantClone-NPE",
+      "model": "dominantclone",
+      "headline": "D0",
+      "members": ["D0", "D0s1", "D0s2"],
+      "config": "--require-all-trials  (same 651 test cases as the other encoders)",
+      "why": "Baseline: the largest clone only. Already calibrated; no encoder repair was ever applied to DeepSet.",
+      "colour": "#eda100"
+    }
+  ]
+}
