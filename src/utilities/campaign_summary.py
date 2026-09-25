@@ -58,7 +58,7 @@ def fmt(row: dict, key: str, spec: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--results", default="../results/2026-09-24")
-    ap.add_argument("--published", default="../results/metrics_summary.csv")
+    ap.add_argument("--published", default="../results/published/metrics_summary.csv")
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args()
 
