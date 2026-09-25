@@ -629,7 +629,9 @@ def plot_true_vs_postmean_scatter(
     * a black dashed ``y = x`` diagonal and a red ``#CC2222`` fitted regression
       line from ``scipy.stats.linregress``;
     * the panel title shows R^2 and is green ``#1A7A1A`` when R^2 >= 0.70, orange
-      ``#CC5500`` otherwise;
+      ``#CC5500`` otherwise -- but the number is now the coefficient of
+      determination ``1 - SSE/SST``, with Pearson ``r`` beside it, where the
+      original printed the squared correlation under the name R^2;
     * 4 rows x 6 columns = 24 slots for 22 arms; the 2 spare axes are hidden.
 
     Args:
@@ -637,7 +639,8 @@ def plot_true_vs_postmean_scatter(
         post_mean_all: Posterior means, shape (N, 44).
         out_dir: Directory to write into.
         labels: Arm names, length 44.
-        r2_good_threshold: R^2 at or above which a panel title turns green.
+        r2_good_threshold: true R^2 (1 - SSE/SST) at or above which a panel title
+            turns green.
 
     Returns:
         A dict keyed by file stem (``scatter_true_vs_postmean_chr1_11``,
@@ -699,7 +702,13 @@ def plot_true_vs_postmean_scatter(
             mean_j = mean_np[:, j]  # (N,)
 
             slope, intercept, r, _, _ = scipy_stats.linregress(theta_j, mean_j)
-            r2 = r**2
+            # The coefficient of determination, NOT the squared correlation: the two
+            # differ by exactly the affine error the posterior mean makes, and this
+            # panel used to print r^2 under the name R^2 (+0.056 on average, +0.224
+            # on 12p for the published CloneMLP). See docs/EVALUATION_PRACTICE_REVIEW.md.
+            sse = float(((theta_j - mean_j) ** 2).sum())
+            sst = float(((theta_j - theta_j.mean()) ** 2).sum())
+            r2_true = float("nan") if sst == 0 else 1.0 - sse / sst
 
             # Colour each point by absolute error: blue = low, red = high.
             err = np.abs(mean_j - theta_j)
@@ -746,9 +755,9 @@ def plot_true_vs_postmean_scatter(
                 spine.set_linewidth(0.5)
             ax.tick_params(axis="both", length=2, pad=2)
 
-            r2_color = R2_GOOD_GREEN if r2 >= r2_good_threshold else R2_POOR_ORANGE
+            r2_color = R2_GOOD_GREEN if r2_true >= r2_good_threshold else R2_POOR_ORANGE
             ax.set_title(
-                f"{labels[j]},  $R^2 = {r2:.2f}$",
+                f"{labels[j]},  $R^2 = {r2_true:.2f}$  ($r = {r:.2f}$)",
                 fontsize=7,
                 pad=3,
                 color=r2_color,

@@ -1353,3 +1353,44 @@ def test_jobs_readme_documents_matrix_eight():
     assert "--arm-feature-norm" in text and "--arm-context-norm" in text
     # The reason sbi's own switch is not the tool for the context.
     assert "z_score_y" in text
+
+
+# ------------------------------------------------------- analyze.sh runs TARP too
+#
+# Stage 2 is two commands now: poster_metrics for the tables and figures A/B/C/S1, and
+# tarp for the joint calibration test and figure T. The dry run is the only place the
+# pair can be checked without conda or a posteriors file.
+
+
+def _analyze_dry_run(env=None):
+    full = {"POST": "/p", "OUT": "/o", "DRY_RUN": "1"}
+    full.update(env or {})
+    r = _run(JOBS / "analyze.sh", full)
+    assert r.returncode == 0, r.stderr
+    return [ln for ln in r.stdout.splitlines() if ln.startswith("python ")]
+
+
+def test_analyze_dry_run_prints_both_stage_two_commands():
+    lines = _analyze_dry_run()
+    assert len(lines) == 2, lines
+    assert lines[0] == "python -m cancer_sbi.evaluation.poster_metrics --in-dir /p --out-dir /o"
+    assert lines[1] == "python -m cancer_sbi.evaluation.tarp --in-dir /p --out-dir /o"
+
+
+def test_analyze_passes_the_run_tag_to_both_commands():
+    lines = _analyze_dry_run({"RUN_TAG": "R1"})
+    assert len(lines) == 2, lines
+    assert all(ln.endswith("--in-dir /p --out-dir /o --run-tag R1") for ln in lines), lines
+
+
+def test_analyze_actually_invokes_tarp_not_only_in_the_dry_run():
+    """The dry run prints TARP; the real branch has to run it as well."""
+    text = (JOBS / "analyze.sh").read_text()
+    assert text.count("cancer_sbi.evaluation.tarp") == 1, "the command is built once"
+    body = text.split('if [ "${DRY_RUN:-0}" = "1" ]', 1)[1].split("exit 0", 1)[1]
+    assert '"${TARP[@]}"' in body, "TARP is printed but never executed"
+
+
+def test_tarp_module_is_importable_and_has_the_cli():
+    from cancer_sbi.evaluation import tarp
+    assert hasattr(tarp, "main") and hasattr(tarp, "tarp_from_samples")

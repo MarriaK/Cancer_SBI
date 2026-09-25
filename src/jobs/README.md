@@ -472,3 +472,76 @@ AT11 is the one row that *undoes* a preset default rather than adding to it: the
 carries `input_space="copy"` from repair T2, and no run has ever put the stored log2 values back on
 this encoder. `CACHE_DIR` defaults to empty and, when set, must be the **complete-sim** cache
 (`clone_top100_v1`) — not matrix 7's partial one — because every row here is read against AT0.
+
+## Best-honest evaluation (`best_honest.sh`, 2026-09-25)
+
+`jobs/best_honest.sh` rebuilds the whole poster figure set from the stored posteriors. CPU only,
+`-p general`, 2 h — it reads `.npz` files and draws; the GPU work happened in `jobs/sample.sh`.
+
+```
+sbatch jobs/best_honest.sh
+RESULTS=$HOME/cancer/results/2026-09-24 OUT=$HOME/cancer/results/best_honest sbatch jobs/best_honest.sh
+DRY_RUN=1 bash jobs/best_honest.sh          # print every command, run nothing
+```
+
+It runs in two stages. **Per run**, for each of the twelve runs the manifest names, it re-runs
+`poster_metrics` (metrics tables, figures A–C, `summary_arrays.npz`), `tarp` (the joint
+calibration test, `tarp_curve.csv` + `tarp_summary.json`) and `fig_shrinkage` (figure D), all with
+`--in-dir $RESULTS/<run>/posteriors --out-dir $RESULTS/<run> --run-tag <run>`. **Across runs**, it
+calls `utilities/collect_best_honest.py` to copy the winners into `$OUT` with its README table, and
+then `cancer_sbi.evaluation.best_honest_figures`, which writes into `$OUT/figures/`:
+
+| file | what it is |
+| --- | --- |
+| `fig_E_per_arm_r2.{png,pdf}` | the headline: per-arm true R² (1 − SSE/SST), 44 arms on the x-axis, one line per encoder, error bars = sd over that encoder's training seeds |
+| `fig_S3_per_arm_coverage.{png,pdf}` | the same strip for per-arm 95 % coverage, with the ±2σ binomial band |
+| `fig_calibration_panel.{png,pdf}` | one column per encoder: the 44 stacked SBC rank-ECDF differences with a simulated simultaneous band, and the TARP curve below |
+| `fig_D_panel.{png,pdf}` | the pooled truth-vs-posterior-mean hexbins side by side, true R² and r² annotated |
+| `per_arm_summary.csv` / `.md` | the S2 table: mean, sd and n per arm per encoder for true R², r², RMSE, contraction, coverage₉₅ and the SBC KS p |
+| `headline_table.md` | one row per encoder — headline run, true R², the seed band, log p(θ*), coverage, SBC failures and the TARP ATC |
+
+A figure whose input is missing is skipped with a `[warn]`, not an error: the cross-run script
+runs unchanged on the CSV-only copies under `results/best_honest/`, where there is no
+`summary_arrays.npz` and no TARP curve.
+
+`posterior_export.npz` is no longer a side effect of the metrics run: `poster_metrics` writes it
+only with `--poster-export`, and the poster's own producer is `overview_figure/export_posterior.py`
+— the cross-run stage reads `summary_arrays*.npz` instead, which carries every model rather than
+CloneMLP alone.
+
+An out-dir may hold several models at once (`results/published/` has three). Everything the
+per-run stage writes says which model it belongs to — a `model` column in `metrics_*.csv` and
+`tarp_curve.csv`, a list of objects in `tarp_summary.json`, and `summary_arrays_<model>.npz`
+beside the plain `summary_arrays.npz` — and the cross-run stage filters each file down to the
+`model` its manifest entry names, so a shared directory is read correctly without any flag.
+
+`$OUT` must be a **sibling** of `$RESULTS` (`collect_best_honest.py` writes
+`<results root>/<out name>`); the script refuses otherwise rather than writing somewhere surprising.
+
+### The manifest, and how to add a run
+
+Which runs are evaluated is not written in any script. It is
+`src/cancer_sbi/evaluation/manifests/best_honest_2026-09-24.json`, one entry per encoder:
+
+```json
+{"key": "armtoken", "label": "ArmToken-NPE", "model": "armtoken",
+ "headline": "AT0ens3", "members": ["AT0", "AT0s1", "AT0s2"],
+ "config": "--model armtoken --tail-bound 5; ...", "why": "...", "colour": "#2a78d6"}
+```
+
+`headline` is the run whose numbers are quoted; `members` are the seed replicates of the *same*
+configuration, and they alone give every error bar and every "mean ± sd" — an ensemble headline like
+`AT0ens3` is deliberately not one of them. `collect_best_honest.py`, `best_honest_figures` and this
+job script all read that one file, so:
+
+* **another seed of an existing encoder**: train and evaluate it, then add its run tag to that
+  encoder's `members`. Nothing else changes; the error bars widen by themselves.
+* **a new encoder**: add an object with a new `key` (which is also its folder name under
+  `results/best_honest/`), a poster `label`, the preset `model` name, a `headline`, at least one
+  member, the `config` string the README prints and a `colour` that is not already in use.
+* **a new campaign**: copy the file to `best_honest_<date>.json`, edit it, and pass
+  `MANIFEST=` to the job (or `--manifest` to either Python entry point).
+
+`RESULTS` may also point at an encoder tree (`<encoder>/<run>/`) instead of a campaign directory
+(`<run>/`) — `best_honest_figures` accepts both, which is how the figures can be redrawn from
+`results/best_honest/` on a laptop with no cluster access.
