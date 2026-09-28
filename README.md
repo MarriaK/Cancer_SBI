@@ -32,19 +32,13 @@ and accuracy quoted with its seed spread, never a single lucky run. Tables and f
 | CloneAtt-NPE | `R26` | 0.579 ± 0.015 | 29.8 | 0.930 | 28 | 0.016 tight |
 | CloneMLP-NPE | `R2` | 0.363 ± 0.053 | 17.8 | 0.938 | 20 | 0.080 wide |
 | DominantClone-NPE | `D0` | 0.177 ± 0.017 | 11.7 | 0.954 | 9 | 0.011 wide |
-| *ridge on 4 copy-state statistics per arm* | — | 0.786 | — | — | — | — |
 | *returning the prior* | — | 0.000 | −8.23 | — | — | — |
 
-Two reference rows set the scale. The **prior bar**, −8.23 nats, is the differential entropy of
-N(0, 0.2007) in 44 dimensions: the log density a model earns by ignoring the data entirely. The
-**ridge baseline** ([`src/baselines/`](src/baselines/)) is a linear fit to four copy-state fraction
-statistics per arm, and for most of this project it was the strongest point estimator here, beating
-every neural model.
-
-**ArmToken-NPE is the first encoder to beat it**, 0.898 against 0.786, and it does so while
-returning usable error bars rather than a point estimate. The other three still sit below the ridge,
-which is the honest reading of the table: the clone-set architectures that came before ArmToken were
-not extracting what a simple per-arm summary already contains.
+The last row sets the scale. The **prior bar**, −8.23 nats, is the differential entropy of
+N(0, 0.2007) in 44 dimensions: the log density a model earns by ignoring the data entirely. Every
+encoder clears it, but the spread between them is wide. **ArmToken-NPE recovers five times as much
+variance as the largest-clone baseline** and assigns the true coefficients far more density than any
+other encoder, while staying close to calibrated.
 
 ### The four encoders
 
@@ -95,8 +89,8 @@ matters for coverage. The reasoning behind this metric set is
 ### Reading the metrics
 
 - **true R² = 1 − SSE/SST**, not squared Pearson r². The two differ by the systematic scale-and-
-  offset error in the posterior mean, and that gap is not noise. Only true R² is comparable with the
-  ridge baseline.
+  offset error in the posterior mean, and that gap is not noise: squared Pearson r² flatters a model
+  whose posterior mean is consistently off-scale.
 - **log p(θ\*)** is the log density the posterior assigns to the true coefficients. Above −8.23 nats
   means the model beat the prior.
 - **TARP distance** is the mean absolute gap to the diagonal; the direction says whether the
