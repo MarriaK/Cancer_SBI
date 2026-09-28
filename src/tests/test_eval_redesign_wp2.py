@@ -154,7 +154,19 @@ def test_collect_best_honest_reproduces_the_readme_table(tmp_path, monkeypatch):
     assert new[0][7] == "TARP dist." and new[0][8] == "TARP direction"
     for n, o in zip(new[1:], old[1:]):
         assert without_tarp(n) == without_tarp(o), "a number in the table moved"
-        assert n[7] == n[8] == "—", "no TARP output in this checkout: both columns dash"
+        # The TARP columns are a dash only when the campaign folder carries no
+        # tarp_summary.json. Once those files are pulled from the cluster the
+        # collector fills them in, and then they must match the file exactly.
+        run = n[1]
+        enc_key = next(e["key"] for e in json.loads(MANIFEST.read_text())["encoders"]
+                       if e["headline"] == run)
+        summary = CAMPAIGN / run / "tarp_summary.json"
+        if summary.exists():
+            t = json.loads(summary.read_text())[0]
+            assert n[7] == f"{float(t['atc']):.3f}", f"{enc_key}: TARP distance moved"
+            assert n[8].startswith(f"{t['atc_signed'] / (t['n_alpha'] - t['n_alpha'] // 2):+.3f}")
+        else:
+            assert n[7] == n[8] == "—", "no TARP output: both columns dash"
     # the prose is derived: this campaign pools three seeds into AT0ens3, so the draws vary
     text = (root / "best_honest" / "README.md").read_text()
     assert "651 held-out simulations" in text
@@ -286,7 +298,13 @@ def test_headline_table_rows_equal_the_csv_numbers(tmp_path):
         assert cells[4] == f"{float(csv_row['mean_log_prob_true']):.1f}"
         assert cells[5] == f"{float(csv_row['coverage_95']):.3f}"
         assert cells[6].startswith(csv_row["n_arms_ks_reject_fdr05"] + " (")
-        assert cells[7] == "—"              # no TARP output in this checkout
+        # Dash only while the campaign folder has no tarp_summary.json; once it
+        # does, the cell must equal that file's distance (see the collector test).
+        summary = CAMPAIGN / enc["headline"] / "tarp_summary.json"
+        if summary.exists():
+            assert cells[7] == f"{float(json.loads(summary.read_text())[0]['atc']):.3f}"
+        else:
+            assert cells[7] == "—"
 
 
 @needs_campaign
