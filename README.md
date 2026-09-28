@@ -32,13 +32,11 @@ and accuracy quoted with its seed spread, never a single lucky run. Tables and f
 | CloneAtt-NPE | `R26` | 0.579 ± 0.015 | 29.8 | 0.930 | 28 | 0.016 tight |
 | CloneMLP-NPE | `R2` | 0.363 ± 0.053 | 17.8 | 0.938 | 20 | 0.080 wide |
 | DominantClone-NPE | `D0` | 0.177 ± 0.017 | 11.7 | 0.954 | 9 | 0.011 wide |
-| *returning the prior* | — | 0.000 | −8.23 | — | — | — |
 
-The last row sets the scale. The **prior bar**, −8.23 nats, is the differential entropy of
-N(0, 0.2007) in 44 dimensions: the log density a model earns by ignoring the data entirely. Every
-encoder clears it, but the spread between them is wide. **ArmToken-NPE recovers five times as much
-variance as the largest-clone baseline** and assigns the true coefficients far more density than any
-other encoder, while staying close to calibrated.
+**ArmToken-NPE recovers five times as much variance as the largest-clone baseline** and assigns the
+true coefficients far more density than any other encoder, while staying close to calibrated. Every
+encoder beats the prior, which would score true R² 0.000 and log p −8.23 nats, but the spread
+between them is wide.
 
 ### The four encoders
 
