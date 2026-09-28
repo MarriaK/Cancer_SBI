@@ -162,38 +162,141 @@ Each run folder under `results/best_honest/<encoder>/<run>/` holds `metrics_summ
 
 ## The dataset
 
-Not in version control. It lives on the cluster at `~/cancer/data/Guassian_Normal/simulation_outputs`
-(3,600 simulations, ~14 GB); a partial 888-simulation subset is kept locally for testing.
+Tumours are grown with **SISTEM** (Weiner & Bansal, *Bioinformatics* 41(12), 2025), a forward
+agent-based simulator of clonal evolution. Only its **growth phase** is run: cells divide, die,
+mutate and are selected, and the copy-number profile of every surviving clone is read straight off
+the simulator. Everything downstream of that in SISTEM — cell sampling, lineage trees, read counts,
+DNA-seq generation — is deliberately not called. The generators are in
+[`src/data_generation/`](src/data_generation/); `docs/DATA_GENERATION.md` (local, not tracked) is
+the authoritative reference.
+
+### How one tumour grows
+
+The genome is chr1–chr22 cut into non-overlapping **5 Mb regions**: 589 per haploid genome, 3 to 30
+regions per arm. A tumour starts from **10 normal diploid cells** and grows under a logistic
+expected-size curve until it reaches **5 × 10⁶ cells**, which takes about 2,700 generations.
+
+Because the mean cell lifespan is one generation, every living cell divides or dies each generation,
+with
+
+```
+P(divide) = (clone fitness / mean fitness in the tumour) × E(t) / (E(t) + N(t))
+```
+
+The right-hand factor is crowding and depends only on the population size, so the total size follows
+the preset curve regardless of the coefficients. **Selection decides only who makes up the tumour,
+not how big it gets.** A cell dies immediately if it violates a viability check: ploidy below 1.5 or
+above 8, any single region above 10 copies, or more than 39 of the 44 arms mutated.
+
+### The selection model
+
+Fitness is a whole-genome quantity built from the 44 arm coefficients:
+
+```
+fitness = ∏ over arms  (1 + θ_arm) ^ (x_arm / ploidy)
+```
+
+where `x_arm` is the **average copy number of the regions on that arm** and `ploidy` is the cell's
+total region copies divided by 589. Reading the sign: θ > 0 is oncogene-like, so more copies help
+and fitness is maximised by amplifying; θ < 0 is suppressor-like, so fitness is maximised at **zero
+copies**; θ = 0 is neutral. Gaining a copy of one arm also raises ploidy, which slightly dilutes
+every other arm's contribution, so the arms are not independent additive bonuses.
+
+Only `clone fitness / mean fitness` is ever used, so the absolute values, which can reach the
+hundreds, carry no meaning on their own.
+
+### Settings
+
+**Sampled fresh for every simulation** — these 46 numbers are what `parameters.pkl` records, and the
+last 44 are the inference targets:
+
+| Parameter | Prior |
+| --- | --- |
+| 44 arm coefficients θ | Normal(mean 0, **sd 0.2**) — about ±0.9 in practice, half of them negative |
+| `arm_rate` | Uniform(10⁻⁵, 10⁻⁴), per-cell per-generation arm missegregation |
+| `chromosomal_rate` | Uniform(10⁻⁶, 10⁻⁵), whole-chromosome missegregation |
+
+The two rates are nuisance parameters the models never predict. Note that the code variable is named
+`coeff_var` but `torch.distributions.Normal` takes a **standard deviation**: sd = 0.2, variance 0.04.
+Measured over 38,984 saved draws, the empirical sd is 0.2007.
+
+**Fixed by the wrapper scripts:**
+
+| Parameter | Value | Meaning |
+| --- | --- | --- |
+| `region_len` | 5 × 10⁶ | smallest gainable/losable unit |
+| `focal_driver_rate` | 5 × 10⁻⁴ | small focal CNA, the most common event by far |
+| `max_distinct_driv_ratio` | 0.9 | viability cap, 39 of 44 arms (SISTEM default is 0.8) |
+| `min_detectable` | 5 × 10⁶ | stop once the tumour reaches this size (default is 5 × 10⁵) |
+
+**SISTEM defaults left unchanged:** 10 starting cells, growth rate 0.0051, carrying capacity 10⁷,
+single anatomical site with no migration, whole-genome duplication rate 10⁻⁸, gains and losses
+equally likely, focal length exponential with mean 1.76 regions, ploidy bounds 1.5 to 8, region copy
+cap 10, generation cap 6,000.
+
+**Event mix**, which follows from the rates rather than being set: roughly **89 % of mutation events
+are focal driver CNAs**, 10 % arm-level and 1 % whole-chromosome. The two inferred rates therefore
+govern only about a tenth of all events, and focal events still move an arm's average copy number,
+which is how they enter fitness.
+
+### What one simulation is
+
+One simulation is **one θ grown 25 independent times**. The 25 replicates share the coefficients and
+the two rates but nothing else, so they differ purely by the stochastics of growth. Each replicate
+is retried up to five times if it goes extinct; 6.5 % of runs needed a retry and every failure was
+an extinction, so **the dataset is conditioned on non-extinction**.
+
+Replicates of the same simulation correlate at r ≈ 0.74, so the 25 carry real variation rather than
+being near-copies. That is what the models pool over.
+
+### What is *not* simulated
+
+This matters for any claim about real data:
+
+- **No sequencing.** Copy numbers are read exactly off every clone object. No coverage, no read
+  depth, no calling error, no Lorenz non-uniformity.
+- **No cell sampling.** A clone's "frequency" is its share of clone objects, not of sequenced cells.
+- **No driver SNVs or passengers.** The arm library sets the driver-SNV rate to zero, and passengers
+  are only added in the lineage phases, which never run.
+- **No lineage tree, no metastasis, no X or Y chromosome.**
+
+So the input is a noise-free, complete census of clone genotypes of the kind single-cell DNA
+sequencing aims to measure, not simulated sequencing data. Closing that gap is the next step.
+
+### On disk
+
+Not in version control. The full set lives on the cluster at
+`~/cancer/data/Guassian_Normal/simulation_outputs` (3,600 simulations, ~14 GB); a partial
+888-simulation subset is kept locally for testing.
 
 ```
 simulation_outputs/
   sim<N>/
     parameters.pkl          46 floats; [2:] are the 44 selection coefficients.
-                            The first two are nuisance rates the models never predict.
+                            The first two are the nuisance rates.
     <1..25>/                one directory per replicate tumour
-      CNratios_all.pkl.gz   (n_cells, 44) log2 copy-number ratios - what the clone-set models read
+      CNratios_all.pkl.gz   (n_clones, 44) copy-number ratios stored as log2(max(x, 1e-3)) − 1,
+                            so total arm loss is the sentinel −10.966
       results.pkl           3-tuple; [1] is the largest clone - what DominantClone reads
-      sim.log
+      sim.log               per-generation history: clones, population, mean fitness, births, deaths
 ```
 
 **3,159 of the 3,600 simulations survive the all-25-replicates filter**, split
 **2,261 train / 247 validation / 651 test** by parameter setting. Every number in this README is on
 those 651 test cases.
 
-Properties worth knowing before modelling against it:
+### Properties worth knowing before modelling against it
 
 - A typical replicate has **~1,600 distinct clone profiles**, so `top_k=100` is a hard truncation
   covering a median of only **45 %** of cells. There is no dominant clone: the largest is typically
   1.5 % of the population.
-- **19.9 %** of copy-number entries are exactly −10.966, the sentinel for total arm loss, and
-  **52.1 %** are exactly 0. Overall standard deviation 4.34.
-- Replicates of the same simulation correlate at r ≈ 0.74, so the 25 replicates carry real
-  stochastic variation rather than being near-copies.
+- **19.9 %** of copy-number entries are exactly −10.966, total arm loss, and **52.1 %** are exactly
+  0, i.e. diploid. Overall standard deviation 4.34.
 - The clone-set encoders read **copy space**, not the stored log2 ratios:
-  `c = (clamp(2^(x+1), 0, 8) − 2) / 2`, so 0 is diploid and −1 is total loss.
-
-`docs/DATA_GENERATION.md` (local, not tracked) is the authoritative reference for how the
-simulations were produced.
+  `c = (clamp(2^(x+1), 0, 8) − 2) / 2`, so 0 is diploid, −1 is total loss and +3 is the 8-copy cap.
+  This is worth about +0.006 R² over feeding log2 directly.
+- **θ sampling is unseeded**, and MPI round-robin makes per-run seeds depend on the world size, so
+  the dataset cannot be regenerated bit for bit. `parameters.pkl` is the only record of the truth.
 
 ## Running it
 
