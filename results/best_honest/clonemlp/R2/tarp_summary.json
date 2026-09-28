@@ -1,0 +1,19 @@
+[
+  {
+    "model": "clonemlp",
+    "run_tag": "R2",
+    "atc": 0.07984639016897085,
+    "atc_signed": 1.7368883037085818,
+    "ks_stat": 0.12299784946236564,
+    "ks_p": 4.603148251946125e-09,
+    "num_sims": 651,
+    "num_samples": 5000,
+    "num_references": 1,
+    "distance": "l2",
+    "z_score": "theta_sd",
+    "reference": "random",
+    "n_alpha": 50,
+    "n_boot": 200,
+    "seed": 0
+  }
+]

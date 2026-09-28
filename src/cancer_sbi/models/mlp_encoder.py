@@ -41,6 +41,8 @@ class BaselineCloneEmbedding(nn.Module):
         dropout: float = 0.1,
         freq_as_weight: bool = True,
         include_freq_in_mlp: bool = False,
+        input_space: str = "log2",
+        freq_mode: str = "weight",
     ) -> None:
         """Build the per-clone MLP and the output LayerNorm.
 
@@ -58,18 +60,70 @@ class BaselineCloneEmbedding(nn.Module):
             include_freq_in_mlp: Feed the frequency column to the MLP as a 45th
                 input. ``False`` in the published model, which keeps the
                 projection at 44 inputs to match CloneAtt's ``input_proj``.
+            input_space: Representation the 44 CNA columns are fed to the MLP in.
+                ``"log2"`` is the published behaviour: the columns are passed
+                through untouched, so the forward pass is byte-identical to the
+                pre-repair model. ``"copy"`` is repair T2 / run R2 -- the columns
+                are converted from log2 ratio to a centred copy-number scale by
+                ``(clamp(2**(x+1), 0, 8) - 2) / 2`` inside :meth:`forward`. The
+                frequency column is never touched by either setting.
+
+                Why here and not in the data loader: one loader feeds both
+                CloneMLP and CloneAtt, so a loader-side transform would leak into
+                the CloneAtt R4 comparison, and the preprocessed cache stores
+                pre-transform data. See ``docs/CODEBASE_IMPROVEMENT_PLAN.md``,
+                "The T2 edit must go in the encoder, not the loader".
+            freq_mode: What the clone frequency is *for*, matrix 3 / run R10.
+                ``"weight"`` is the published behaviour: the frequency reaches
+                the network only as the pooling weight below, and the MLP sees
+                44 inputs. ``"feature"`` additionally feeds
+                ``log10(clamp(freq, 1e-6))`` to the MLP as a 45th input column,
+                exactly as ``CloneSetEmbedding`` does in its own ``"feature"``
+                mode -- the same clamp, the same base, so the two encoders
+                cannot drift apart. The frequency-weighted pooling is **kept**:
+                unlike CloneAtt's token multiply (trap 19), CloneMLP's use of
+                the frequency is a *normalised* weighted mean, which shrinks
+                nothing, so there is nothing there to remove.
+
+                This is a different column from ``include_freq_in_mlp``, which
+                appends the RAW frequency. Asking for both is refused rather
+                than silently giving the MLP 46 inputs.
 
         Raises:
             AssertionError: If ``in_dim`` is smaller than 45.
+            ValueError: If ``input_space`` is not ``"log2"`` or ``"copy"``, if
+                ``freq_mode`` is not ``"weight"`` or ``"feature"``, or if
+                ``freq_mode="feature"`` is combined with
+                ``include_freq_in_mlp=True``.
         """
         super().__init__()
         assert in_dim >= 45, "Expected at least 45 features (44 CNA + freq)."
 
+        if input_space not in ("log2", "copy"):
+            raise ValueError(
+                f"input_space must be 'log2' or 'copy', got {input_space!r}."
+            )
+        if freq_mode not in ("weight", "feature"):
+            raise ValueError(
+                f"freq_mode must be 'weight' or 'feature', got {freq_mode!r}."
+            )
+        if freq_mode == "feature" and include_freq_in_mlp:
+            raise ValueError(
+                "freq_mode='feature' and include_freq_in_mlp=True both append a "
+                "frequency column to the MLP's input -- the raw value in one "
+                "case, log10 of it in the other. Pick one; together they would "
+                "give the MLP 46 inputs and two versions of the same number."
+            )
+
         self.d_model = d_model
         self.freq_as_weight = freq_as_weight
         self.include_freq_in_mlp = include_freq_in_mlp
+        self.input_space = input_space
+        self.freq_mode = freq_mode
 
-        mlp_in = 44 + (1 if include_freq_in_mlp else 0)
+        # Only ONE of the two flags can be on (refused above), so the width is
+        # 44 in the published configuration and 45 in either extended one.
+        mlp_in = 44 + (1 if (include_freq_in_mlp or freq_mode == "feature") else 0)
 
         layers = []
         dims = [mlp_in] + [hidden_dim] * (max(0, num_layers - 1)) + [d_model]
@@ -110,8 +164,25 @@ class BaselineCloneEmbedding(nn.Module):
         feats = x_clean[..., :44]  # (B, K, 44)
         freq = x_clean[..., 44]    # (B, K)
 
+        if self.input_space == "copy":
+            # Repair T2 / run R2. The CNA columns arrive as log2 ratios against a
+            # diploid baseline, where 16-21% of the values are the single
+            # "arm completely lost" sentinel -10.966, about 15 sd from everything
+            # else. Undo the log: 2**(x+1) is the absolute copy number, clamped to
+            # [0, 8] so the sentinel lands on 0 and amplifications saturate, then
+            # recentred on diploid and halved. The sentinel therefore maps to
+            # -1.0 instead of -10.966. The frequency column is NOT converted.
+            feats = (torch.clamp(2.0 ** (feats + 1.0), 0, 8) - 2.0) / 2.0
+
         if self.include_freq_in_mlp:
             feats = torch.cat([feats, freq.unsqueeze(-1)], dim=-1)  # (B, K, 45)
+        elif self.freq_mode == "feature":
+            # Matrix 3 / run R10. The log scale is the point: the top-100
+            # frequencies span 1e-2..1e-6 (trap 18 leaves them unnormalised), so
+            # the raw column include_freq_in_mlp would append is crushed against
+            # 0. Written exactly as CloneSetEmbedding.forward writes it.
+            log_freq = torch.log10(freq.clamp_min(1e-6))  # (B, K)
+            feats = torch.cat([feats, log_freq.unsqueeze(-1)], dim=-1)  # (B, K, 45)
 
         h = self.mlp(feats)  # (B, K, d_model)
         h = self.ln(h)

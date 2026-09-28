@@ -1,0 +1,19 @@
+[
+  {
+    "model": "armtoken",
+    "run_tag": "AT0s2",
+    "atc": 0.03468509984639014,
+    "atc_signed": -1.1878428790871176,
+    "ks_stat": 0.06950353302611367,
+    "ks_p": 0.0034897857674175384,
+    "num_sims": 651,
+    "num_samples": 5000,
+    "num_references": 1,
+    "distance": "l2",
+    "z_score": "theta_sd",
+    "reference": "random",
+    "n_alpha": 50,
+    "n_boot": 200,
+    "seed": 0
+  }
+]

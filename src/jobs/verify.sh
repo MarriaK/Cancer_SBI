@@ -3,8 +3,8 @@
 #SBATCH -p general
 #SBATCH -n 4 -N 1
 #SBATCH -t 00:30:00
-#SBATCH -o logs/%x_%j.out
-#SBATCH -e logs/%x_%j.err
+#SBATCH -o /home/mak23055/cancer/logs/%x_%j.out
+#SBATCH -e /home/mak23055/cancer/logs/%x_%j.err
 set -euo pipefail
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate cancer-sbi
@@ -14,7 +14,9 @@ conda activate cancer-sbi
 #   ImportError: /lib64/libstdc++.so.6: version `GLIBCXX_3.4.30' not found
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-cd "$HOME/cancer"
+CANCER="$HOME/cancer"
+cd "$CANCER/src"
 python verify_refactor.py \
-    --data-root Guassian_Normal/simulation_outputs \
+    --data-root "$CANCER/data/Guassian_Normal/simulation_outputs" \
+    --legacy-root "$CANCER/_archive_2026-09-23" \
     --with-models

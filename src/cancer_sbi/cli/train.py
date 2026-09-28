@@ -17,13 +17,133 @@ Example:
     exists, so re-running the same command continues the run rather than
     starting over. Point ``--out`` somewhere new to start from scratch.
 
-Everything that is not a path keeps the value the published run used; the flags
-that override them exist for new experiments, not for reproducing old ones.
+**Defaults changed on 2026-09-25.** ``--model clonemlp``, ``--model cloneatt``
+and ``--model dominantclone`` now build the REPAIRED configurations the
+2026-09-24 campaign selected -- R2, R26 and D0 respectively -- and no longer the
+configurations the paper published. Pass ``--published`` (or
+``--model clonemlp_published``) for the model as published; every job script
+that reproduces a campaign run does. What changed per model, and why, is written
+beside each preset in ``cancer_sbi/config.py`` under "The repaired defaults",
+and the evidence is ``docs/CAMPAIGN_REPORT_2026-09-24.md`` §4 and findings 2, 4
+and 8. Checkpoints written before that date carry no effective config and are
+rebuilt from the ``_published`` preset -- see
+:func:`cancer_sbi.evaluation.posterior.resolve_eval_config`.
+
+Everything that is not a path keeps the value the *preset* uses; the flags that
+override them exist for new experiments, not for reproducing old ones.
+
+Repair flags (added 2026-09-24, work package A). **Every one of them defaults to
+the published behaviour**, so a command line that does not mention them produces
+the run it produced before:
+
+``--z-score-x {none,structured,independent}``
+    sbi's whitening mode for theta (``FlowConfig.z_score_x``). This is the one
+    value the R0-vs-R1 comparison turns on; before this flag existed the ``flow``
+    block was never replaced, so it could only be changed by editing
+    ``config.py``. Default: the preset's (``none`` for clonemlp/cloneatt,
+    ``structured`` for dominantclone).
+``--input-space {log2,copy}``
+    Both clone-set models. ``copy`` converts the log2 ratios to copy-number
+    space *inside the encoder* (repair T2; run R2 for CloneMLP, runs R6-R8 for
+    CloneAtt) rather than in the loader, which they share. Default: ``log2``,
+    the published behaviour.
+``--freq-renorm``
+    CloneAtt only. Renormalise the per-clone frequency weights instead of
+    multiplying tokens by a raw ~0.003 frequency (run R4). ``ln`` stays off.
+    Default: off, the published behaviour.
+``--flow-dropout P``
+    All three models. ``FlowConfig.dropout_probability``; the published value
+    is 0.2, not 0. Runs R11 and R14. Default: the preset's.
+``--flow-num-transforms N``
+    All three models. ``FlowConfig.num_transforms``; published 5.
+    ``hidden_features`` stays 50. Runs R12 and R16. Default: the preset's.
+``--trial-subsample K``
+    Clone-set models only. The TRAINING dataset draws K of the 25 trials per
+    sim, fresh every epoch; validation and test keep all 25. Runs R13 and R15.
+    Default: unset, i.e. all 25 everywhere.
+``--min-trials K``
+    Clone-set models only. Keep simulations with at least K of the 25 replicate
+    trials instead of only the complete ones (trap 10); the missing slots are
+    NaN and the encoders mask them. Applied to the TRAINING and VALIDATION sets
+    only -- the test set keeps the published complete-sim rule, so the scores
+    stay comparable with every earlier matrix. Matrix 7. Default: unset.
+``--attn-scale {published,standard}``
+    CloneAtt only. ``standard`` divides the attention logits by
+    ``sqrt(d_model / n_heads)`` instead of ``sqrt(d_model)`` (trap 6), which
+    makes the attention ``sqrt(n_heads)`` times sharper. Run R17. Default:
+    ``published``.
+``--tail-bound X``
+    All three models. ``FlowConfig.tail_bound``; published 3.0. Outside
+    ``[-X, X]`` the spline is linear, so a theta beyond it cannot be resolved
+    -- a suspect for the per-arm posterior-mean bias. Run R18.
+``--trial-pool {mean,attention}``
+    Clone-set models only. ``attention`` pools the 25 per-trial embeddings with
+    a one-seed PMA instead of sbi's masked mean; the post-pooling MLP and the
+    flow's context width are unchanged. Run R20. Default: ``mean``.
+``--d-model N`` / ``--n-heads N`` / ``--num-inducing N``
+    Encoder capacity (runs R21-R24). ``--d-model`` is read by both clone-set
+    encoders; the other two are CloneAtt's attention only. ``d_model`` must
+    stay divisible by ``n_heads``.
+``--freq-mode {weight,feature}``
+    CloneAtt only. ``feature`` drops the frequency multiply altogether and
+    feeds ``log10(freq)`` to the input projection as a 45th column (runs
+    R5-R8); R4 showed that even a renormalised multiply leaves every token at
+    ~1/K of its scale. Refused together with ``--freq-renorm``. Default:
+    ``weight``, the published behaviour.
+``--attn-ln``
+    CloneAtt only. LayerNorm in every MAB/ISAB/PMA (runs R5-R8). Default: off,
+    which is trap 5.
+``--encoder-dropout P``
+    Embedding-net dropout. CloneMLP: overrides the published 0.2. CloneAtt:
+    the value *and* the layers, which the published encoder never built (trap
+    4, run R8). Ignored by DominantClone, whose DeepSet has no dropout.
+``--embed-lr X`` / ``--embed-weight-decay X`` / ``--flow-weight-decay X``
+    The two optimiser groups' rates and decays (runs R3, R7). Two-group models
+    only; DominantClone optimises one group (trap 2). Default: the preset's.
+``--arm-feature-norm {none,layernorm,batchnorm}``
+    ArmToken and the hybrid's arm branch. Normalise the pooled per-arm moment
+    vector before the shared MLP -- the eight moments sit on four different
+    scales and matrix 5 fed them in raw. One module shared by all 44 arms, so
+    the arm-equivariance is unchanged. Runs AT12-AT13. Default: ``none``, which
+    builds no module at all and reproduces AT0 bit for bit.
+``--arm-context-norm``
+    ArmToken and the hybrid's arm branch. LayerNorm the 416-wide context the
+    arm branch hands the flow. NOT the same as ``--z-score-x``'s sibling
+    ``z_score_y``, which standardises the raw input tensor before the embedding
+    net and so never sees the context. Run AT14. Default: off, i.e. AT0.
+``--require-all-trials``
+    DominantClone only. Keep only the sims that have every trial file, i.e. the
+    clone-set models' sim set, so the three models are compared on the same
+    simulations. Default: off, the published NaN-pad-and-keep behaviour.
+``--num-workers``
+    ``DataLoader`` worker processes. Prefetch only -- shuffling stays on the
+    main process's generator, so the RNG stream is unchanged. Default: 0.
+``--cache-dir``
+    Pre-built clone cache (``src/utilities/build_clone_cache.py``) to read the
+    per-sim tensors from instead of the gzipped trial files. Clone-set models
+    only; the dominant-clone builder ignores it. Default: unset.
+``--deterministic``
+    ``torch.use_deterministic_algorithms(True)`` plus
+    ``CUBLAS_WORKSPACE_CONFIG=:4096:8``, set before CUDA is initialised.
+    Default: off.
+
+Every checkpoint written here carries the *effective* config under the
+``effective_config`` key (``config.config_to_dict`` plus the paths and the flags
+as given), so ``evaluation/sample_posteriors.py`` and ``cli/evaluate.py`` rebuild
+the network this run trained rather than the preset's defaults. Checkpoints from
+before 2026-09-24 do not have it; those readers fall back to the preset and say
+so.
+
+Validation: if the split pickle carries a ``val_ids`` key, that third set is
+used for early stopping and ``test_ids`` is never looked at during training. If
+it does not, the historical behaviour is kept -- early stopping on the test set
+-- and a warning says so on every run.
 
 Heavy imports happen inside :func:`main` so that ``--help`` works without torch.
 """
 
 import argparse
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
@@ -34,12 +154,18 @@ from cancer_sbi.cli import (
     add_data_root_argument,
     add_device_argument,
     add_model_argument,
+    add_published_argument,
     add_split_argument,
     default_run_dir,
     require_path,
     resolve_device,
 )
-from cancer_sbi.config import get_preset
+from cancer_sbi.config import (
+    ModelPreset,
+    config_to_dict,
+    get_preset,
+    resolve_model_name,
+)
 
 #: File name CloneAtt's original training loop pickled its density estimator to
 #: (``SetTransformer_NPE/inference_model.py:246``). Kept so the artefact keeps
@@ -64,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_model_argument(parser)
+    add_published_argument(parser)
     add_data_root_argument(parser)
     add_split_argument(parser)
     add_device_argument(parser)
@@ -142,9 +269,355 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     training.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help=(
+            "DataLoader worker processes (published runs: 0, single-process). "
+            "Workers only prefetch -- shuffling stays on the main process's "
+            "generator -- so raising this does not move the results."
+        ),
+    )
+    training.add_argument(
+        "--cache-dir",
+        type=str,
+        default=None,
+        help=(
+            "Read clone tensors from a pre-built cache directory (see "
+            "src/utilities/build_clone_cache.py) instead of the gzipped trial "
+            "files. Bit-identical batches, just faster. Clone-set models only: "
+            "the dominant-clone loader ignores it."
+        ),
+    )
+    training.add_argument(
+        "--deterministic",
+        action="store_true",
+        help=(
+            "Ask torch for deterministic kernels and set "
+            "CUBLAS_WORKSPACE_CONFIG=:4096:8 before CUDA starts. Off by "
+            "default, which is what the published runs did."
+        ),
+    )
+    training.add_argument(
         "--quiet",
         action="store_true",
         help="Do not mirror the per-epoch line into the logging module.",
+    )
+
+    repairs = parser.add_argument_group(
+        "repair switches",
+        "Added 2026-09-24. Each one defaults to the PUBLISHED behaviour, so "
+        "omitting all of them reproduces the run this tree produced before.",
+    )
+    repairs.add_argument(
+        "--z-score-x",
+        choices=["none", "structured", "independent"],
+        default=None,
+        help=(
+            "sbi's whitening mode for theta. The single value separating R0 "
+            "from R1. Default: the preset's (none for clonemlp and cloneatt, "
+            "structured for dominantclone)."
+        ),
+    )
+    repairs.add_argument(
+        "--input-space",
+        choices=["log2", "copy"],
+        default=None,
+        help=(
+            "Clone-set models only: the space the per-clone projection sees. "
+            "'copy' applies the T2 conversion inside the encoder, identically "
+            "for both (runs R2 and R6-R8). Default: log2, the published "
+            "behaviour. Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--freq-mode",
+        choices=["weight", "feature"],
+        default=None,
+        help=(
+            "Both clone-set models: what the clone frequency is for. 'weight' "
+            "is the published behaviour; 'feature' feeds log10(freq) to the "
+            "per-clone projection as a 45th column. For cloneatt that also "
+            "drops the token multiply (runs R5-R8); for clonemlp there is no "
+            "multiply to drop -- the frequency-weighted mean pooling stays "
+            "(run R10). Cannot be combined with --freq-renorm, which then has "
+            "nothing to renormalise. Default: weight. Ignored by "
+            "dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--attn-ln",
+        action="store_true",
+        help=(
+            "CloneAtt only: build every MAB/ISAB/PMA with ln=True (runs "
+            "R5-R8). Default: off, which is trap 5 -- no LayerNorm anywhere "
+            "in the attention stack."
+        ),
+    )
+    repairs.add_argument(
+        "--encoder-dropout",
+        type=float,
+        default=None,
+        help=(
+            "Dropout probability inside the embedding net. clonemlp: "
+            "overrides the published 0.2 between the MLP's hidden layers. "
+            "cloneatt: the same value, AND wires it up at all -- the "
+            "published encoder accepts dropout and discards it (trap 4), so "
+            "this flag is what turns run R8 on. Ignored by dominantclone, "
+            "whose DeepSet has no dropout layer. Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--embed-lr",
+        type=float,
+        default=None,
+        help=(
+            "Learning rate of the embedding-net parameter group (published: "
+            "1e-4, which is near-frozen for an attention encoder -- run R7 "
+            "raises it). Two-group models only; ignored by dominantclone, "
+            "which optimises every parameter in one group (trap 2)."
+        ),
+    )
+    repairs.add_argument(
+        "--embed-weight-decay",
+        type=float,
+        default=None,
+        help=(
+            "Weight decay of the embedding-net parameter group (published: "
+            "0.0; run R3 uses 1e-4). Two-group models only."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-weight-decay",
+        type=float,
+        default=None,
+        help=(
+            "Weight decay of the flow parameter group (published: 1e-4; run "
+            "R3 uses 1e-3 against the epoch-15 overfit). Two-group models "
+            "only."
+        ),
+    )
+    repairs.add_argument(
+        "--require-all-trials",
+        action="store_true",
+        help=(
+            "DominantClone only: train, validate and test on the sims that "
+            "have every trial file, i.e. exactly the clone-set models' sim "
+            "set. Default: off, the published behaviour (missing trials are "
+            "NaN-padded and the sim is kept). Ignored by the other two models, "
+            "which already apply this rule."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-dropout",
+        type=float,
+        default=None,
+        help=(
+            "Dropout probability inside the flow's residual blocks, all three "
+            "models (published: 0.2, from */main.py:35 -- not 0). Matrix 3 "
+            "runs R11 and R14 raise it against the epoch-10-to-25 overfit. "
+            "Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-num-transforms",
+        type=int,
+        default=None,
+        help=(
+            "Number of spline transforms in the flow, all three models "
+            "(published: 5, sbi's default). Lowering it is the direct way to "
+            "shrink a 421k-parameter flow fitted on 2,261 sims (runs R12, "
+            "R16). hidden_features stays 50. Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--flow-hidden-features",
+        type=int,
+        default=None,
+        help=(
+            "Hidden width of the flow's residual blocks, all models "
+            "(published: 50, sbi's default -- and deliberately left without a "
+            "flag through matrices 1-5, because 50 is the width every "
+            "published run used). Matrix 6 adds it to WIDEN the flow (runs "
+            "AT6, AT8, AT9), which is an experiment, not a repair. Default: "
+            "the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--lr-plateau",
+        action="store_true",
+        help=(
+            "Attach ReduceLROnPlateau(mode='min', factor=0.5, patience=5) to "
+            "the optimiser and step it on the validation loss once per epoch, "
+            "halving every group's learning rate after 6 epochs without "
+            "improvement (runs AT7, AT9). Its state is checkpointed, so a "
+            "resumed run continues with the rate it had reached. Off by "
+            "default, which builds no scheduler at all and is exactly what "
+            "every published run did."
+        ),
+    )
+    repairs.add_argument(
+        "--trial-subsample",
+        type=int,
+        default=None,
+        help=(
+            "Clone-set models only: draw this many of the 25 trials at random "
+            "on every training item, fresh each epoch (runs R13, R15). "
+            "Validation and test always keep all 25, which is the published "
+            "evaluation condition. Default: unset, i.e. all 25 everywhere. "
+            "Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--min-trials",
+        type=int,
+        default=None,
+        help=(
+            "Clone-set models only: keep sims with at least this many of the "
+            "25 trial files instead of only the complete ones (matrix 7). The "
+            "missing trials are NaN slots the encoders mask. TRAINING and "
+            "VALIDATION only -- the test set keeps the published rule so the "
+            "reported numbers stay comparable. Default: unset. "
+            "Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--freq-renorm",
+        action="store_true",
+        default=None,
+        help=(
+            "CloneAtt only: renormalise the per-clone frequency weights "
+            "instead of multiplying tokens by the raw frequency (run R4). "
+            "LayerNorm stays off. Default: off, the published behaviour."
+        ),
+    )
+
+    repairs.add_argument(
+        "--attn-scale",
+        choices=["published", "standard"],
+        default=None,
+        help=(
+            "CloneAtt only: how the attention logits are scaled in every MAB. "
+            "'published' divides by sqrt(d_model) = 11.31 (trap 6); "
+            "'standard' divides by sqrt(d_model / n_heads) = 4, the per-head "
+            "scale, so the attention is sqrt(n_heads) times sharper (run "
+            "R17). Default: published."
+        ),
+    )
+    repairs.add_argument(
+        "--tail-bound",
+        type=float,
+        default=None,
+        help=(
+            "Half-width of the flow's spline support, all three models "
+            "(published: 3.0, sbi's default). The transform is linear outside "
+            "[-X, X], so a widely-spread theta is clipped there -- one of the "
+            "two suspects for the per-arm posterior-mean bias (run R18). "
+            "Default: the preset's."
+        ),
+    )
+    repairs.add_argument(
+        "--trial-pool",
+        choices=["mean", "attention"],
+        default=None,
+        help=(
+            "Clone-set models only: how the 25 per-trial embeddings become "
+            "one context vector. 'mean' is sbi's NaN-masked mean, the "
+            "published behaviour; 'attention' pools them with a one-seed PMA "
+            "instead and keeps the post-pooling MLP, so the flow's context "
+            "width does not move (run R20). Default: mean. Ignored by "
+            "dominantclone, which has no per-trial encoder."
+        ),
+    )
+    repairs.add_argument(
+        "--d-model",
+        type=int,
+        default=None,
+        help=(
+            "Width of the per-trial embedding, both clone-set encoders "
+            "(published: 128). Runs R21 and R24. Must stay divisible by "
+            "--n-heads for cloneatt. Ignored by dominantclone."
+        ),
+    )
+    repairs.add_argument(
+        "--n-heads",
+        type=int,
+        default=None,
+        help=(
+            "Attention heads in every ISAB and in the PMA, cloneatt only "
+            "(published: 8). Run R22. Must divide --d-model. Ignored by the "
+            "other two models, neither of whose encoders has attention."
+        ),
+    )
+    repairs.add_argument(
+        "--num-inducing",
+        type=int,
+        default=None,
+        help=(
+            "Inducing points per ISAB, cloneatt only (published: 32). Runs "
+            "R23 and R24. Ignored by the other two models."
+        ),
+    )
+
+    repairs.add_argument(
+        "--arm-layers",
+        type=int,
+        default=None,
+        help=(
+            "ArmToken only: number of ISABs over the 44-arm set (default: 1). "
+            "0 is a real setting -- the arms are then processed completely "
+            "independently, which is the strictest form of the equivariance "
+            "(run AT3). Ignored by the other three models."
+        ),
+    )
+    repairs.add_argument(
+        "--d-arm",
+        type=int,
+        default=None,
+        help=(
+            "ArmToken only: numbers read out per arm (default: 8), so the "
+            "flow's context is 44 * d_arm + d_global wide. Refused when that "
+            "exceeds 512. Ignored by the other three models."
+        ),
+    )
+    repairs.add_argument(
+        "--arm-num-inducing",
+        type=int,
+        default=None,
+        help=(
+            "ArmToken only: inducing points per arm ISAB (default: 16, over a "
+            "44-element set). Deliberately a separate flag from "
+            "--num-inducing, which is CloneAtt's 32 over a 100-clone set; one "
+            "flag for both would silently reshape the other model. Ignored by "
+            "the other three models."
+        ),
+    )
+
+    repairs.add_argument(
+        "--arm-feature-norm",
+        choices=["none", "layernorm", "batchnorm"],
+        default=None,
+        help=(
+            "ArmToken (and the hybrid's arm branch): normalise the pooled "
+            "per-arm moment vector immediately before the shared MLP. "
+            "'layernorm' z-scores each arm token across its own features; "
+            "'batchnorm' is a learned per-feature z-scoring with running "
+            "statistics. One shared module either way, so the 44 arms stay "
+            "equivariant. Runs AT12 and AT13. Default: none, the AT0 "
+            "behaviour, which builds no module at all. Ignored by the other "
+            "three models."
+        ),
+    )
+    repairs.add_argument(
+        "--arm-context-norm",
+        action="store_true",
+        help=(
+            "ArmToken (and the hybrid's arm branch): LayerNorm the 416-wide "
+            "context handed to the flow. sbi's z_score_y standardises the raw "
+            "input tensor before the embedding net, not the context, so it is "
+            "not the switch for this. Run AT14. Default: off, the AT0 "
+            "behaviour. Ignored by the other three models."
+        ),
     )
 
     pickling = parser.add_mutually_exclusive_group()
@@ -167,40 +640,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """Run the training command.
+def build_config(
+    args: argparse.Namespace,
+    preset: "ModelPreset",
+    data_root: Path,
+    split_path: Path,
+    ckpt_dir: Path,
+) -> "ModelPreset":
+    """Fold the command line into a preset, leaving unmentioned fields alone.
+
+    This is the whole argument-to-config path, pulled out of :func:`main` so it
+    can be tested without touching a GPU, a dataset or a checkpoint directory.
+    That matters more than it looks: the two bugs this function fixes -- the
+    unconditional ``seed=args.seed`` and the ``flow`` block never being replaced
+    -- both lived *here*, in the mapping from flags to config, and a test that
+    asserted on the presets alone would have passed while every run ignored the
+    flags. See docs/CODEBASE_IMPROVEMENT_PLAN.md, "Testing".
 
     Args:
-        argv: Argument list; ``None`` means ``sys.argv[1:]``.
+        args: Parsed arguments from :func:`build_parser`.
+        preset: The published model to derive from, from
+            :func:`cancer_sbi.config.get_preset`.
+        data_root: Directory holding the ``sim*/`` folders.
+        split_path: The split pickle.
+        ckpt_dir: Where checkpoints are written (already resolved against
+            ``--out`` by the caller).
 
     Returns:
-        Process exit code: 0 on success.
+        A new frozen :class:`~cancer_sbi.config.ModelPreset`. Every field the
+        command line did not mention keeps the preset's published value.
     """
-    args = build_parser().parse_args(argv)
-
-    # Local imports: see the module docstring. Everything below needs torch.
-    from cancer_sbi.data.loaders import (
-        build_clone_set_dataloaders,
-        build_dominant_clone_dataloaders,
-    )
-    from cancer_sbi.data.splits import load_split
-    from cancer_sbi.training.trainer import (
-        Trainer,
-        build_training_components,
-        quirks_for,
-    )
-
-    data_root = require_path(args.data_root, "--data-root", DATA_ROOT_ENV)
-    split_path = require_path(args.split, "--split", SPLIT_ENV)
-    device = resolve_device(args.device)
-
-    preset = get_preset(args.model)
-    out_dir = Path(args.out) if args.out is not None else default_run_dir(preset.name)
-    # Trap 11 lives here: the directory NAME comes from the preset, which is the
-    # name that model's own training code used. The parent is the user's --out,
-    # so two runs of the same model never collide.
-    ckpt_dir = Path(args.ckpt_dir) if args.ckpt_dir else out_dir / preset.train.ckpt_dir
-
     # --- assemble the config -------------------------------------------------
     data_cfg = replace(
         preset.data,
@@ -211,6 +680,40 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.top_k
             if args.top_k is not None and preset.data.top_k is not None
             else preset.data.top_k
+        ),
+        num_workers=(
+            args.num_workers if args.num_workers is not None else preset.data.num_workers
+        ),
+        cache_dir=(
+            getattr(args, "cache_dir", None)
+            if getattr(args, "cache_dir", None)
+            else preset.data.cache_dir
+        ),
+        # Only the dominant-clone path has anything to opt into; recording the
+        # flag on a clone-set preset would put a value in the checkpoint that
+        # nothing applied. The warning below says so.
+        require_all_trials=(
+            bool(args.require_all_trials) and preset.data.dataset == "dominant_clone"
+        )
+        or preset.data.require_all_trials,
+        # Matrix 3. Only the clone-set datasets implement it, so recording it on
+        # a dominant-clone preset would put a value in the checkpoint that
+        # nothing applied -- the same rule as require_all_trials above, pointing
+        # the other way. The warning below says so.
+        trial_subsample=(
+            args.trial_subsample
+            if getattr(args, "trial_subsample", None) is not None
+            and preset.data.dataset == "clone_sets"
+            else preset.data.trial_subsample
+        ),
+        # Matrix 7, the same rule again: CNASimsDataset is the only class that
+        # reads it, so a dominant-clone preset keeps its own value and the
+        # warning below says the flag was dropped.
+        min_trials=(
+            args.min_trials
+            if getattr(args, "min_trials", None) is not None
+            and preset.data.dataset == "clone_sets"
+            else preset.data.min_trials
         ),
     )
     train_cfg = replace(
@@ -223,41 +726,558 @@ def main(argv: Optional[List[str]] = None) -> int:
             else preset.train.stop_after_epochs
         ),
         ckpt_dir=str(ckpt_dir),
-        seed=args.seed,
+        # Trap 21 / B1: this line used to be the bare `seed=args.seed`, which
+        # overwrote the preset's seed with None whenever --seed was absent --
+        # so TrainConfig.seed was a decorative field that no run could reach.
+        seed=args.seed if args.seed is not None else preset.train.seed,
         log_progress=not args.quiet,
+        # Matrix 6. store_true, so False is both "absent" and the published
+        # behaviour; a preset that ever sets it True would still be honoured
+        # because the flag can only turn it on.
+        lr_plateau=bool(getattr(args, "lr_plateau", False)) or preset.train.lr_plateau,
     )
-    cfg = replace(preset, data=data_cfg, train=train_cfg)
+    # The `flow` block was never replaced here, which is why z_score_x -- the
+    # one value the R0-vs-R1 comparison turns on -- could previously only be
+    # changed by editing config.py. Replaced only when the flag is given, so
+    # the preset's value is still the default.
+    # Matrix 3 adds two more flow overrides beside it; each one is applied only
+    # when its flag is given, so an untouched command line still yields the
+    # preset's own FlowConfig object.
+    flow_cfg = preset.flow
+    if args.z_score_x is not None:
+        flow_cfg = replace(flow_cfg, z_score_x=args.z_score_x)
+    if getattr(args, "flow_dropout", None) is not None:
+        flow_cfg = replace(flow_cfg, dropout_probability=args.flow_dropout)
+    if getattr(args, "flow_num_transforms", None) is not None:
+        flow_cfg = replace(flow_cfg, num_transforms=args.flow_num_transforms)
+    # Matrix 6. Read by every preset's flow, like the three above it, so there
+    # is no preset for which it would be decorative and no warning to print.
+    if getattr(args, "flow_hidden_features", None) is not None:
+        flow_cfg = replace(flow_cfg, hidden_features=args.flow_hidden_features)
+    # Matrix 4 / run R18. Read by all three presets, like the two above it.
+    if getattr(args, "tail_bound", None) is not None:
+        flow_cfg = replace(flow_cfg, tail_bound=args.tail_bound)
+    # --freq-renorm scales the weights of a multiply that --freq-mode feature
+    # removes, so the pair describes no network at all. Refused rather than
+    # resolved: silently dropping either half is how a run gets launched
+    # believing it carries a repair it does not.
+    # 2026-09-25: the test is on the EFFECTIVE mode where the flag is actually
+    # read, not only on the two flags. cloneatt's repaired preset carries
+    # freq_mode="feature" (run R5), so `--freq-renorm` ALONE -- R4's command
+    # line -- now describes the same impossible network that
+    # `--freq-renorm --freq-mode feature` always did. R4 is reproduced with
+    # `--published`, where the mode is "weight" again.
+    #
+    # The second disjunct is restricted to the one encoder kind that reads
+    # freq_renorm at all: for every other preset the flag is warned about and
+    # dropped further down, and turning a warn-and-ignore into a hard error
+    # would be a different change from this one.
+    contradicts_the_preset = (
+        getattr(args, "freq_mode", None) is None
+        and preset.encoder.kind == "attention"
+        and preset.encoder.freq_mode == "feature"
+    )
+    if args.freq_renorm and (
+        getattr(args, "freq_mode", None) == "feature" or contradicts_the_preset
+    ):
+        raise ValueError(
+            "--freq-renorm and --freq-mode feature contradict each other: "
+            "'feature' removes the frequency multiply entirely, so there are "
+            "no per-clone weights left to renormalise. Pass one or the other. "
+            f"({preset.name} carries freq_mode={preset.encoder.freq_mode!r} in "
+            "its preset; --published gives the 'weight' one R4 was run with.)"
+        )
+
+    encoder_cfg = preset.encoder
+    # Both clone-set encoders read input_space now (the same formula in both);
+    # only DeepSet ignores it, and a value recorded there would describe a
+    # transform nothing applied.
+    # Matrix 5: armtoken reads input_space (arm_moments takes it) and the four
+    # attention settings, so the gates below widen from "either clone-set
+    # encoder" to "either clone-set encoder or armtoken". deepset is still the
+    # only kind that reads none of them.
+    if args.input_space is not None and preset.encoder.kind != "deepset":
+        encoder_cfg = replace(encoder_cfg, input_space=args.input_space)
+    # Gated on the encoder that reads it, like every switch below. Before
+    # matrix 5 this line was unconditional, so `--freq-renorm` warned "not used
+    # by clonemlp" and then rode into clonemlp's checkpoint anyway, describing
+    # a renormalisation BaselineCloneEmbedding has no argument for. Only
+    # CloneSetEmbedding takes it.
+    if args.freq_renorm and preset.encoder.kind == "attention":
+        encoder_cfg = replace(encoder_cfg, freq_renorm=True)
+    # The three attention-only switches, and the optimiser group overrides, are
+    # applied only where they are read. A value recorded on a preset that
+    # ignores it would ride into the checkpoint's effective config and describe
+    # a network nothing built -- the same reason --require-all-trials is gated
+    # on the dataset above.
+    is_attention = preset.encoder.kind == "attention"
+    # Matrix 5. `attn_ln`, `attn_scale` and `n_heads` are read by
+    # ArmTokenEmbedding as well as CloneSetEmbedding, so the three flags that
+    # set them apply to both; `num_inducing`, `d_model`, `freq_mode` and
+    # `freq_renorm` are not, and stay attention-only (cli warns for armtoken).
+    is_armtoken = preset.encoder.kind == "armtoken"
+    # Matrix 6. The hybrid encoder owns one of each branch, so it reads BOTH
+    # field groups: everything gated on `is_attention` below and everything
+    # gated on `is_armtoken` applies to it, and the two shape checks after the
+    # gates are run for both of its branches.
+    is_hybrid = preset.encoder.kind == "hybrid"
+    has_attention = is_attention or is_armtoken or is_hybrid
+    has_clone_branch = is_attention or is_hybrid
+    has_arm_branch = is_armtoken or is_hybrid
+    # Matrix 3 widened --freq-mode to clonemlp, so the gate is "either clone-set
+    # encoder", not "attention". Only DeepSet, which has no per-clone frequency
+    # at all, still ignores it.
+    if (
+        getattr(args, "freq_mode", None) is not None
+        and preset.encoder.kind in ("mlp", "attention", "hybrid")
+    ):
+        encoder_cfg = replace(encoder_cfg, freq_mode=args.freq_mode)
+    if getattr(args, "attn_ln", False) and has_attention:
+        encoder_cfg = replace(encoder_cfg, attn_ln=True)
+    if getattr(args, "encoder_dropout", None) is not None and preset.encoder.kind != "deepset":
+        encoder_cfg = replace(encoder_cfg, dropout=args.encoder_dropout)
+        if has_attention:
+            # Trap 4: CloneAtt's encoder accepts `dropout` and discards it, so
+            # setting the probability is not enough -- the run has to say that
+            # the layers should exist at all. clonemlp already applies it, and
+            # ArmTokenEmbedding has the same opt-in shape as CloneAtt.
+            encoder_cfg = replace(encoder_cfg, attn_dropout_active=True)
+    # Matrix 4. Same rule as matrix 2's attention-only switches: each one is
+    # recorded only on a preset whose encoder reads it, so a checkpoint never
+    # carries a value describing a network nothing built.
+    if getattr(args, "attn_scale", None) is not None and has_attention:
+        encoder_cfg = replace(encoder_cfg, attn_scale=args.attn_scale)
+    if (
+        getattr(args, "trial_pool", None) is not None
+        and preset.encoder.kind in ("mlp", "attention", "armtoken", "hybrid")
+    ):
+        encoder_cfg = replace(encoder_cfg, trial_pool=args.trial_pool)
+    # --d-model is read by BaselineCloneEmbedding as well as CloneSetEmbedding
+    # (both take it as the per-trial embedding width), so it is a clone-set
+    # flag, not an attention-only one. --n-heads and --num-inducing size the
+    # attention itself and have nothing to reach on the other two paths.
+    if getattr(args, "d_model", None) is not None and preset.encoder.kind in (
+        "mlp",
+        "attention",
+        # Matrix 6: --d-model sizes the hybrid's CLONE branch. Its arm branch
+        # has --d-arm and --d-token-free defaults of its own.
+        "hybrid",
+    ):
+        encoder_cfg = replace(encoder_cfg, d_model=args.d_model)
+    if getattr(args, "n_heads", None) is not None and has_attention:
+        encoder_cfg = replace(encoder_cfg, n_heads=args.n_heads)
+    if getattr(args, "num_inducing", None) is not None and has_clone_branch:
+        encoder_cfg = replace(encoder_cfg, num_inducing=args.num_inducing)
+    # Matrix 5's three armtoken-only knobs, recorded only on armtoken for the
+    # same reason as every switch above: a value on a preset that ignores it
+    # would ride into the checkpoint describing a network nothing built.
+    if getattr(args, "arm_layers", None) is not None and has_arm_branch:
+        encoder_cfg = replace(encoder_cfg, n_arm_layers=args.arm_layers)
+    if getattr(args, "d_arm", None) is not None and has_arm_branch:
+        encoder_cfg = replace(encoder_cfg, d_arm=args.d_arm)
+    if getattr(args, "arm_num_inducing", None) is not None and has_arm_branch:
+        encoder_cfg = replace(encoder_cfg, arm_num_inducing=args.arm_num_inducing)
+    # Matrix 8's two, gated the same way and for the same reason: both build a
+    # module inside ArmTokenEmbedding, so a value recorded on a preset with no
+    # arm branch would describe a network nothing built. For the hybrid they
+    # reach the ARM branch only -- build_arm_token_encoder is what forwards
+    # them, and the clone branch never sees either field.
+    if getattr(args, "arm_feature_norm", None) is not None and has_arm_branch:
+        encoder_cfg = replace(
+            encoder_cfg, arm_feature_norm=args.arm_feature_norm
+        )
+    if getattr(args, "arm_context_norm", False) and has_arm_branch:
+        encoder_cfg = replace(encoder_cfg, arm_context_norm=True)
+
+    # The flow's context is the embedding's output, and build_nsf puts a
+    # 50-wide residual net on it; a context much wider than the published 256
+    # makes the flow's first layer the biggest thing in the network again,
+    # which is the opposite of what this encoder is for. Refused here, where
+    # the flag is still named, rather than 20 minutes into an array task.
+    # ArmTokenEmbedding raises the same error at build time; this one names
+    # --d-arm.
+    if has_arm_branch:
+        from cancer_sbi.models.arm_tokens import MAX_CONTEXT_WIDTH, N_ARMS
+
+        width = N_ARMS * encoder_cfg.d_arm + encoder_cfg.d_global
+        if width > MAX_CONTEXT_WIDTH:
+            raise ValueError(
+                f"--d-arm {encoder_cfg.d_arm} makes the flow's context "
+                f"{N_ARMS} * {encoder_cfg.d_arm} + {encoder_cfg.d_global} = "
+                f"{width} wide, over the {MAX_CONTEXT_WIDTH} cap. The flow's "
+                f"first layer would then dominate the network the per-arm "
+                f"encoder exists to shrink. Pick a smaller --d-arm."
+            )
+        # The arm attention splits d_token across the heads with an integer
+        # division, exactly as CloneAtt's splits d_model -- same refusal.
+        if encoder_cfg.d_token % encoder_cfg.n_heads:
+            raise ValueError(
+                f"--n-heads {encoder_cfg.n_heads} does not divide armtoken's "
+                f"d_token {encoder_cfg.d_token}: the attention splits the arm "
+                f"token evenly across the heads, so an indivisible pair would "
+                f"silently discard "
+                f"{encoder_cfg.d_token % encoder_cfg.n_heads} of every "
+                f"token's features."
+            )
+
+    # MAB splits d_model evenly across the heads with an integer division, so
+    # an indivisible pair does not raise -- it silently drops the remainder of
+    # every token. Refused here, where the flags are still named, rather than
+    # 20 minutes into an array task.
+    if has_clone_branch and encoder_cfg.d_model % encoder_cfg.n_heads:
+        raise ValueError(
+            f"--d-model {encoder_cfg.d_model} is not divisible by --n-heads "
+            f"{encoder_cfg.n_heads}: the attention splits the embedding evenly "
+            f"across the heads, so an indivisible pair would silently discard "
+            f"{encoder_cfg.d_model % encoder_cfg.n_heads} of every token's "
+            f"features. Pick a d_model that is a multiple of n_heads."
+        )
+    # The pooling PMA has the same constraint, on whichever head count it will
+    # actually use -- which for clonemlp is TrialsSBIEmbedding's own default,
+    # its EncoderConfig carrying no n_heads at all.
+    if encoder_cfg.trial_pool == "attention" and encoder_cfg.kind in (
+        "mlp",
+        "attention",
+        # Matrix 6: the hybrid's clone branch has the same wrapper, so it has
+        # the same constraint. Its ARM branch's own pooling PMA is over
+        # d_token and is checked by the armtoken block above.
+        "hybrid",
+    ):
+        # armtoken is excluded: its trial pooling is ArmTokenEmbedding's own
+        # PMA over d_token, checked just above, and its `d_model` is None.
+        # Local import: models.trials pulls in torch and sbi, and this module
+        # keeps every heavy import inside a function so `--help` works without
+        # them (see the module docstring).
+        from cancer_sbi.models.trials import DEFAULT_TRIAL_POOL_HEADS
+
+        pool_heads = encoder_cfg.n_heads or DEFAULT_TRIAL_POOL_HEADS
+        if encoder_cfg.d_model % pool_heads:
+            raise ValueError(
+                f"--trial-pool attention pools the trial embeddings with a "
+                f"{pool_heads}-head PMA, and --d-model {encoder_cfg.d_model} is "
+                f"not divisible by {pool_heads}. Pick a d_model that is a "
+                f"multiple of it, or set --n-heads to a divisor of d_model."
+            )
+
+    optim_cfg = preset.optim
+    if preset.optim.use_param_groups:
+        if getattr(args, "embed_lr", None) is not None:
+            optim_cfg = replace(optim_cfg, embed_lr=args.embed_lr)
+        if getattr(args, "embed_weight_decay", None) is not None:
+            optim_cfg = replace(optim_cfg, embed_weight_decay=args.embed_weight_decay)
+        if getattr(args, "flow_weight_decay", None) is not None:
+            optim_cfg = replace(optim_cfg, flow_weight_decay=args.flow_weight_decay)
+    cfg = replace(
+        preset,
+        data=data_cfg,
+        train=train_cfg,
+        flow=flow_cfg,
+        encoder=encoder_cfg,
+        optim=optim_cfg,
+    )
+
+    if args.input_space is not None and preset.encoder.kind == "deepset":
+        print(f"[warn] --input-space is not used by {preset.name}; ignoring it.")
+    if args.freq_renorm and preset.encoder.kind != "attention":
+        print(f"[warn] --freq-renorm is not used by {preset.name}; ignoring it.")
+    if (
+        getattr(args, "freq_mode", None) is not None
+        and preset.encoder.kind not in ("mlp", "attention", "hybrid")
+    ):
+        print(f"[warn] --freq-mode is not used by {preset.name}; ignoring it.")
+    if getattr(args, "attn_ln", False) and not has_attention:
+        print(f"[warn] --attn-ln is not used by {preset.name}; ignoring it.")
+    # DeepSet builds no nn.Dropout at all (models/deep_set.py), so there is
+    # nothing for the probability to reach on the dominant-clone path.
+    if getattr(args, "encoder_dropout", None) is not None and preset.encoder.kind == "deepset":
+        print(f"[warn] --encoder-dropout is not used by {preset.name}; ignoring it.")
+    # Trap 2: dominantclone optimises every parameter in a single group, so the
+    # two per-group fields are not read at all on that path.
+    for flag, value in (
+        ("--embed-lr", getattr(args, "embed_lr", None)),
+        ("--embed-weight-decay", getattr(args, "embed_weight_decay", None)),
+        ("--flow-weight-decay", getattr(args, "flow_weight_decay", None)),
+    ):
+        if value is not None and not preset.optim.use_param_groups:
+            print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
+
+    if args.require_all_trials and preset.data.dataset != "dominant_clone":
+        print(f"[warn] --require-all-trials is not used by {preset.name}; ignoring it.")
+
+    # Matrix 3: subsampling is implemented in CNASimsDataset only. It would be
+    # three lines in SimulationDataset too, but that class NaN-pads missing
+    # trials and drops a sim only when EVERY trial is missing -- a random 16 of
+    # 25 rows could be all-NaN for a sim the published path keeps, so the
+    # augmentation would silently change which sims train the model. Not worth
+    # it for a matrix with no dominantclone subsample run; warn and ignore.
+    if (
+        getattr(args, "trial_subsample", None) is not None
+        and preset.data.dataset != "clone_sets"
+    ):
+        print(f"[warn] --trial-subsample is not used by {preset.name}; ignoring it.")
+
+    # Matrix 7: DominantClone already keeps the sims this flag would recover --
+    # SimulationDataset NaN-pads a missing trial and drops a sim only when every
+    # trial is missing -- so there is no bar here to lower, and recording the
+    # value would put a number in the checkpoint that nothing applied.
+    if (
+        getattr(args, "min_trials", None) is not None
+        and preset.data.dataset != "clone_sets"
+    ):
+        print(f"[warn] --min-trials is not used by {preset.name}; ignoring it.")
+
+    # Matrix 4. --tail-bound is deliberately absent: every preset's flow reads
+    # it, so there is no preset for which it would be decorative.
+    if getattr(args, "attn_scale", None) is not None and not has_attention:
+        print(f"[warn] --attn-scale is not used by {preset.name}; ignoring it.")
+    if (
+        getattr(args, "trial_pool", None) is not None
+        and preset.encoder.kind not in ("mlp", "attention", "armtoken", "hybrid")
+    ):
+        print(f"[warn] --trial-pool is not used by {preset.name}; ignoring it.")
+    if getattr(args, "d_model", None) is not None and preset.encoder.kind not in (
+        "mlp",
+        "attention",
+        "hybrid",
+    ):
+        print(f"[warn] --d-model is not used by {preset.name}; ignoring it.")
+    if getattr(args, "n_heads", None) is not None and not has_attention:
+        print(f"[warn] --n-heads is not used by {preset.name}; ignoring it.")
+    # --num-inducing stays CloneAtt's: armtoken has --arm-num-inducing, and one
+    # flag for both would silently reshape whichever model was not meant.
+    if getattr(args, "num_inducing", None) is not None and not has_clone_branch:
+        print(f"[warn] --num-inducing is not used by {preset.name}; ignoring it.")
+    # Matrix 5's three knobs, the other way round.
+    for flag, value in (
+        ("--arm-layers", getattr(args, "arm_layers", None)),
+        ("--d-arm", getattr(args, "d_arm", None)),
+        ("--arm-num-inducing", getattr(args, "arm_num_inducing", None)),
+    ):
+        if value is not None and not has_arm_branch:
+            print(f"[warn] {flag} is not used by {preset.name}; ignoring it.")
+    # Matrix 8's two. --arm-context-norm is a store_true, so "not given" is
+    # False rather than None and it gets its own line.
+    if getattr(args, "arm_feature_norm", None) is not None and not has_arm_branch:
+        print(f"[warn] --arm-feature-norm is not used by {preset.name}; ignoring it.")
+    if getattr(args, "arm_context_norm", False) and not has_arm_branch:
+        print(f"[warn] --arm-context-norm is not used by {preset.name}; ignoring it.")
 
     if args.top_k is not None and preset.data.top_k is None:
         print(f"[warn] --top-k is not used by {preset.name}; ignoring it.")
 
+    return cfg
+
+
+def effective_config_payload(
+    cfg: "ModelPreset",
+    args: argparse.Namespace,
+    data_root: Path,
+    split_path: Path,
+) -> dict:
+    """The config snapshot every checkpoint of this run carries.
+
+    Evaluation rebuilds the network from this instead of from
+    :func:`~cancer_sbi.config.get_preset`. That is not a convenience: an R1
+    checkpoint (``z_score_x="structured"``) has a standardising layer in the
+    flow that a preset-built network does not, so loading it raises on the
+    state-dict keys; an R2 or R4 checkpoint loads *silently* into an encoder
+    without the copy-space transform or the frequency renormalisation, and every
+    number that comes out is wrong without anything saying so.
+
+    Args:
+        cfg: The effective preset from :func:`build_config`.
+        args: The parsed command line, recorded verbatim so a checkpoint says
+            which flags produced it.
+        data_root: Resolved ``--data-root``.
+        split_path: Resolved ``--split``.
+
+    Returns:
+        A picklable dict: the five config blocks, the model name and prior sd
+        (all from :func:`~cancer_sbi.config.config_to_dict`), plus the paths and
+        the repair flags as given.
+    """
+    payload = config_to_dict(cfg)
+    payload["data_root"] = str(data_root)
+    payload["split_path"] = str(split_path)
+    payload["seed"] = cfg.train.seed
+    payload["cli_flags"] = {
+        "z_score_x": args.z_score_x,
+        "input_space": args.input_space,
+        "freq_renorm": bool(args.freq_renorm),
+        # Matrix 2. Recorded as given, next to the blocks config_to_dict has
+        # already snapshotted, so a checkpoint says both what was asked for and
+        # what the run actually used.
+        "freq_mode": getattr(args, "freq_mode", None),
+        "attn_ln": bool(getattr(args, "attn_ln", False)),
+        "encoder_dropout": getattr(args, "encoder_dropout", None),
+        "embed_lr": getattr(args, "embed_lr", None),
+        "embed_weight_decay": getattr(args, "embed_weight_decay", None),
+        "flow_weight_decay": getattr(args, "flow_weight_decay", None),
+        # Matrix 3. flow_dropout and flow_num_transforms also land in the
+        # snapshotted `flow` block, and trial_subsample in `data`; these are the
+        # flags as typed, which is what says whether a value was asked for or
+        # inherited from the preset.
+        "flow_dropout": getattr(args, "flow_dropout", None),
+        "flow_num_transforms": getattr(args, "flow_num_transforms", None),
+        # Matrix 6. flow_hidden_features also lands in the snapshotted `flow`
+        # block and lr_plateau in `train`; these are the flags as typed.
+        "flow_hidden_features": getattr(args, "flow_hidden_features", None),
+        "lr_plateau": bool(getattr(args, "lr_plateau", False)),
+        "trial_subsample": getattr(args, "trial_subsample", None),
+        # Matrix 7. min_trials also lands in the snapshotted `data` block;
+        # this is the flag as typed.
+        "min_trials": getattr(args, "min_trials", None),
+        # Matrix 4. attn_scale, trial_pool, d_model, n_heads and num_inducing
+        # also land in the snapshotted `encoder` block and tail_bound in
+        # `flow`; these are the flags as typed.
+        "attn_scale": getattr(args, "attn_scale", None),
+        "tail_bound": getattr(args, "tail_bound", None),
+        "trial_pool": getattr(args, "trial_pool", None),
+        "d_model": getattr(args, "d_model", None),
+        "n_heads": getattr(args, "n_heads", None),
+        "num_inducing": getattr(args, "num_inducing", None),
+        # Matrix 5. n_arm_layers, d_arm and arm_num_inducing also land in the
+        # snapshotted `encoder` block; these are the flags as typed.
+        "arm_layers": getattr(args, "arm_layers", None),
+        "d_arm": getattr(args, "d_arm", None),
+        "arm_num_inducing": getattr(args, "arm_num_inducing", None),
+        # Matrix 8. Both also land in the snapshotted `encoder` block, where
+        # they decide whether the state_dict carries an arm_norm/context_norm;
+        # these are the flags as typed.
+        "arm_feature_norm": getattr(args, "arm_feature_norm", None),
+        "arm_context_norm": bool(getattr(args, "arm_context_norm", False)),
+        # 2026-09-25. `payload["model"]` already carries the RESOLVED preset
+        # name (clonemlp vs clonemlp_published); this is the flag as typed, so
+        # a checkpoint says both what was asked for and what it got.
+        "published": bool(getattr(args, "published", False)),
+        "require_all_trials": bool(args.require_all_trials),
+        "num_workers": args.num_workers,
+        "cache_dir": args.cache_dir,
+        "top_k": args.top_k,
+        "batch_size": args.batch_size,
+        "deterministic": bool(args.deterministic),
+    }
+    payload["written_by"] = "cancer_sbi.cli.train"
+    return payload
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Run the training command.
+
+    Args:
+        argv: Argument list; ``None`` means ``sys.argv[1:]``.
+
+    Returns:
+        Process exit code: 0 on success.
+    """
+    args = build_parser().parse_args(argv)
+
+    # Set before torch is imported, let alone before CUDA is initialised:
+    # cuBLAS reads CUBLAS_WORKSPACE_CONFIG when its handle is created, and a
+    # value set afterwards is ignored while
+    # torch.use_deterministic_algorithms(True) still demands it. This is why
+    # the assignment sits above the local imports rather than next to them.
+    if args.deterministic:
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+    # Local imports: see the module docstring. Everything below needs torch.
+    import torch
+
+    from cancer_sbi.data.loaders import (
+        build_clone_set_dataloaders,
+        build_dominant_clone_dataloaders,
+    )
+    from cancer_sbi.data.splits import load_split
+    from cancer_sbi.training.trainer import (
+        Trainer,
+        build_training_components,
+        quirks_for,
+        seed_everything,
+    )
+
+    if args.deterministic:
+        # Not cudnn.deterministic: there is no convolution anywhere in these
+        # three models, so that knob would be decorative.
+        torch.use_deterministic_algorithms(True)
+
+    data_root = require_path(args.data_root, "--data-root", DATA_ROOT_ENV)
+    split_path = require_path(args.split, "--split", SPLIT_ENV)
+    device = resolve_device(args.device)
+
+    # --published maps --model X onto the preset X_published, which is the
+    # model as published; without it --model X is the repaired default adopted
+    # on 2026-09-25 (see cancer_sbi/config.py, "The repaired defaults"). The
+    # RESOLVED name is what `preset.name` carries from here on, so it is what
+    # goes into the run directory's name and -- via config_to_dict -- into
+    # every checkpoint's effective config, which is what evaluation rebuilds
+    # from. A KeyError here means --published was asked for armtoken or hybrid.
+    try:
+        model_name = resolve_model_name(args.model, args.published)
+    except KeyError as exc:
+        raise SystemExit(str(exc).strip('"')) from exc
+    preset = get_preset(model_name)
+    out_dir = Path(args.out) if args.out is not None else default_run_dir(preset.name)
+    # Trap 11 lives here: the directory NAME comes from the preset, which is the
+    # name that model's own training code used. The parent is the user's --out,
+    # so two runs of the same model never collide.
+    ckpt_dir = Path(args.ckpt_dir) if args.ckpt_dir else out_dir / preset.train.ckpt_dir
+
+    cfg = build_config(args, preset, data_root, split_path, ckpt_dir)
+
     # --- data ----------------------------------------------------------------
     print(f"Using device: {device}")
-    train_ids, test_ids = load_split(split_path)
-    print(f"Split: {len(train_ids)} train sims, {len(test_ids)} test sims")
+    split = load_split(split_path)
+    train_ids = split["train_ids"]
+    test_ids = split["test_ids"]
+    val_ids = split.get("val_ids")
+    print(
+        f"Split: {len(train_ids)} train sims, "
+        f"{len(val_ids) if val_ids is not None else 0} val sims, "
+        f"{len(test_ids)} test sims"
+    )
 
     if cfg.data.dataset == "clone_sets":
-        train_loader, test_loader = build_clone_set_dataloaders(
+        train_loader, val_loader, test_loader = build_clone_set_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
+            val_ids=val_ids,
             test_ids=test_ids,
             top_k=cfg.data.top_k,
             batch_size=cfg.data.batch_size,
             pin_memory=cfg.data.pin_memory,
+            num_workers=cfg.data.num_workers,
+            cache_dir=cfg.data.cache_dir,
+            # Training only -- the builder gives it to the train dataset alone.
+            trial_subsample=cfg.data.trial_subsample,
+            # Training and validation only; the builder's test_min_trials keeps
+            # its default, i.e. the published complete-sim test set.
+            min_trials=cfg.data.min_trials,
         )
     else:
-        train_loader, test_loader = build_dominant_clone_dataloaders(
+        train_loader, val_loader, test_loader = build_dominant_clone_dataloaders(
             root_dir=str(data_root),
             train_ids=train_ids,
+            val_ids=val_ids,
             test_ids=test_ids,
             batch_size=cfg.data.batch_size,
             pin_memory=cfg.data.pin_memory,
+            num_workers=cfg.data.num_workers,
+            require_all_trials=cfg.data.require_all_trials,
         )
 
-    # Preserved from all three */main.py:33: the TEST loader is passed as the
-    # validation loader. There is no third split -- "validation loss" and "test
-    # loss" are the same number, computed on the sims the model never trains on.
-    # Early stopping therefore selects on the test set. See docs/REFACTOR_NOTES.md.
+    # Preserved from all three */main.py:33 only when there is no third split:
+    # the TEST loader is then passed as the validation loader, so "validation
+    # loss" and "test loss" are the same number and early stopping selects the
+    # epoch on the very sims the score is reported on. With a `val_ids` key in
+    # the split pickle that stops being true. See docs/REFACTOR_NOTES.md.
+    if val_loader is None:
+        val_loader = test_loader
+        print(
+            "[warn] The split has no 'val_ids', so early stopping runs on the "
+            "TEST set -- best.pt is chosen on the sims the score is reported "
+            "on. Rebuild the split with a validation set before comparing runs."
+        )
+
     components = build_training_components(
         cfg, train_loader, device=device, log_progress=cfg.train.log_progress
     )
@@ -272,7 +1292,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     trainer = Trainer(
         density_estimator=components.density_estimator,
         train_loader=train_loader,
-        val_loader=test_loader,
+        val_loader=val_loader,
         optim_cfg=cfg.optim,
         train_cfg=cfg.train,
         embedding_net=components.embedding_net,
@@ -281,7 +1301,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         ckpt_dir=ckpt_dir,
         quirks=quirks_for(cfg.name),
         final_pickle_path=final_pickle,
+        # Every checkpoint this run writes carries the config it was trained
+        # with, so evaluation rebuilds this network and not the preset's.
+        effective_config=effective_config_payload(cfg, args, data_root, split_path),
     )
+
+    # Second seeding, deliberately AFTER construction, per
+    # CODEBASE_IMPROVEMENT_PLAN.md "Seeding -- the correct change", item 2.
+    # seed_everything also runs inside build_training_components (before
+    # build_embedding_net), which is where weight initialisation needs it and
+    # where it must stay -- this call does not replace it.
+    #
+    # Fresh run: re-seed here so the training loop's RNG stream starts from the
+    # seed. Resumed run: Trainer.__init__ has just restored the checkpoint's
+    # saved RNG state (checkpoints.py:257-260), so re-seeding would clobber it
+    # and replay the stream instead of continuing it -- skip it.
+    if not trainer.resumed:
+        seed_everything(cfg.train.seed)
+    elif cfg.train.seed is not None:
+        print(
+            "[note] Resumed from a checkpoint: keeping its saved RNG state "
+            "instead of re-seeding with --seed, so the run continues its "
+            "stream rather than replaying it."
+        )
 
     print(
         f"Training {cfg.paper_name} (was {cfg.origin}) -> {ckpt_dir}\n"

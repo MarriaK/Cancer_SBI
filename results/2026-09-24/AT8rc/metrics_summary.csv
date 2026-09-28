@@ -1,0 +1,2 @@
+model,n_cases,num_samples,mean_true_r2,mean_pearson_r2,mean_rmse,mean_contraction,pooled_mean_z,pooled_std_z,pct_within_2z,coverage_50,coverage_90,coverage_95,mean_coverage_gap,n_arms_ks_reject_05,n_arms_ks_reject_fdr05,mean_log_prob_true
+armtoken,651,5000,0.899594,0.900561,0.0623465,0.894157,0.0359873,1.03,94.889,0.480799,0.87582,0.933389,-0.0175355,20,13,nan

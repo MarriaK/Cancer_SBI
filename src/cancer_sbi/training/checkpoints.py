@@ -11,7 +11,7 @@ the directory they wrote to (trap 11); the payload, the file names and the
 resume logic were identical, so they collapse into the functions below without
 any behaviour change.
 
-A checkpoint is a plain ``dict`` with exactly these nine keys, in this order::
+A checkpoint is a plain ``dict`` with these nine keys, in this order::
 
     epoch                          int, 1-based, the epoch just finished
     model_state                    density_estimator.state_dict()
@@ -22,6 +22,22 @@ A checkpoint is a plain ``dict`` with exactly these nine keys, in this order::
     epochs_since_last_improvement  int, the early-stopping counter
     rng_state                      torch.get_rng_state()
     cuda_rng_state_all             torch.cuda.get_rng_state_all() or None
+
+plus, since 2026-09-24, a tenth::
+
+    effective_config               cancer_sbi.config.config_to_dict(cfg)
+
+and an eleventh, written only by a ``--lr-plateau`` run (matrix 6)::
+
+    scheduler_state                ReduceLROnPlateau.state_dict()
+
+without which a resumed run would restart at the full learning rate and lose
+every halving the first attempt had earned.
+
+which is the config the run was *actually* trained with, flags folded in. It is
+what lets evaluation rebuild the same network instead of guessing at
+``get_preset`` defaults -- see :func:`read_effective_config`. Every checkpoint
+written before that date lacks it, so it is optional on both sides.
 
 Three files are written per epoch, all with the same payload:
 ``ckpt_epoch_<epoch:04d>.pt`` (the per-epoch archive), ``latest.pt`` (what a
@@ -36,6 +52,8 @@ from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 import numpy as np
 import torch
+
+from cancer_sbi.config import EFFECTIVE_CONFIG_KEY
 
 PathLike = Union[str, os.PathLike]
 
@@ -53,6 +71,14 @@ CHECKPOINT_KEYS = (
     "rng_state",
     "cuda_rng_state_all",
 )
+
+#: The optional tenth key, written since 2026-09-24. Kept out of
+#: :data:`CHECKPOINT_KEYS` because that tuple documents the payload the three
+#: originals wrote, and a checkpoint without this key is still a valid one.
+#: Key under which a ``--lr-plateau`` run stores its scheduler state.
+SCHEDULER_STATE_KEY = "scheduler_state"
+
+OPTIONAL_CHECKPOINT_KEYS = (EFFECTIVE_CONFIG_KEY, SCHEDULER_STATE_KEY)
 
 #: File name of the pointer a resume reads.
 LATEST_FILENAME = "latest.pt"
@@ -76,6 +102,12 @@ class ResumedState(NamedTuple):
         history: ``{"training_loss": [...], <history_val_key>: [...]}``.
         epochs_since_last_improvement: The early-stopping counter as stored.
         path: The file this state came from.
+        scheduler_state: The LR scheduler's ``state_dict()``, or ``None`` for a
+            checkpoint written without ``--lr-plateau`` (which is every
+            checkpoint before matrix 6). Returned rather than loaded here
+            because :func:`load_checkpoint` is given a model and an optimizer,
+            not a scheduler; :class:`~cancer_sbi.training.trainer.Trainer`
+            applies it to whichever scheduler it built.
     """
 
     epoch: int
@@ -84,6 +116,7 @@ class ResumedState(NamedTuple):
     history: Dict[str, List[float]]
     epochs_since_last_improvement: int
     path: Path
+    scheduler_state: Optional[Dict[str, Any]] = None
 
 
 def latest_checkpoint_path(ckpt_dir: PathLike) -> Optional[Path]:
@@ -112,6 +145,8 @@ def build_checkpoint(
     best_model_state_dict: Optional[Dict[str, torch.Tensor]],
     history: Dict[str, List[float]],
     epochs_since_last_improvement: int,
+    effective_config: Optional[Dict[str, Any]] = None,
+    scheduler_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble the checkpoint payload.
 
@@ -127,9 +162,17 @@ def build_checkpoint(
         best_model_state_dict: Best weights so far, or ``None``.
         history: The loss curves.
         epochs_since_last_improvement: Early-stopping counter; cast to ``int``.
+        effective_config: :func:`cancer_sbi.config.config_to_dict` of the config
+            this run is training with, flags folded in. ``None`` omits the key
+            entirely, which is what a checkpoint written before 2026-09-24 looks
+            like.
+        scheduler_state: ``ReduceLROnPlateau.state_dict()`` for a
+            ``--lr-plateau`` run (matrix 6). ``None`` omits the key, which is
+            what a run with no scheduler writes.
 
     Returns:
-        A ``dict`` with the keys listed in :data:`CHECKPOINT_KEYS`.
+        A ``dict`` with the keys listed in :data:`CHECKPOINT_KEYS`, plus
+        ``effective_config`` when one was given.
 
     Note:
         The RNG states are captured here, at save time, exactly as in
@@ -137,7 +180,7 @@ def build_checkpoint(
         ``None`` on a machine without CUDA, which is why every reader has to
         guard on it.
     """
-    return {
+    payload: Dict[str, Any] = {
         "epoch": epoch,
         "model_state": density_estimator.state_dict(),
         "optimizer_state": optimizer.state_dict(),
@@ -155,6 +198,37 @@ def build_checkpoint(
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         ),
     }
+    if effective_config is not None:
+        payload[EFFECTIVE_CONFIG_KEY] = effective_config
+    if scheduler_state is not None:
+        payload[SCHEDULER_STATE_KEY] = scheduler_state
+    return payload
+
+
+def read_effective_config(
+    path: PathLike, device: str = "cpu"
+) -> Optional[Dict[str, Any]]:
+    """Read only the config a checkpoint was written with.
+
+    Args:
+        path: The ``.pt`` file.
+        device: ``map_location`` for :func:`torch.load`.
+
+    Returns:
+        The stored ``effective_config`` dict, or ``None`` for a checkpoint
+        written before 2026-09-24 (which is every checkpoint currently on the
+        cluster). ``None`` means "fall back to the preset and say so", never
+        "assume the defaults were used".
+
+    Note:
+        ``weights_only`` is left at its default for the same reason as
+        :func:`load_checkpoint`: these payloads hold numpy scalars, which the
+        safe loader refuses. The whole file is read, because ``torch.load``
+        cannot fetch one key -- for these models that is a few MB.
+    """
+    ckpt = torch.load(path, map_location=device)
+    stored = ckpt.get(EFFECTIVE_CONFIG_KEY)
+    return stored if isinstance(stored, dict) else None
 
 
 def save_checkpoint(
@@ -253,6 +327,11 @@ def load_checkpoint(
     # every checkpoint already on the cluster. See docs/REFACTOR_NOTES.md.
     history = ckpt.get("history", {"training_loss": [], history_val_key: []})
     epochs_since_last_improvement = int(ckpt.get("epochs_since_last_improvement", 0))
+    # Matrix 6: absent from every checkpoint written without --lr-plateau, so
+    # the fallback is None and the Trainer simply leaves its scheduler fresh.
+    scheduler_state = ckpt.get(SCHEDULER_STATE_KEY)
+    if not isinstance(scheduler_state, dict):
+        scheduler_state = None
 
     if "rng_state" in ckpt:
         torch.set_rng_state(ckpt["rng_state"])
@@ -269,6 +348,7 @@ def load_checkpoint(
         history=history,
         epochs_since_last_improvement=epochs_since_last_improvement,
         path=Path(path),
+        scheduler_state=scheduler_state,
     )
 
 
@@ -321,6 +401,9 @@ def try_resume(
 
 __all__ = [
     "CHECKPOINT_KEYS",
+    "OPTIONAL_CHECKPOINT_KEYS",
+    "SCHEDULER_STATE_KEY",
+    "read_effective_config",
     "LATEST_FILENAME",
     "BEST_FILENAME",
     "ResumedState",

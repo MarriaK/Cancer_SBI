@@ -1,0 +1,2 @@
+model,s_measured,b_truth_on_mean,b_pooled,r,r2,true_r2,gap,root_low,root_high
+clonemlp,0.623519,0.922209,0.906015,0.627864,0.394214,0.389914,0.00429989,0.562291,0.693438

@@ -251,11 +251,17 @@ def check_config() -> None:
     print("\n3. CONFIGURATION (the per-model divergences that must not be unified)")
     from cancer_sbi.config import get_preset
 
+    # The PUBLISHED presets, deliberately. The bare names `clonemlp`,
+    # `cloneatt` and `dominantclone` were repointed at the repaired
+    # configurations on 2026-09-25 (cancer_sbi/config.py, "The repaired
+    # defaults"); this script's job is the opposite one -- to assert that the
+    # models as published are still reproduced field for field -- so every
+    # lookup below is a `*_published` one.
     expected = {
         # preset name : (flow z_score_x, grad_clip, two optimiser groups, reload_best)
-        "clonemlp": ("none", 5.0, True, "never"),
-        "cloneatt": ("none", 5.0, True, "on_early_stop"),
-        "dominantclone": ("structured", None, False, "always"),
+        "clonemlp_published": ("none", 5.0, True, "never"),
+        "cloneatt_published": ("none", 5.0, True, "on_early_stop"),
+        "dominantclone_published": ("structured", None, False, "always"),
     }
     for name, (z_score, clip, groups, reload_best) in expected.items():
         preset = get_preset(name)
@@ -268,31 +274,31 @@ def check_config() -> None:
               f"got {preset.train.reload_best!r}")
 
     # The optimiser numbers are the ones a "tidy-up" would most easily unify.
-    mlp = get_preset("clonemlp").optim
+    mlp = get_preset("clonemlp_published").optim
     check("clonemlp: flow group lr 1e-3 / weight decay 1e-4",
           (mlp.flow_lr, mlp.flow_weight_decay) == (1e-3, 1e-4), f"got {mlp.flow_lr}, {mlp.flow_weight_decay}")
     check("clonemlp: embedding group lr 1e-4 / weight decay 0.0",
           (mlp.embed_lr, mlp.embed_weight_decay) == (1e-4, 0.0), f"got {mlp.embed_lr}, {mlp.embed_weight_decay}")
     check("clonemlp: learning_rate is recorded as unused", mlp.learning_rate_is_used is False)
-    dom = get_preset("dominantclone").optim
+    dom = get_preset("dominantclone_published").optim
     check("dominantclone: single group lr 5e-4", dom.learning_rate == 5e-4 and dom.learning_rate_is_used is True,
           f"got lr={dom.learning_rate}, used={dom.learning_rate_is_used}")
-    att = get_preset("cloneatt")
+    att = get_preset("cloneatt_published")
     check("cloneatt: encoder dropout recorded as ignored", att.encoder.encoder_dropout_is_used is False)
     check("cloneatt: no LayerNorm in the attention stack", att.encoder.layer_norm_in_attention is False)
     check("cloneatt: min_epochs not enforced", att.train.enforce_min_epochs is False)
     check("clonemlp checkpoint dir is the original 'checkpoints_baseline'",
-          get_preset("clonemlp").train.ckpt_dir == "checkpoints_baseline",
-          f"got {get_preset('clonemlp').train.ckpt_dir!r}")
-    for nm in ("clonemlp", "cloneatt", "dominantclone"):
+          get_preset("clonemlp_published").train.ckpt_dir == "checkpoints_baseline",
+          f"got {get_preset('clonemlp_published').train.ckpt_dir!r}")
+    for nm in ("clonemlp_published", "cloneatt_published", "dominantclone_published"):
         f = get_preset(nm).flow
         check(f"{nm}: sbi architecture pinned explicitly (50/5/10/2/3.0)",
               (f.hidden_features, f.num_transforms, f.num_bins, f.num_blocks, f.tail_bound) == (50, 5, 10, 2, 3.0),
               f"got {f.hidden_features}, {f.num_transforms}, {f.num_bins}, {f.num_blocks}, {f.tail_bound}")
 
     check("prior sd defaults to the correct 0.2 (originals used sqrt(0.2))",
-          abs(get_preset("clonemlp").prior_sd - 0.2) < 1e-12,
-          f"got {get_preset('clonemlp').prior_sd}")
+          abs(get_preset("clonemlp_published").prior_sd - 0.2) < 1e-12,
+          f"got {get_preset('clonemlp_published').prior_sd}")
 
 
 # --------------------------------------------------------------------------- #

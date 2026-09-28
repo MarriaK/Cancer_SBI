@@ -1,0 +1,2 @@
+model,s_measured,b_truth_on_mean,b_pooled,r,r2,true_r2,gap,root_low,root_high
+dominantclone,0.400714,1.08435,1.08224,0.447297,0.200074,0.19879,0.00128457,0.411456,0.483138

@@ -1,0 +1,2 @@
+model,n_cases,num_samples,mean_true_r2,mean_pearson_r2,mean_rmse,mean_contraction,pooled_mean_z,pooled_std_z,pct_within_2z,coverage_50,coverage_90,coverage_95,mean_coverage_gap,n_arms_ks_reject_05,n_arms_ks_reject_fdr05,mean_log_prob_true
+hybrid,651,5000,0.891678,0.894806,0.0647827,0.884212,0.0633775,1.00626,95.3463,0.461702,0.878543,0.938207,-0.0255361,28,27,63.8694

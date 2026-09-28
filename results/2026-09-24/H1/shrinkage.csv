@@ -1,0 +1,2 @@
+model,s_measured,b_truth_on_mean,b_pooled,r,r2,true_r2,gap,root_low,root_high
+hybrid,0.933513,1.01904,1.01629,0.947006,0.89682,0.896582,0.000237738,0.931587,0.962425

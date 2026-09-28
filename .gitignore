@@ -31,7 +31,24 @@ results/posteriors/
 
 # --- Local-only working areas ---
 /docs/
-/overview_figure/
+# overview_figure/ is local EXCEPT the poster deliverables: the poster source, the
+# figure files it references and a PDF exported from that same file (2026-09-28).
+/overview_figure/*
+!/overview_figure/poster/
+/overview_figure/poster/*
+!/overview_figure/poster/poster_body.html
+!/overview_figure/poster/poster_NECB_2026.pdf
+!/overview_figure/poster/panels/
+/overview_figure/poster/panels/*
+!/overview_figure/poster/panels/panel_ab.png
+!/overview_figure/poster/panels/panel_c.png
+!/overview_figure/poster/panels/panel_d.png
+!/overview_figure/poster/panels/panel_e.png
+!/overview_figure/poster/panels/panel_f.png
+!/overview_figure/poster/panels/panel_g.png
+!/overview_figure/poster/panels/panel_m.png
+!/overview_figure/poster/panels/qr_paper.svg
+!/overview_figure/poster/panels/uconn_logo.png
 /logs/
 /cache/
 

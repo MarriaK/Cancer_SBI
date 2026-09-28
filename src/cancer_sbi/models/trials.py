@@ -17,18 +17,126 @@ over ``T``.
 Nothing here runs at import time.
 """
 
-from typing import Union
+from typing import Optional, Union
 
 import torch
-from sbi.neural_nets.embedding_nets import PermutationInvariantEmbedding
+from sbi.neural_nets.embedding_nets import FCEmbedding, PermutationInvariantEmbedding
 from torch import Tensor, nn
 
 from cancer_sbi.models.mlp_encoder import BaselineCloneEmbedding
-from cancer_sbi.models.set_transformer import CloneSetEmbedding
+from cancer_sbi.models.set_transformer import PMA, CloneSetEmbedding
+
+#: Attention heads used by :class:`AttentionTrialPooling` when the encoder has
+#: no ``n_heads`` of its own. CloneMLP is that case -- its ``EncoderConfig``
+#: leaves ``n_heads`` at ``None`` because the MLP encoder has no attention --
+#: and ``--trial-pool attention`` still has to build a PMA for it. 8 is
+#: CloneAtt's published head count, and 128 (both encoders' ``d_model``) is
+#: divisible by it.
+DEFAULT_TRIAL_POOL_HEADS = 8
 
 #: Either clone-set encoder can be wrapped; both expose ``d_model`` and map
 #: ``(B, K, 45) -> (B, d_model)``.
 CloneEncoder = Union[BaselineCloneEmbedding, CloneSetEmbedding]
+
+
+
+class AttentionTrialPooling(nn.Module):
+    """Pool ``(B, T, d_model)`` trial embeddings with a PMA instead of a mean.
+
+    Matrix 4, run R20. The published wrapper hands the trial embeddings to sbi's
+    ``PermutationInvariantEmbedding``, which takes a NaN-masked **mean** over
+    the 25 trials and then runs a small MLP on
+    ``[pooled, number of valid trials]``. A mean gives every trial the same
+    weight, which is the modelling assumption this switch questions: the trials
+    of one sim are 25 draws of the same process but not equally informative.
+
+    This module keeps the second half of that computation exactly -- the same
+    ``FCEmbedding``, the same ``d_model + 1`` input, the same ``output_dim`` --
+    and replaces only the mean, so **the flow's context width does not move**
+    and a ``--trial-pool attention`` run is comparable with its ``mean``
+    counterpart on everything else.
+
+    Invalid trials (a sim's unfilled slots, marked NaN by
+    :meth:`TrialsSBIEmbedding._mask_invalid_trials`) are masked out of the
+    attention rather than fed to it: a NaN key would poison every logit, and a
+    zeroed one would still take softmax mass away from the real trials. With a
+    pre-built clone cache every trial is present and the mask is all-False, but
+    the uncached path can have NaN slots.
+
+    Attributes:
+        output_dim: Width of the context vector, i.e. what the flow sees.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int = DEFAULT_TRIAL_POOL_HEADS,
+        num_hiddens: int = 256,
+        num_layers: int = 2,
+        output_dim: int = 256,
+        ln: bool = False,
+        attn_scale: str = "published",
+    ) -> None:
+        """Build the one-seed PMA and the post-pooling MLP.
+
+        Args:
+            d_model: Width of the per-trial embeddings, i.e. the clone
+                encoder's output width.
+            n_heads: Heads of the pooling PMA. Must divide ``d_model``.
+            num_hiddens: Hidden width of the post-pooling MLP, as sbi's
+                ``PermutationInvariantEmbedding`` uses it.
+            num_layers: Depth of the post-pooling MLP, likewise.
+            output_dim: Width of the context vector, likewise. Keep it equal to
+                the ``mean`` path's or the flow changes shape.
+            ln: ``LayerNorm`` inside the PMA, following ``attn_ln`` so the
+                pooling matches the encoder it sits on top of.
+            attn_scale: Logit scaling of the PMA, following ``attn_scale`` for
+                the same reason.
+        """
+        super().__init__()
+        self.output_dim = output_dim
+        self.pma = PMA(
+            dim=d_model,
+            num_heads=n_heads,
+            num_seeds=1,
+            ln=ln,
+            attn_scale=attn_scale,
+        )
+        # Byte-for-byte the subnet PermutationInvariantEmbedding builds
+        # (sbi/neural_nets/embedding_nets/__init__.py): input_dim is
+        # trial_net_output_dim + 1, the +1 being the number of valid trials,
+        # which is appended in forward() below exactly as sbi appends it.
+        self.fc_subnet = FCEmbedding(
+            input_dim=d_model + 1,
+            output_dim=output_dim,
+            num_layers=num_layers,
+            num_hiddens=num_hiddens,
+        )
+
+    def forward(self, trial_embeddings: Tensor) -> Tensor:
+        """Pool the trials of each sim into one context vector.
+
+        Args:
+            trial_embeddings: ``(B, T, d_model)`` float32, with a fully-NaN row
+                marking an invalid trial -- the convention sbi's pooling uses
+                and :meth:`TrialsSBIEmbedding._mask_invalid_trials` writes.
+
+        Returns:
+            ``(B, output_dim)`` float32.
+        """
+        # A trial is invalid iff its whole embedding row is NaN, which is the
+        # sentinel _mask_invalid_trials writes and the one sbi's pooling reads.
+        invalid = torch.isnan(trial_embeddings).all(dim=-1)   # (B, T)
+        trial_counts = (~invalid).sum(dim=1, keepdim=True).to(trial_embeddings.dtype)
+
+        # NaNs must leave the tensor before the projections inside the PMA see
+        # them: a masked softmax kills a NaN key's *weight*, not the NaN itself.
+        clean = torch.nan_to_num(trial_embeddings, nan=0.0)
+        pooled = self.pma(clean, key_mask=invalid)[:, 0, :]   # (B, d_model)
+
+        # The same [pooled, trial_counts] concatenation sbi does, so the MLP
+        # sees the input it was sized for.
+        return self.fc_subnet(torch.cat([pooled, trial_counts], dim=1))
 
 
 class TrialsSBIEmbedding(nn.Module):
@@ -45,6 +153,10 @@ class TrialsSBIEmbedding(nn.Module):
         num_hiddens: int = 256,
         num_layers: int = 2,
         output_dim: int = 256,
+        trial_pool: str = "mean",
+        n_heads: Optional[int] = None,
+        attn_ln: bool = False,
+        attn_scale: str = "published",
     ) -> None:
         """Wrap a clone-set encoder in sbi's permutation-invariant pooling.
 
@@ -60,22 +172,67 @@ class TrialsSBIEmbedding(nn.Module):
             num_hiddens: Hidden width of sbi's post-pooling MLP.
             num_layers: Depth of sbi's post-pooling MLP.
             output_dim: Width of the context vector handed to the flow.
+            trial_pool: Matrix 4, run R20. ``"mean"`` -- the default and the
+                published behaviour -- pools the trials with sbi's masked mean.
+                ``"attention"`` pools them with :class:`AttentionTrialPooling`
+                instead; ``num_hiddens``, ``num_layers`` and ``output_dim``
+                keep their meaning there, so the flow's context width is the
+                same either way. Only the module that does the pooling
+                changes, which is why the two builds have different
+                ``state_dict`` keys and a checkpoint of one cannot load into
+                the other.
+            n_heads: Heads of the pooling PMA, ``"attention"`` only.
+                ``None`` -- which is what CloneMLP's encoder config carries,
+                having no attention of its own -- falls back to
+                :data:`DEFAULT_TRIAL_POOL_HEADS`.
+            attn_ln: ``LayerNorm`` inside the pooling PMA, ``"attention"``
+                only. Follows the encoder's ``attn_ln`` so the two halves of
+                the network agree.
+            attn_scale: Logit scaling of the pooling PMA, ``"attention"``
+                only. Follows the encoder's ``attn_scale``, likewise.
+
+        Raises:
+            ValueError: If ``trial_pool`` is neither ``"mean"`` nor
+                ``"attention"``.
         """
         super().__init__()
+        if trial_pool not in ("mean", "attention"):
+            raise ValueError(
+                f"trial_pool must be 'mean' or 'attention', got {trial_pool!r}."
+            )
         self.trial_encoder = trial_encoder
+        self.trial_pool = trial_pool
         d_model = trial_encoder.d_model
 
-        # The clone encoder already ran, so sbi's per-trial net is the identity:
-        # this wrapper only borrows sbi's NaN-aware pooling over the T dimension.
-        self.perm_embed = PermutationInvariantEmbedding(
-            trial_net=nn.Identity(),
-            trial_net_output_dim=d_model,
-            aggregation_fn=aggregation_fn,
-            num_hiddens=num_hiddens,
-            num_layers=num_layers,
-            output_dim=output_dim,
-            aggregation_dim=1,  # aggregate over the trials dimension T
-        )
+        # `perm_embed` exists only on the published path, and `pool_attn` only
+        # on the new one -- not both with one left unused. An unused submodule
+        # would put keys in every checkpoint's state_dict that nothing reads,
+        # and the optimiser would carry its parameters.
+        self.perm_embed = None
+        self.pool_attn = None
+        if trial_pool == "attention":
+            self.pool_attn = AttentionTrialPooling(
+                d_model=d_model,
+                n_heads=n_heads if n_heads else DEFAULT_TRIAL_POOL_HEADS,
+                num_hiddens=num_hiddens,
+                num_layers=num_layers,
+                output_dim=output_dim,
+                ln=attn_ln,
+                attn_scale=attn_scale,
+            )
+        else:
+            # The clone encoder already ran, so sbi's per-trial net is the
+            # identity: this wrapper only borrows sbi's NaN-aware pooling over
+            # the T dimension.
+            self.perm_embed = PermutationInvariantEmbedding(
+                trial_net=nn.Identity(),
+                trial_net_output_dim=d_model,
+                aggregation_fn=aggregation_fn,
+                num_hiddens=num_hiddens,
+                num_layers=num_layers,
+                output_dim=output_dim,
+                aggregation_dim=1,  # aggregate over the trials dimension T
+            )
 
     @staticmethod
     def _mask_invalid_trials(X: Tensor, trial_embeddings: Tensor) -> Tensor:
@@ -123,8 +280,16 @@ class TrialsSBIEmbedding(nn.Module):
         # 2) Re-mark invalid trials as NaN so sbi's pooling can ignore them.
         trial_emb = self._mask_invalid_trials(X, trial_emb)
 
-        # 3) Pool across trials.
+        # 3) Pool across trials. Exactly one of the two modules exists; see
+        #    __init__.
+        if self.pool_attn is not None:
+            return self.pool_attn(trial_emb)  # (B, output_dim)
         return self.perm_embed(trial_emb)  # (B, output_dim)
 
 
-__all__ = ["TrialsSBIEmbedding", "CloneEncoder"]
+__all__ = [
+    "TrialsSBIEmbedding",
+    "AttentionTrialPooling",
+    "CloneEncoder",
+    "DEFAULT_TRIAL_POOL_HEADS",
+]

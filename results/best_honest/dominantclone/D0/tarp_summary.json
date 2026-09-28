@@ -1,0 +1,19 @@
+[
+  {
+    "model": "dominantclone",
+    "run_tag": "D0",
+    "atc": 0.011059907834101417,
+    "atc_signed": 0.40201887206495646,
+    "ks_stat": 0.03535453149001533,
+    "ks_p": 0.3838796400338866,
+    "num_sims": 651,
+    "num_samples": 5000,
+    "num_references": 1,
+    "distance": "l2",
+    "z_score": "theta_sd",
+    "reference": "random",
+    "n_alpha": 50,
+    "n_boot": 200,
+    "seed": 0
+  }
+]
