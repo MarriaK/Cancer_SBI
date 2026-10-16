@@ -1,3 +1,8 @@
+"""Repair ARM-selection runs produced by simulate_arm_selection.py.
+
+Re-runs the simulations listed as failed by update_checker.py, using the same
+arm-selection (FittedArmLibrary) model and output layout.
+"""
 import os
 import copy
 import io

@@ -3,8 +3,10 @@
 
 Stage 2 of the three-stage data pipeline:
 
-    dataSimulator_MPI.py  ->  update_checker.py  ->  fixed_dataSimulation.py
-      (simulate)                (this script)          (re-run what failed)
+    simulate_arm_selection.py  ->  update_checker.py  ->  fixed_dataSimulation.py
+      (simulate)                     (this script)          (re-run what failed)
+
+This checker is for the ARM-selection dataset layout (results.pkl + CNratios_all.pkl.gz).
 
 Writes ``failed_simulations.txt``, one simulation name per line, which is
 exactly the format ``fixed_dataSimulation.py --failed_list`` expects, plus a

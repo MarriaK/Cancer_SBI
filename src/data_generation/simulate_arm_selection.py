@@ -1,3 +1,11 @@
+"""Arm-selection SISTEM simulator (FittedArmLibrary, 44 arm coefficients).
+
+This is the script that produced the existing arm-level dataset. It is kept
+behaviour-identical, defects included, as the provenance record of that data
+(it was named dataSimulator_MPI.py until 2026-10-16).
+
+For the region (5 Mb block) selection model see simulate_gene_selection.py.
+"""
 import sys
 import os
 import copy
