@@ -22,16 +22,25 @@ and is kept behaviour-identical (its known defects included); do not edit it.
     <output>/simulation_outputs/sim{ID}/parameters.pkl
     <output>/simulation_outputs/sim{ID}/{t}/results.pkl   always written (bookkeeping: failures, complete, n_clones, wall time)
     <output>/simulation_outputs/sim{ID}/{t}/clones.npz    only for completed trials (all data: block_cn, popsize, ..., bulk)
-    <output>/simulation_outputs/sim{ID}/{t}/sim.log       written by SISTEM
+    <output>/simulation_outputs/sim{ID}/{t}/sim.log       written by SISTEM (omitted with --no-sim-log; manifest["sim_log"])
 
 Block vectors are flattened chr1..chr22 in numeric order (`manifest["chrom_order"]`).
 
-**SISTEM runtime patch.** SISTEM's `get_driver_start_regions` has an off-by-one
-(`sequence[:-size]`) so the last block of every chromosome can never receive a focal
-event. The gene script does not edit SISTEM; `apply_sistem_patches()` replaces that one
-method in memory at import time (same effect with the pip-installed package on the
-cluster), self-tests the replacement, and records it in `manifest["sistem_patches"]`.
-The arm script is left as is, so the arm dataset keeps SISTEM's original behaviour.
+**SISTEM runtime patches.** The gene script does not edit SISTEM; `apply_sistem_patches()`
+replaces three `BaseRegionLibrary` methods in memory at import time (same effect with the
+pip-installed package on the cluster), self-tests each one, and records them in
+`manifest["sistem_patches"]`:
+
+1. `get_driver_start_regions`: off-by-one (`sequence[:-size]`) meant the last block of every
+   chromosome could never receive a focal event.
+2. `compute_fitness`: exponent `n / round(p)` as in CINner (which SISTEM's region model is
+   adapted from) instead of `n / p` with continuous ploidy; the continuous form rewarded
+   deleting neutral DNA and tumours collapsed to the 1.5 ploidy floor (calibration 2026-10-19).
+3. `check_viability`: a clone with any block at 0 copies is non-viable (CINner `nullisomy_max = 0`).
+
+Research and measurements: `cancer/reports/Fixing the ploidy collapse in SISTEM.md`.
+The arm script is left as is, so the arm dataset keeps SISTEM's original behaviour
+(including the ploidy collapse and 20% of arms at 0 copies).
 `check_gene_selection_outputs.py` validates this layout and recovers arm averages
 from `block_cn`.
 `manifest.json` records `script.git_commit` and `script.git_dirty`; commit before a production run so the dataset points at a real commit.

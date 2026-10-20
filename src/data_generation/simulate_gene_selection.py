@@ -25,7 +25,7 @@ Output contract (under --output):
         fitness float64, nWGD int16, n_altered_drivers int16,
         bulk float32 (D,) = popsize-weighted mean of block_cn.
         The largest clone is argmax(popsize); it is not stored separately.
-    simulation_outputs/sim{ID}/{t}/sim.log     written by SISTEM itself
+    simulation_outputs/sim{ID}/{t}/sim.log     written by SISTEM itself (absent with --no-sim-log)
 Block vectors are flattened in CHROM_ORDER (chr1..chr22, numeric order).
 
 Approved deviations from the user's spec:
@@ -39,6 +39,15 @@ Approved deviations from the user's spec:
          cover the last position of a chromosome and the last block was forced neutral in the
          prior as a workaround. With the fix the last block is a normal driver candidate.
          Recorded in manifest.json under "sistem_patches".
+    D-E  BaseRegionLibrary.compute_fitness is patched to use the ploidy ROUNDED to the nearest
+         integer in the exponent, (1+delta)^(n/round(p)), as in CINner (Dinh et al. 2025, S1 Eq 1-2),
+         the model SISTEM's region model was adapted from. With the continuous p, deleting neutral
+         DNA raised fitness and tumours collapsed to the 1.5 ploidy floor (calibration 2026-10-19:
+         median ploidy 1.51, passengers at 1.4 copies).
+    D-F  BaseRegionLibrary.check_viability is patched so a clone with any block at 0 copies is
+         non-viable (CINner nullisomy_max = 0; SISTEM has no minimum copy number). Together D-E and
+         D-F hold ploidy at ~2.2 with no empty blocks (research report: reports/Fixing the ploidy
+         collapse in SISTEM.md).
 
 See docs/GENE_LEVEL_SIMULATION_PLAN.md and Notion 3.2.1 / 3.3.
 """
@@ -118,10 +127,15 @@ from sistem.ancestry import GrowthSimulator
 from sistem.anatomy import SimpleAnatomy
 from sistem.data.utils import count_region_CNs
 from sistem.selection.region_library import FittedRegionLibrary, BaseRegionLibrary
+from sistem.utilities.utilities import get_reg_id, init_mbit
 
 
 # ----------------- SISTEM patches (deviation D-D) -----------------
-SISTEM_PATCHES = ["region_driver_start_regions_tail_fix"]   # recorded in manifest.json
+SISTEM_PATCHES = [                                          # recorded in manifest.json
+    "region_driver_start_regions_tail_fix",                 # D-D
+    "region_fitness_rounded_ploidy",                        # D-E
+    "region_nullisomy_lethal",                              # D-F
+]
 
 
 def _fixed_get_driver_start_regions(self, cell, chromosome, size):
@@ -148,10 +162,69 @@ def _fixed_get_driver_start_regions(self, cell, chromosome, size):
     return list(possible_start)
 
 
+_ORIG_CHECK_VIABILITY = BaseRegionLibrary.check_viability
+DELETION_EVENTS = ("focal_deletion", "arm_deletion", "chromosomal_deletion")
+
+
+def _rounded_ploidy(p):
+    """CINner's reference copy number: the mean CN rounded to the nearest integer (Python round is
+    half-to-even, like R's). Never below 1."""
+    return max(1, round(p))
+
+
+def _rounded_compute_fitness(self, clone):
+    """Deviation D-E: BaseRegionLibrary.compute_fitness (region_library.py:28) with the exponent
+    n / round(p) instead of n / p.
+
+    SISTEM's region model is adapted from CINner, whose fitness is prod lambda_r^(c_r / c) with c the
+    mean copy number ROUNDED to the nearest integer (Dinh et al. 2025, S1 Eq 1-2); SISTEM uses the
+    continuous ploidy. With the continuous value every deleted passenger block lowers p and raises all
+    driver exponents, so shedding neutral DNA is selected once S = sum n_r log(1+delta_r) > 0; tumours
+    then sink to the min_ploidy floor. With rounding, small losses do not change the exponent, and a
+    doubled genome (p ~ 4) stays fitness-neutral exactly as before. init_base_fit needs no change
+    (diploid: round(2) = 2); init_max_fit keeps the continuous p (it only feeds metastatic growth
+    curves, unused with one site)."""
+    ref = _rounded_ploidy(clone.get_ploidy())
+    fitness = 1
+    for chrname in self.regions:
+        for r in self.drivers[chrname]:
+            s = self[chrname][r]
+            n = clone.attributes.driver_counts[chrname][r]
+            fitness *= (1 + s) ** (n / ref)
+    return fitness
+
+
+def _has_cn0_block(clone):
+    """True iff some block of this clone has total copy number 0 over all homologs.
+
+    Only chromosomes named in the clone's OWN deletion events are recounted: a new mutant starts with
+    an empty event list (Cell.__init__), its parent passed the same check, and only deletions can
+    create a zero. This keeps the check cheap (it runs on every new mutant clone)."""
+    chroms = {e.chrom for e in clone.events if getattr(e, "category", None) in DELETION_EVENTS}
+    for chrname in chroms:
+        nreg = clone.library.regions[chrname]
+        cn = np.zeros(nreg, dtype=np.int64)
+        for chromosome in clone.genome[chrname]:
+            if len(chromosome.seq):
+                cn += np.bincount([get_reg_id(x) for x in chromosome.seq], minlength=nreg)
+        if (cn == 0).any():
+            return True
+    return False
+
+
+def _nullisomy_check_viability(self, clone):
+    """Deviation D-F: SISTEM's check_viability (driver CN <= max_region_CN, ploidy in [min, max],
+    altered drivers <= cap) plus 'no block at 0 copies' (CINner nullisomy_max = 0). Every 5 Mb block
+    carries essential genes, so homozygous loss of a whole block is lethal."""
+    return bool(_ORIG_CHECK_VIABILITY(self, clone)) and not _has_cn0_block(clone)
+
+
 def apply_sistem_patches():
-    """Install the corrected method on BaseRegionLibrary (Random/Fitted/Hybrid inherit it) and self-test."""
+    """Install the corrected methods on BaseRegionLibrary (Random/Fitted/Hybrid inherit them) and self-test."""
     import types
     BaseRegionLibrary.get_driver_start_regions = _fixed_get_driver_start_regions
+    BaseRegionLibrary.compute_fitness = _rounded_compute_fitness
+    BaseRegionLibrary.check_viability = _nullisomy_check_viability
     # Self-test on a fake 6-block homolog whose only driver sits at the LAST position.
     fake_lib = types.SimpleNamespace(drivers={"chrT": [5]}, essential={"chrT": []})
     fake_chr = types.SimpleNamespace(name="chrT", seq=list(range(6)))
@@ -159,6 +232,28 @@ def apply_sistem_patches():
         starts = _fixed_get_driver_start_regions(fake_lib, None, fake_chr, size)
         assert starts and all(0 <= j and j + size <= 6 for j in starts), "tail fix: start out of range"
         assert any(j <= 5 < j + size for j in starts), "tail fix: last position still unreachable"
+
+    # D-E self-test: exponent uses round(p) (1.93 -> 2, 2.6 -> 3), driver delta 0.5 at CN 3.
+    class _FakeLib:
+        regions = {"chrT": 6}
+        drivers = {"chrT": [1]}
+        def __getitem__(self, chrname):
+            return {1: 0.5}
+    for p, ref in ((1.93, 2), (2.6, 3), (1.5, 2), (0.9, 1)):
+        fake_clone = types.SimpleNamespace(get_ploidy=lambda p=p: p,
+                                           attributes=types.SimpleNamespace(driver_counts={"chrT": {1: 3}}))
+        got = _rounded_compute_fitness(_FakeLib(), fake_clone)
+        assert abs(got - 1.5 ** (3 / ref)) < 1e-12, f"rounded-ploidy fitness wrong at p={p}"
+
+    # D-F self-test (needs the block-id decoder; the real library build re-initialises MBIT anyway).
+    init_mbit((50).bit_length())
+    def fake_clone_with(seqs, deleted=True):
+        ev = [types.SimpleNamespace(category="focal_deletion", chrom="chrT")] if deleted else []
+        return types.SimpleNamespace(events=ev, library=types.SimpleNamespace(regions={"chrT": 4}),
+                                     genome={"chrT": [types.SimpleNamespace(seq=list(q)) for q in seqs]})
+    assert _has_cn0_block(fake_clone_with([[0, 1, 2], [1, 2]])) is True, "nullisomy: block 3 at CN 0 missed"
+    assert _has_cn0_block(fake_clone_with([[0, 1, 2], [1, 2, 3]])) is False, "nullisomy: false positive"
+    assert _has_cn0_block(fake_clone_with([[0, 1, 2], [1, 2]], deleted=False)) is False, "nullisomy: scanned without a deletion"
 
 
 apply_sistem_patches()
@@ -196,6 +291,7 @@ DEFAULT_SEED = 12345                        # arm script --seed default
 DEFAULT_OUTPUT = "gene_selection_data"      # new default; the arm script used 'all_data_gaus_pos'
 
 PICKLE_PROTOCOL = 5                         # house style (arm script uses protocol 5 for CNratios_all)
+SIM_LOG = True                              # False with --no-sim-log: SISTEM logs to os.devnull, no sim.log
 STRICT_ENV_VAR = "GENE_SIM_STRICT"          # spec: assert driver_count_mismatches == 0 when set to 1
 
 
@@ -371,6 +467,7 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
             arm_rate=theta["arm_rate"],
             chromosomal_rate=theta["chromosomal_rate"],
             out_dir=trial_dir,
+            log_path=None if SIM_LOG else os.devnull,   # None -> SISTEM writes <trial>/sim.log
         )
 
         complete = False
@@ -439,7 +536,9 @@ def simulate_gene_model_caller(params, delta_dict, chrom_lens, arm_ratios):
     """One simulation attempt. Returns a summary dict, -1 if SISTEM raised, -2 if extinct."""
     library = build_library(delta_dict, chrom_lens, arm_ratios, out_dir=params.out_dir)
 
-    anatomy = SimpleAnatomy(library, nsites=params.nsites, growth_rate=params.growth_rate, capacities=params.capacities)
+    # params= is passed so fill_params does not build a default Parameters(out_dir='out')
+    # and os.makedirs('out') in the cwd (a stray dir, and a FileExistsError race across ranks)
+    anatomy = SimpleAnatomy(library, params=params, nsites=params.nsites, growth_rate=params.growth_rate, capacities=params.capacities)
     anatomy.init_pop_dynamic(0, 0, params.t_max, N0=params.N0)
 
     igenome = init_diploid_genome(library)
@@ -582,6 +681,10 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
         "sistem_version": sistem.__version__,
         "script": {"path": os.path.abspath(__file__), **git_info()},
         "region_len": REGION_LEN,
+        # SISTEM's hg38_chrom_lengths_from_cytoband actually holds GRCh37/hg19 lengths
+        # (chr1 = 249,250,621 bp); real data must be on hg19 or lifted over before block comparison
+        "genome_build": "GRCh37/hg19 (SISTEM's table is misnamed hg38)",
+        "chrom_lens_bp": {c: int(chrom_lens[c]) for c in CHROM_ORDER},
         "nregions": {c: nregions[c] for c in CHROM_ORDER},
         "D": D,
         "chrom_order": list(CHROM_ORDER),
@@ -602,6 +705,8 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
         "sistem_patches": {
             "applied": SISTEM_PATCHES,
             "region_driver_start_regions_tail_fix": "BaseRegionLibrary.get_driver_start_regions scanned sequence[:-size] (region_library.py:144), so focal driver events could never cover the last position of a homolog; replaced by a version that examines every position with start in [max(0,i-size+1), min(i,len-size)], matching the bound the passenger function already uses",
+            "region_fitness_rounded_ploidy": "BaseRegionLibrary.compute_fitness exponent is n/round(p) (CINner, Dinh et al. 2025 S1 Eq 1-2) instead of n/p with continuous p (region_library.py:28); the continuous form rewarded deleting neutral DNA and tumours collapsed to the min_ploidy floor (ploidy median 1.51 in the 2026-10-19 calibration). init_max_fit unpatched (metastatic growth only)",
+            "region_nullisomy_lethal": "BaseRegionLibrary.check_viability additionally rejects a clone with any block at 0 total copies (CINner nullisomy_max = 0); SISTEM had no minimum copy number (19.9% of arms at CN 0 in the arm dataset)",
         },
         "cap_formula": f"int({MAX_DISTINCT_DRIV_RATIO} * n_drivers)",
         "fixed_parameters": fixed_parameters,
@@ -615,7 +720,8 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
             "rank_seed_formula": "prior_seed + RANK",
             "trial_seed_formula": "(rank_seed + t) % (2**32-1)",
         },
-        "files": {"sim": ["parameters.pkl"], "trial": ["results.pkl", "clones.npz", "sim.log"]},
+        "sim_log": SIM_LOG,
+        "files": {"sim": ["parameters.pkl"], "trial": ["results.pkl", "clones.npz"] + (["sim.log"] if SIM_LOG else [])},
     }
     # Atomic write: in a SLURM job array every task is "rank 0" and writes this same
     # file concurrently (identical settings), so write to a temp name and rename.
@@ -709,6 +815,8 @@ def parse_args():
     parser.add_argument('--overwrite', action='store_true',
                         help='Redo trials that already completed (default: skip them, which makes a '
                              'killed job resumable by resubmitting the same id range).')
+    parser.add_argument('--no-sim-log', action='store_true',
+                        help="Do not write SISTEM's per-trial sim.log (~133 KB each, more than clones.npz).")
     args = parser.parse_args()
     if args.ntrials_range is not None:
         a, b = args.ntrials_range
@@ -729,6 +837,8 @@ def main():
     require_mpi_or_exit()
 
     args = parse_args()
+    global SIM_LOG
+    SIM_LOG = not args.no_sim_log
     if is_mpi_active():
         mpi_print("MPI is active; running distributed path.")
     else:
