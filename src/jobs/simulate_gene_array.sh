@@ -5,10 +5,13 @@
 # single-process fallback is used). Theta for a given sim_id depends only on
 # (--seed, sim_id), so splitting the id range across tasks does not change the data.
 #
-# Interruptions: a dropped SSH session does not affect a batch job. A task killed by the
-# time limit, a node failure or preemption is resumed by resubmitting the SAME array
-# index (or automatically via --requeue): the script skips trials that already completed
-# and reproduces the rest byte-identically (per-trial reseeding). Pass --overwrite to redo.
+# Interruptions: a dropped SSH session does not affect a batch job. --requeue covers node
+# failure and preemption only; a task that hits the TIME LIMIT ends in state TIMEOUT and is
+# NOT requeued (seen on calibration v2, 2026-10-21: 6 of 21 tasks). Resume by resubmitting
+# the SAME array indices (e.g. --array=3,4,7,12,14): the script skips trials that already
+# completed and reproduces the rest byte-identically (per-trial reseeding). Pass --overwrite
+# to redo. For the production run, re-run `sacct ... | grep TIMEOUT` after each wave and
+# resubmit those indices until every theta has 25 completed trials.
 #
 # Sizing (F10 calibration on EPYC 9534, 2026-10-19/20: one 5e6-cell trial = 780 s median, 1,239 s max;
 # one theta x 25 trials = 4.5-6.3 h; MaxRSS 2.2 GB): CHUNK=1 theta per task is the only size that is
