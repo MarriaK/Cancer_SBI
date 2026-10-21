@@ -169,6 +169,7 @@ def read_failed_sim_list(txt_path):
 
 
 def simulate_arm_model_caller(params, arm_deltas):
+    # NB: despite its name, hg38_chrom_lengths_from_cytoband returns GRCh37/hg19 lengths (chr1 = 249,250,621 bp).
     chrom_lens, arm_ratios = hg38_chrom_lengths_from_cytoband(include_allosomes=True)
     _ = get_num_regions(chrom_lens, params.region_len)
 

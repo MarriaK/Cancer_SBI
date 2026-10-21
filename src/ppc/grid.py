@@ -3,7 +3,9 @@
 Everything is read from a simulator ``manifest.json`` (written by simulate_gene_selection.py), so
 real data and simulated data are binned onto exactly the same blocks, chromosome order and
 centromere positions. Coordinates are GRCh37/hg19 (SISTEM's chromosome table), 0-based
-half-open block intervals [start_bp, end_bp).
+half-open block intervals [start_bp, end_bp). ``Grid.genome_build`` records this (read from the
+manifest's ``genome_build`` key, default 'hg19'; SISTEM's ``hg38_chrom_lengths_from_cytoband`` is
+misnamed and returns hg19 lengths) and is cross-checked against the chr1 length.
 
 Arm conventions (Taylor et al. 2018, Cancer Cell): the five acrocentric short arms
 (13p, 14p, 15p, 21p, 22p) are never called, leaving 39 arms.
@@ -14,6 +16,9 @@ import json
 from dataclasses import dataclass, field
 
 import numpy as np
+
+from ppc.builds import (GenomeBuildMismatch, HG19_CHR1_BP, HG38_CHR1_BP, build_from_chr1_length,
+                        normalise_build)
 
 ACROCENTRIC_P = ("chr13", "chr14", "chr15", "chr21", "chr22")
 
@@ -42,11 +47,14 @@ class Grid:
     chrom_lens_bp: dict[str, int]
     region_len: int
     D: int
+    genome_build: str = "hg19"                   # 'hg19', 'hg38' or 'custom' (see ppc.builds)
     offsets: dict[str, int] = field(init=False)
     arms: list[Arm] = field(init=False)          # all 44 arms in chrom_order, p then q
     called_arms: list[Arm] = field(init=False)   # the 39 Taylor arms
 
     def __post_init__(self):
+        self.genome_build = normalise_build(self.genome_build)
+        self._check_build()
         self.offsets, off = {}, 0
         for c in self.chrom_order:
             self.offsets[c] = off
@@ -58,6 +66,19 @@ class Grid:
             self.arms.append(Arm(c, "p", o, o + cen))
             self.arms.append(Arm(c, "q", o + cen, o + n))
         self.called_arms = [a for a in self.arms if not (a.arm == "p" and a.chrom in ACROCENTRIC_P)]
+
+    def _check_build(self) -> None:
+        """chr1 = 249,250,621 bp must be hg19, 248,956,422 bp must be hg38, anything else custom."""
+        chr1 = self.chrom_lens_bp.get("chr1")
+        implied = None if chr1 is None else build_from_chr1_length(chr1)
+        if implied is None:
+            if self.genome_build != "custom":
+                raise GenomeBuildMismatch(
+                    f"grid declares {self.genome_build} but chr1 length {chr1} matches neither "
+                    f"hg19 ({HG19_CHR1_BP}) nor hg38 ({HG38_CHR1_BP}); use genome_build='custom'")
+        elif implied != self.genome_build:
+            raise GenomeBuildMismatch(
+                f"grid declares {self.genome_build} but chr1 length {chr1} is the {implied} length")
 
     def block_index(self, chrom: str, r: int) -> int:
         return self.offsets[chrom] + r
@@ -88,12 +109,13 @@ def load_grid(manifest_path: str) -> Grid:
         chrom_lens_bp={c: int(v) for c, v in m["chrom_lens_bp"].items()},
         region_len=int(m["region_len"]),
         D=int(m["D"]),
+        genome_build=normalise_build(m.get("genome_build", "hg19")),
     )
 
 
 if __name__ == "__main__":
     import sys
     g = load_grid(sys.argv[1])
-    print(f"D={g.D}, chromosomes={len(g.chrom_order)}, arms={len(g.arms)}, called arms={len(g.called_arms)}")
+    print(f"build={g.genome_build}, D={g.D}, chromosomes={len(g.chrom_order)}, arms={len(g.arms)}, called arms={len(g.called_arms)}")
     for a in g.called_arms[:4] + g.called_arms[-3:]:
         print(f"  {a.name:4s} blocks {a.start}-{a.end - 1} (n={a.n_blocks})")

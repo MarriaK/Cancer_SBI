@@ -1,7 +1,11 @@
 """Loaders that turn real bulk copy-number datasets into integer profiles on the 589-block hg19 grid.
 
-All sources are GRCh37/hg19, matching ``Grid.chrom_lens_bp`` (SISTEM's chromosome table).
-Only autosomes chr1..chr22 are kept; X, Y and anything else are dropped.
+All downloaded sources are GRCh37/hg19, matching ``Grid.genome_build`` / ``Grid.chrom_lens_bp``
+(SISTEM's chromosome table), so every loader defaults to ``genome_build='hg19'``. Each loader takes
+``genome_build`` (the build of its source files); a build that differs from the grid's is lifted
+to the grid build by endpoint liftover (:mod:`ppc.liftover`) before binning, and the
+:class:`ppc.liftover.LiftoverReport` is kept on ``Cohort.liftover``. Only autosomes chr1..chr22
+are kept; X, Y and anything else are dropped.
 
 Internal segment convention
 ---------------------------
@@ -10,7 +14,8 @@ After normalisation every segment table has columns ``chrom`` ('chr1'..'chr22'),
 (NaN = unknown). Both ASCAT and PCAWG publish **1-based inclusive** coordinates
 (``[startpos, endpos]``; in PCAWG consecutive segments satisfy ``start_next == end_prev + 1``),
 so the conversion is ``start0 = start1 - 1``, ``end0 = end1``. Segment ends beyond the hg19
-chromosome length are clipped to it.
+chromosome length are clipped to it. Arbitrary tables already in this convention (e.g. GDC
+hg38 segments) go through :func:`load_segment_table`.
 
 Sources
 -------
@@ -52,8 +57,11 @@ coverage, length-weighted mean CN, majority-state integer CN and a breakpoint fl
 Caching
 -------
 The full binned dataset (before any filter) is stored once per source and grid as
-``<cache_dir>/<source>_D<D>.npz`` (arrays + a grid fingerprint) and
-``<cache_dir>/<source>_D<D>_meta.pkl`` (pickled meta DataFrame). Filters are applied on load.
+``<cache_dir>/<source>_D<D>[_from_<source_build>].npz`` (arrays, a grid fingerprint, the grid and
+source builds; the ``_from_`` suffix only when the source build differs from the grid's) and
+``..._meta.pkl`` (pickled ``{"meta": DataFrame, "liftover": LiftoverReport | None}``). A cache whose
+version, grid fingerprint, grid build or source build differs is ignored and rebuilt. Filters are
+applied on load.
 """
 from __future__ import annotations
 
@@ -68,7 +76,9 @@ from typing import Iterable, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from ppc.builds import normalise_build
 from ppc.grid import Grid
+from ppc.liftover import LiftoverReport, segments_to_grid_build
 
 DEFAULT_CACHE_DIR = "/Users/maryamkafi/Documents/PhD_Project/cancer/real_data/bulk_cnv/cache"
 META_COLUMNS = ["sample", "donor", "cancer_type", "purity", "ploidy", "wgd", "qc", "source"]
@@ -77,7 +87,7 @@ ARM_NAMES = [
     "8p", "8q", "9p", "9q", "10p", "10q", "11p", "11q", "12p", "12q", "13q", "14q", "15q",
     "16p", "16q", "17p", "17q", "18p", "18q", "19p", "19q", "20p", "20q", "21q", "22q",
 ]
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2   # 2: grid_build / source_build stored and checked
 
 
 # --------------------------------------------------------------------------- normalisation
@@ -225,7 +235,9 @@ class Cohort:
 
     ``block_cn_int`` int16 [n, D] (-1 masked), ``block_cn_mean`` float32 [n, D] (NaN masked),
     ``breakpoint`` bool [n, D], ``coverage`` float32 [n, D], optional ``block_cn_cw`` float32
-    [n, D] (PCAWG cell-weighted mean CN), ``meta`` with at least ``META_COLUMNS``.
+    [n, D] (PCAWG cell-weighted mean CN), ``meta`` with at least ``META_COLUMNS``,
+    ``source_build`` (build of the input segments) and ``liftover`` (report of the lift to
+    ``grid.genome_build``, None when no lift was needed).
     """
     block_cn_int: np.ndarray
     block_cn_mean: np.ndarray
@@ -234,6 +246,8 @@ class Cohort:
     meta: pd.DataFrame
     grid: Grid
     block_cn_cw: Optional[np.ndarray] = None
+    source_build: str = "hg19"                       # build of the source segments before binning
+    liftover: Optional[LiftoverReport] = None        # set when source_build != grid.genome_build
 
     def __len__(self) -> int:
         return len(self.meta)
@@ -249,6 +263,7 @@ class Cohort:
             breakpoint=self.breakpoint[idx], coverage=self.coverage[idx],
             meta=self.meta.iloc[idx].reset_index(drop=True), grid=self.grid,
             block_cn_cw=None if self.block_cn_cw is None else self.block_cn_cw[idx],
+            source_build=self.source_build, liftover=self.liftover,
         )
 
     def ploidy_from_blocks(self) -> np.ndarray:
@@ -263,38 +278,46 @@ def _grid_fingerprint(grid: Grid) -> np.ndarray:
     return np.array(vals, dtype=np.int64)
 
 
-def _cache_paths(cache_dir: str, source: str, grid: Grid) -> tuple[str, str]:
-    base = os.path.join(cache_dir, f"{source}_D{grid.D}")
+def _cache_paths(cache_dir: str, source: str, grid: Grid, source_build: str = "hg19"
+                 ) -> tuple[str, str]:
+    suffix = "" if source_build == grid.genome_build else f"_from_{source_build}"
+    base = os.path.join(cache_dir, f"{source}_D{grid.D}{suffix}")
     return base + ".npz", base + "_meta.pkl"
 
 
-def _load_cache(cache_dir: str, source: str, grid: Grid) -> Optional[Cohort]:
-    npz, pkl = _cache_paths(cache_dir, source, grid)
+def _load_cache(cache_dir: str, source: str, grid: Grid, source_build: str = "hg19"
+                ) -> Optional[Cohort]:
+    npz, pkl = _cache_paths(cache_dir, source, grid, source_build)
     if not (os.path.exists(npz) and os.path.exists(pkl)):
         return None
     z = np.load(npz)
     if int(z["version"]) != _CACHE_VERSION or not np.array_equal(z["grid_fp"], _grid_fingerprint(grid)):
         return None
+    if str(z["grid_build"]) != grid.genome_build or str(z["source_build"]) != source_build:
+        return None
     with open(pkl, "rb") as f:
-        meta = pickle.load(f)
+        stored = pickle.load(f)
     return Cohort(block_cn_int=z["block_cn_int"], block_cn_mean=z["block_cn_mean"],
-                  breakpoint=z["breakpoint"], coverage=z["coverage"], meta=meta, grid=grid,
-                  block_cn_cw=z["block_cn_cw"] if "block_cn_cw" in z.files else None)
+                  breakpoint=z["breakpoint"], coverage=z["coverage"], meta=stored["meta"], grid=grid,
+                  block_cn_cw=z["block_cn_cw"] if "block_cn_cw" in z.files else None,
+                  source_build=source_build, liftover=stored["liftover"])
 
 
 def _save_cache(cache_dir: str, source: str, cohort: Cohort) -> None:
     os.makedirs(cache_dir, exist_ok=True)
-    npz, pkl = _cache_paths(cache_dir, source, cohort.grid)
+    npz, pkl = _cache_paths(cache_dir, source, cohort.grid, cohort.source_build)
     arrs = dict(block_cn_int=cohort.block_cn_int, block_cn_mean=cohort.block_cn_mean,
                 breakpoint=cohort.breakpoint, coverage=cohort.coverage,
-                grid_fp=_grid_fingerprint(cohort.grid), version=np.array(_CACHE_VERSION))
+                grid_fp=_grid_fingerprint(cohort.grid), version=np.array(_CACHE_VERSION),
+                grid_build=np.array(cohort.grid.genome_build), source_build=np.array(cohort.source_build))
     if cohort.block_cn_cw is not None:
         arrs["block_cn_cw"] = cohort.block_cn_cw
     tmp = npz + ".tmp.npz"
     np.savez(tmp, **arrs)
     os.replace(tmp, npz)
     with open(pkl + ".tmp", "wb") as f:
-        pickle.dump(cohort.meta, f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump({"meta": cohort.meta, "liftover": cohort.liftover}, f,
+                    protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(pkl + ".tmp", pkl)
 
 
@@ -314,8 +337,14 @@ def _iter_tar_tables(tar_path: str, suffix: str, names: Optional[set[str]] = Non
             yield fid, pd.read_csv(io.BytesIO(fh.read()), sep="\t", low_memory=False)
 
 
-def _bin_tables(tables: list[pd.DataFrame], grid: Grid, value_cols: list[str]) -> dict[str, np.ndarray]:
-    """``tables`` already normalised (chrom, start, end, value cols); one per sample, in order."""
+def _bin_tables(tables: list[pd.DataFrame], grid: Grid, value_cols: list[str],
+                source_build: str = "hg19", allow_liftover: bool = True
+                ) -> tuple[dict[str, np.ndarray], Optional[LiftoverReport]]:
+    """``tables`` already normalised (chrom, start, end, value cols); one per sample, in order.
+
+    The concatenated table is brought to ``grid.genome_build`` with
+    :func:`ppc.liftover.segments_to_grid_build` before binning; returns (binned arrays, report).
+    """
     n = len(tables)
     if n == 0:
         D = grid.D
@@ -323,14 +352,16 @@ def _bin_tables(tables: list[pd.DataFrame], grid: Grid, value_cols: list[str]) -
              "breakpoint": np.zeros((0, D), bool)}
         for j in range(len(value_cols)):
             z[f"mean{j}"] = np.zeros((0, D), np.float32)
-        return z
+        return z, None
     cat = pd.concat([t.assign(_sid=i) for i, t in enumerate(tables)], ignore_index=True)
     cat["chrom"] = normalise_chrom(cat["chrom"])
     cat = cat.dropna(subset=["chrom"])
-    cat["_c"] = cat["chrom"].map({c: i for i, c in enumerate(grid.chrom_order)})
+    cat, report = segments_to_grid_build(cat, source_build, grid, allow_liftover=allow_liftover)
+    cat = cat.assign(_c=cat["chrom"].map({c: i for i, c in enumerate(grid.chrom_order)}))
     cat = cat.sort_values(["_sid", "_c", "start"], kind="stable")
-    return _bin_many(cat["chrom"].to_numpy(), cat["start"].to_numpy(), cat["end"].to_numpy(),
-                     cat[value_cols].to_numpy(dtype=np.float64), cat["_sid"].to_numpy(), n, grid)
+    r = _bin_many(cat["chrom"].to_numpy(), cat["start"].to_numpy(), cat["end"].to_numpy(),
+                  cat[value_cols].to_numpy(dtype=np.float64), cat["_sid"].to_numpy(), n, grid)
+    return r, report
 
 
 def _finish_meta(meta: pd.DataFrame) -> pd.DataFrame:
@@ -353,7 +384,9 @@ def ascat_segments_to_internal(raw: pd.DataFrame) -> pd.DataFrame:
     return t[["chrom", "start", "end", "cn"]]
 
 
-def _build_ascat(root: str, grid: Grid, limit: Optional[int] = None) -> Cohort:
+def _build_ascat(root: str, grid: Grid, limit: Optional[int] = None,
+                 genome_build: str = "hg19") -> Cohort:
+    genome_build = normalise_build(genome_build)
     summ = _read_ascat_summary(root)
     if limit is not None:
         summ = summ.iloc[:limit]
@@ -364,31 +397,35 @@ def _build_ascat(root: str, grid: Grid, limit: Optional[int] = None) -> Cohort:
         if len(tabs) == len(want):
             break
     summ = summ[summ["name"].isin(tabs)].reset_index(drop=True)
-    r = _bin_tables([tabs[nm] for nm in summ["name"]], grid, ["cn"])
+    r, lift = _bin_tables([tabs[nm] for nm in summ["name"]], grid, ["cn"], genome_build)
     meta = pd.DataFrame({
         "sample": summ["name"], "donor": summ["patient"], "cancer_type": summ["cancer_type"],
         "purity": summ["purity"].astype(float), "ploidy": summ["ploidy"].astype(float),
         "wgd": summ["WGD"], "qc": summ["QC"], "source": "ascat_tcga",
         "sex": summ["sex"], "goodness_of_fit": summ["goodness_of_fit"],
     })
-    return Cohort(r["cn_int"], r["mean0"], r["breakpoint"], r["coverage"], _finish_meta(meta), grid)
+    return Cohort(r["cn_int"], r["mean0"], r["breakpoint"], r["coverage"], _finish_meta(meta), grid,
+                  source_build=genome_build, liftover=lift)
 
 
 def load_ascat_tcga(root: str, grid: Grid, cancer_types: Optional[Sequence[str]] = None,
                     wgd: Optional[Sequence[str]] = ("0",), qc: Optional[Sequence[str]] = ("Pass",),
                     min_purity: Optional[float] = 0.3, use_cache: bool = True,
-                    cache_dir: str = DEFAULT_CACHE_DIR, limit: Optional[int] = None) -> Cohort:
+                    cache_dir: str = DEFAULT_CACHE_DIR, limit: Optional[int] = None,
+                    genome_build: str = "hg19") -> Cohort:
     """TCGA ASCAT v3 cohort, ``cn = nMajor + nMinor``; one row per case (``patient`` is unique).
 
     Filters (``None`` disables one): ``cancer_types`` (TCGA codes), ``wgd`` (allowed values of
     the summary ``WGD`` column: '0', '1', '1+'), ``qc`` (allowed ``QC`` values), ``purity >= min_purity``.
     ``limit`` bins only the first ``limit`` summary rows and bypasses the cache (for smoke tests).
+    ``genome_build``: build of the segment files (lifted to ``grid.genome_build`` if different).
     """
+    genome_build = normalise_build(genome_build)
     coh = None
     if limit is None and use_cache:
-        coh = _load_cache(cache_dir, "ascat_tcga", grid)
+        coh = _load_cache(cache_dir, "ascat_tcga", grid, genome_build)
     if coh is None:
-        coh = _build_ascat(root, grid, limit)
+        coh = _build_ascat(root, grid, limit, genome_build)
         if limit is None and use_cache:
             _save_cache(cache_dir, "ascat_tcga", coh)
     m = coh.meta
@@ -438,7 +475,9 @@ def _read_pcawg_meta(root: str) -> pd.DataFrame:
     })
 
 
-def _build_pcawg(root: str, grid: Grid, limit: Optional[int] = None) -> Cohort:
+def _build_pcawg(root: str, grid: Grid, limit: Optional[int] = None,
+                 genome_build: str = "hg19") -> Cohort:
+    genome_build = normalise_build(genome_build)
     meta = _read_pcawg_meta(root).sort_values("sample", kind="stable").reset_index(drop=True)
     if limit is not None:
         meta = meta.iloc[:limit]
@@ -449,16 +488,16 @@ def _build_pcawg(root: str, grid: Grid, limit: Optional[int] = None) -> Cohort:
         if len(tabs) == len(want):
             break
     meta = meta[meta["sample"].isin(tabs)].reset_index(drop=True)
-    r = _bin_tables([tabs[s] for s in meta["sample"]], grid, ["cn", "cn_cw"])
+    r, lift = _bin_tables([tabs[s] for s in meta["sample"]], grid, ["cn", "cn_cw"], genome_build)
     return Cohort(r["cn_int"], r["mean0"], r["breakpoint"], r["coverage"], _finish_meta(meta),
-                  grid, block_cn_cw=r["mean1"])
+                  grid, block_cn_cw=r["mean1"], source_build=genome_build, liftover=lift)
 
 
 def load_pcawg(root: str, grid: Grid, histologies: Optional[Sequence[str]] = None,
                require_no_wgd: bool = True, exclude_uncertain: bool = True,
                min_purity: Optional[float] = 0.3, use_cache: bool = True,
                cache_dir: str = DEFAULT_CACHE_DIR, one_per_donor: bool = True,
-               limit: Optional[int] = None) -> Cohort:
+               limit: Optional[int] = None, genome_build: str = "hg19") -> Cohort:
     """PCAWG consensus cohort. ``block_cn_int`` from clonal ``total_cn``; ``block_cn_cw`` holds the
     length-weighted Battenberg cell-weighted CN. ``qc`` is 'NA' (PCAWG has no QC column here).
 
@@ -466,12 +505,14 @@ def load_pcawg(root: str, grid: Grid, histologies: Optional[Sequence[str]] = Non
     ``not wgd_uncertain``, ``purity >= min_purity``; then (``one_per_donor``) the first sample per
     ``icgc_donor_id`` by sorted ``tumour_aliquot_id`` among the survivors.
     ``limit`` bins only the first ``limit`` samples (sorted by aliquot) and bypasses the cache.
+    ``genome_build``: build of the segment files (lifted to ``grid.genome_build`` if different).
     """
+    genome_build = normalise_build(genome_build)
     coh = None
     if limit is None and use_cache:
-        coh = _load_cache(cache_dir, "pcawg", grid)
+        coh = _load_cache(cache_dir, "pcawg", grid, genome_build)
     if coh is None:
-        coh = _build_pcawg(root, grid, limit)
+        coh = _build_pcawg(root, grid, limit, genome_build)
         if limit is None and use_cache:
             _save_cache(cache_dir, "pcawg", coh)
     m = coh.meta
@@ -491,6 +532,38 @@ def load_pcawg(root: str, grid: Grid, histologies: Optional[Sequence[str]] = Non
         sub = sub.sort_values(["_pref", "sample"], ascending=[False, True], kind="stable")
         idx = np.sort(sub.drop_duplicates("donor", keep="first")["_i"].to_numpy())
     return coh.subset(idx)
+
+
+# --------------------------------------------------------------------------- generic tables
+def load_segment_table(segs: pd.DataFrame, meta: pd.DataFrame, grid: Grid, *, genome_build: str,
+                       source: str, value_cols: Sequence[str] = ("cn",),
+                       allow_liftover: bool = True) -> Cohort:
+    """Bin an arbitrary segment table (e.g. GDC hg38) already in the internal convention.
+
+    ``segs``: columns ``sample``, ``chrom``, ``start``, ``end`` (0-based half-open, in
+    ``genome_build``) and ``value_cols`` (the first drives ``cn_int``; a second, if given, fills
+    ``block_cn_cw``). ``meta``: one row per sample, keyed by a ``sample`` column or index; the
+    ``META_COLUMNS`` it lacks are filled with NaN and ``source`` is set. Samples are kept in
+    ``meta`` order, restricted to those with at least one segment. Segments are lifted to
+    ``grid.genome_build`` when the builds differ (GenomeBuildMismatch if ``allow_liftover`` is
+    False). Not cached.
+    """
+    genome_build = normalise_build(genome_build)
+    value_cols = list(value_cols)
+    if "sample" in meta.columns:
+        meta = meta.reset_index(drop=True)
+    else:
+        meta = meta.rename_axis("sample").reset_index()     # sample ids in the (possibly unnamed) index
+    meta = meta[meta["sample"].isin(set(segs["sample"]))].reset_index(drop=True)
+    for c in META_COLUMNS:
+        if c not in meta.columns:
+            meta[c] = np.nan
+    meta["source"] = source
+    groups = {k: g for k, g in segs.groupby("sample", sort=False)}
+    tables = [groups[s][["chrom", "start", "end"] + value_cols] for s in meta["sample"]]
+    r, lift = _bin_tables(tables, grid, value_cols, genome_build, allow_liftover)
+    return Cohort(r["cn_int"], r["mean0"], r["breakpoint"], r["coverage"], _finish_meta(meta), grid,
+                  block_cn_cw=r.get("mean1"), source_build=genome_build, liftover=lift)
 
 
 # --------------------------------------------------------------------------- tables
