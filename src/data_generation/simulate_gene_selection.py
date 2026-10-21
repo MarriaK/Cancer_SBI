@@ -7,8 +7,13 @@ NPE training. Everything not listed below is kept identical to the arm-model
 script simulate_arm_selection.py (MPI layout, directory structure, retry loop,
 seeding scheme), so the two files can be diffed side by side.
 
-Prior (one draw per theta id, rng = default_rng(base_seed + sim_id*1000)):
-    arm_rate ~ U(1e-5, 1e-4);  chromosomal_rate ~ U(1e-6, 1e-5)
+Prior, version 2 (one draw per theta id, rng = default_rng(base_seed + sim_id*1000)):
+    event rates and the focal length are LOG-uniform (equal mass per decade):
+    arm_rate ~ logU(1e-5, 3e-4);  chromosomal_rate ~ logU(1e-6, 1e-4)
+    focal_driver_rate ~ logU(1e-4, 2e-3);  length_mean ~ logU(1, 8) blocks (mean focal length)
+    (prior version 1 used arm U(1e-5,1e-4), chrom U(1e-6,1e-5), fixed focal 5e-4 and
+    length_mean 1.5; revised 2026-10-20 after the step-1 change-size comparison: simulated
+    tumours had too few arm events, no partial-arm segments and too little altered genome)
     pi ~ U(0.02, 0.12)  (driver fraction);  q ~ U(0.40, 0.65)  (P(positive))
     m ~ U(0.05, 0.15)  (mean effect size on the log scale)
     per block: z ~ Bernoulli(pi)  (every block, including the last one of each chromosome)
@@ -24,6 +29,11 @@ Output contract (under --output):
         block_cn int16 (n_clones, D), popsize int64, ploidy float32,
         fitness float64, nWGD int16, n_altered_drivers int16,
         bulk float32 (D,) = popsize-weighted mean of block_cn.
+        event_counts int32 (n_clones, 7): CNA events along each clone's lineage back to the
+            founder, per category in EVENT_CATEGORIES order; events int32 (n_events, 9): the
+            unique events of all surviving lineages (columns in EVENT_COLUMNS, also stored as
+            event_columns). Recovered from SISTEM's own per-clone event records (clone.events,
+            parent links survive clone death), so these are true counts, not inferred ones.
         The largest clone is argmax(popsize); it is not stored separately.
     simulation_outputs/sim{ID}/{t}/sim.log     written by SISTEM itself (absent with --no-sim-log)
 Block vectors are flattened in CHROM_ORDER (chr1..chr22, numeric order).
@@ -122,7 +132,8 @@ import sistem
 from sistem import Parameters
 from sistem.genome.genome import init_diploid_genome
 from sistem.genome.utils import get_num_regions, hg38_chrom_lengths_from_cytoband
-from sistem.lineage.cell import Clone
+from sistem.lineage.cell import Cell, Clone
+from sistem.lineage.mutation import CNA
 from sistem.ancestry import GrowthSimulator
 from sistem.anatomy import SimpleAnatomy
 from sistem.data.utils import count_region_CNs
@@ -135,6 +146,7 @@ SISTEM_PATCHES = [                                          # recorded in manife
     "region_driver_start_regions_tail_fix",                 # D-D
     "region_fitness_rounded_ploidy",                        # D-E
     "region_nullisomy_lethal",                              # D-F
+    "focal_deletion_gene_ids_record_fix",                   # D-G (bookkeeping only)
 ]
 
 
@@ -219,12 +231,27 @@ def _nullisomy_check_viability(self, clone):
     return bool(_ORIG_CHECK_VIABILITY(self, clone)) and not _has_cn0_block(clone)
 
 
+def _fixed_focal_deletion(self, chromosome, start, end, record_event=True, driver=False):
+    """Deviation D-G: Cell.focal_deletion (lineage/cell.py:47) records gene_ids = seq[start:end] AFTER
+    the deletion, i.e. the blocks that moved into those positions (or nothing, at a chromosome end),
+    not the deleted blocks. Capture the slice first. Bookkeeping only: the genome change is identical."""
+    ids = list(chromosome.seq[start:end])
+    chromosome.delete(start, end)
+    if record_event:
+        self.events.append(CNA(category="focal_deletion", chrom=chromosome.name, allele=chromosome.allele,
+                               homolog_id=chromosome.homolog_id, start=start, end=end, gene_ids=ids,
+                               driver=driver, gen=self.gen))
+
+
 def apply_sistem_patches():
     """Install the corrected methods on BaseRegionLibrary (Random/Fitted/Hybrid inherit them) and self-test."""
     import types
     BaseRegionLibrary.get_driver_start_regions = _fixed_get_driver_start_regions
     BaseRegionLibrary.compute_fitness = _rounded_compute_fitness
     BaseRegionLibrary.check_viability = _nullisomy_check_viability
+    # Clone.focal_deletion (cell.py:192) updates nregions/driver counts and then calls
+    # super().focal_deletion, which resolves to Cell.focal_deletion at call time, so patching Cell is enough.
+    Cell.focal_deletion = _fixed_focal_deletion
     # Self-test on a fake 6-block homolog whose only driver sits at the LAST position.
     fake_lib = types.SimpleNamespace(drivers={"chrT": [5]}, essential={"chrT": []})
     fake_chr = types.SimpleNamespace(name="chrT", seq=list(range(6)))
@@ -255,6 +282,15 @@ def apply_sistem_patches():
     assert _has_cn0_block(fake_clone_with([[0, 1, 2], [1, 2, 3]])) is False, "nullisomy: false positive"
     assert _has_cn0_block(fake_clone_with([[0, 1, 2], [1, 2]], deleted=False)) is False, "nullisomy: scanned without a deletion"
 
+    # D-G self-test: a deletion of positions 3..4 on [0..5] must record ids [3, 4], not [5] (upstream) or [].
+    class _FakeChr:
+        name, allele, homolog_id, cent = "chrT", 0, 0, None
+        def __init__(self): self.seq = list(range(6))
+        def delete(self, a, b): self.seq = self.seq[:a] + self.seq[b:]
+    fake_cell = types.SimpleNamespace(events=[], gen=7)
+    fc = _FakeChr(); _fixed_focal_deletion(fake_cell, fc, 3, 5)
+    assert fc.seq == [0, 1, 2, 5] and fake_cell.events[0].gene_ids == [3, 4], "focal_deletion record fix: wrong ids"
+
 
 apply_sistem_patches()
 
@@ -264,17 +300,28 @@ DATASET_KIND = "gene_clone_sets"           # spec: parameters.pkl / manifest "da
 # Genome grid
 REGION_LEN = int(5e6)                       # spec: 5 Mb blocks, fixed constant (not a CLI knob)
 CHROM_ORDER = [f"chr{i}" for i in range(1, 23)]  # numeric order; SISTEM's dicts are string-sorted
+CHROM_INDEX = {c: i for i, c in enumerate(CHROM_ORDER)}
+
+# SISTEM's CNA event categories (lineage/cell.py), in the column order of clones.npz["event_counts"]
+EVENT_CATEGORIES = ("focal_amplification", "focal_deletion", "arm_duplication", "arm_deletion",
+                    "chromosomal_duplication", "chromosomal_deletion", "WGD")
+EVENT_INDEX = {c: i for i, c in enumerate(EVENT_CATEGORIES)}
+ARM_CODE = {"p": 0, "q": 1, "w": 2}             # 'w' = whole chromosome used as one arm (acentric homolog)
+# Columns of clones.npz["events"]; -1 = not applicable
+EVENT_COLUMNS = ("category", "chrom", "arm", "first_block", "last_block", "n_blocks", "copies", "driver", "gen")
 
 # Prior ranges (spec "PRIOR"); each is (low, high) of a uniform
-ARM_RATE_RANGE = (1e-5, 1e-4)               # same as the arm script's arm_low, arm_high
-CHROM_RATE_RANGE = (1e-6, 1e-5)             # same as the arm script's chrom_low, chrom_high
+PRIOR_VERSION = 2                           # bump whenever sample_theta's distribution or draw order changes
+ARM_RATE_RANGE = (1e-5, 3e-4)               # log-uniform; v1 was U(1e-5, 1e-4) (arm script)
+CHROM_RATE_RANGE = (1e-6, 1e-4)             # log-uniform; v1 was U(1e-6, 1e-5) (arm script)
+FOCAL_RATE_RANGE = (1e-4, 2e-3)             # log-uniform; v1 fixed focal_driver_rate = 5e-4
+LENGTH_MEAN_RANGE = (1.0, 8.0)              # log-uniform, blocks; v1 fixed SISTEM default 1.5
 PI_RANGE = (0.02, 0.12)                     # spec: driver fraction pi
 Q_RANGE = (0.40, 0.65)                      # spec: P(sign = +1) q
 M_RANGE = (0.05, 0.15)                      # spec: mean of Exponential effect size m
 ETA_CAP = 0.6                               # spec: eta = min(Exp(mean=m), 0.6)
 
 # Fixed simulation / library parameters (spec "LIBRARY" and "SIMULATION PARAMETERS")
-FOCAL_DRIVER_RATE = 5e-4                    # identical to the arm script
 MAX_DISTINCT_DRIV_RATIO = 0.9               # identical to the arm script; cap = int(0.9 * n_drivers)
 MIN_DETECTABLE = 5e6                        # identical to the arm script
 MAX_REGION_CN = 10                          # spec LIBRARY (= SISTEM default)
@@ -308,16 +355,25 @@ def genome_grid():
 
 
 # ----------------- Prior -----------------
+def _log_uniform(rng, lo, hi):
+    """One draw with equal probability per decade: exp(U(log lo, log hi)). A plain uniform on
+    (1e-6, 1e-4) would put 99% of its draws above 2e-6; this gives each power of ten a third."""
+    return float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+
+
 def sample_theta(rng, nregions, chrom_order):
-    """One prior draw. The rng is consumed in this fixed order:
-    arm_rate, chromosomal_rate, pi, q, m, then blocks in chrom_order / r order
+    """One prior draw (PRIOR_VERSION 2). The rng is consumed in this fixed order:
+    arm_rate, chromosomal_rate, focal_driver_rate, length_mean (each log-uniform: exp of a
+    uniform on the log bounds), pi, q, m, then blocks in chrom_order / r order
     (per block: one uniform for z; if z == 1, one exponential for eta and one
     uniform for the sign). Every block is a driver candidate, including the last
     one of each chromosome: the SISTEM off-by-one that made it unreachable by
     focal events is patched at import (deviation D-D, apply_sistem_patches).
     """
-    arm_rate = float(rng.uniform(*ARM_RATE_RANGE))
-    chromosomal_rate = float(rng.uniform(*CHROM_RATE_RANGE))
+    arm_rate = _log_uniform(rng, *ARM_RATE_RANGE)
+    chromosomal_rate = _log_uniform(rng, *CHROM_RATE_RANGE)
+    focal_driver_rate = _log_uniform(rng, *FOCAL_RATE_RANGE)
+    length_mean = _log_uniform(rng, *LENGTH_MEAN_RANGE)
     pi = float(rng.uniform(*PI_RANGE))
     q = float(rng.uniform(*Q_RANGE))
     m = float(rng.uniform(*M_RANGE))
@@ -338,6 +394,8 @@ def sample_theta(rng, nregions, chrom_order):
     return {
         "arm_rate": arm_rate,
         "chromosomal_rate": chromosomal_rate,
+        "focal_driver_rate": focal_driver_rate,
+        "length_mean": length_mean,
         "pi": pi,
         "q": q,
         "m": m,
@@ -425,8 +483,11 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
 
     # Persist theta used (written up front, as in the arm script)
     parameters = {
+        "prior_version": PRIOR_VERSION,
         "arm_rate": theta["arm_rate"],
         "chromosomal_rate": theta["chromosomal_rate"],
+        "focal_driver_rate": theta["focal_driver_rate"],
+        "length_mean": theta["length_mean"],
         "pi": theta["pi"],
         "q": theta["q"],
         "m": theta["m"],
@@ -461,7 +522,8 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
 
         params = Parameters(
             region_len=REGION_LEN,
-            focal_driver_rate=FOCAL_DRIVER_RATE,
+            focal_driver_rate=theta["focal_driver_rate"],
+            length_mean=theta["length_mean"],
             max_distinct_driv_ratio=MAX_DISTINCT_DRIV_RATIO,
             min_detectable=MIN_DETECTABLE,
             arm_rate=theta["arm_rate"],
@@ -494,6 +556,7 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
             "failures": [failed_sim, failed_call],
             "complete": complete,
             "n_clones": None,
+            "n_events": None,
             "driver_count_mismatches": None,
             "wall_seconds": None,
             "sistem_version": sistem.__version__,
@@ -501,6 +564,7 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
         if complete:
             results.update(
                 n_clones=int(summary["block_cn"].shape[0]),
+                n_events=int(summary["events"].shape[0]),
                 driver_count_mismatches=summary["driver_count_mismatches"],
                 wall_seconds=wall_seconds,
             )
@@ -521,6 +585,10 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
                     nWGD=summary["nWGD"],
                     n_altered_drivers=summary["n_altered_drivers"],
                     bulk=summary["bulk"],
+                    event_counts=summary["event_counts"],
+                    events=summary["events"],
+                    event_columns=np.asarray(EVENT_COLUMNS),
+                    event_categories=np.asarray(EVENT_CATEGORIES),
                 )
             os.replace(npz_tmp, npz_final)
 
@@ -530,6 +598,65 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
         with open(res_tmp, "wb") as f:
             pkl.dump(results, f, protocol=PICKLE_PROTOCOL)
         os.replace(res_tmp, res_final)
+
+
+def _event_row(e, cat):
+    """One int32 row of EVENT_COLUMNS for a SISTEM CNA event record."""
+    chrom = CHROM_INDEX.get(getattr(e, "chrom", None), -1)
+    arm = ARM_CODE.get(getattr(e, "arm", None), -1)
+    ids = getattr(e, "gene_ids", None)
+    start, end = getattr(e, "start", None), getattr(e, "end", None)
+    if ids:                                     # focal events: block ids covered (plain Chromosome never re-keys ids)
+        first, last = int(min(ids)), int(max(ids))
+    else:
+        first = last = -1
+    n = int(end - start) if (start is not None and end is not None) else (len(ids) if ids else -1)
+    copies = getattr(e, "copies", None)
+    driver = getattr(e, "driver", None)
+    return [EVENT_INDEX[cat], chrom, arm, first, last, n,
+            -1 if copies is None else int(copies),
+            -1 if driver is None else int(bool(driver)),
+            int(getattr(e, "gen", -1))]
+
+
+def collect_events(clones):
+    """True CNA event history of the surviving clones, from SISTEM's own records.
+
+    Each clone's `events` holds only the mutations that created it from its parent; the parent
+    link survives clone death (Clone.die keeps events and parent), so walking the chain gives the
+    whole lineage. Returns (event_counts int32 [n_clones, 7], events int32 [n_events, 9]): per-clone
+    counts per category along the lineage, and the unique events over all lineages (an ancestor's
+    event is listed once however many descendants share it). Lineages that went extinct are not
+    reachable and are not counted, as in a real tumour."""
+    rows, seen = [], {}
+    counts_cache = {}                           # id(clone) -> counts vector of that clone's whole lineage
+
+    def lineage_counts(c):
+        k = id(c)
+        if k in counts_cache:
+            return counts_cache[k]
+        own = np.zeros(len(EVENT_CATEGORIES), dtype=np.int32)
+        for e in c.events:
+            cat = getattr(e, "category", None)
+            if cat not in EVENT_INDEX:
+                continue
+            own[EVENT_INDEX[cat]] += 1
+            if id(e) not in seen:
+                seen[id(e)] = len(rows)
+                rows.append(_event_row(e, cat))
+        total = own if c.parent is None else own + lineage_counts(c.parent)
+        counts_cache[k] = total
+        return total
+
+    import sys
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(old_limit, 100_000))   # lineages can be thousands of clones deep
+    try:
+        event_counts = np.stack([lineage_counts(c) for c in clones]).astype(np.int32)
+    finally:
+        sys.setrecursionlimit(old_limit)
+    events = np.asarray(rows, dtype=np.int32).reshape(-1, len(EVENT_COLUMNS))
+    return event_counts, events
 
 
 def simulate_gene_model_caller(params, delta_dict, chrom_lens, arm_ratios):
@@ -588,6 +715,7 @@ def simulate_gene_model_caller(params, delta_dict, chrom_lens, arm_ratios):
 
     block_cn = np.stack(block_rows).astype(np.int16)
     popsize = np.asarray(popsize, dtype=np.int64)
+    event_counts, events = collect_events(clones)
     # popsize-weighted mean over clones (same weighting as arm_CNratios_bulk)
     bulk = np.average(block_cn.astype(np.float64), axis=0, weights=popsize).astype(np.float32)
     # The largest clone is not stored: it is argmax(popsize) (first maximum, as in extract_largest_clones).
@@ -600,6 +728,8 @@ def simulate_gene_model_caller(params, delta_dict, chrom_lens, arm_ratios):
         "nWGD": np.asarray(nWGD, dtype=np.int16),
         "n_altered_drivers": np.asarray(n_altered, dtype=np.int16),
         "bulk": bulk,
+        "event_counts": event_counts,
+        "events": events,
         "driver_count_mismatches": int(driver_count_mismatches),
     }
 
@@ -651,13 +781,11 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
     # (out_dir=output_dir already exists, so no new directory is created).
     p = Parameters(
         region_len=REGION_LEN,
-        focal_driver_rate=FOCAL_DRIVER_RATE,
         max_distinct_driv_ratio=MAX_DISTINCT_DRIV_RATIO,
         min_detectable=MIN_DETECTABLE,
         out_dir=output_dir,
     )
-    fixed_parameters = {
-        "focal_driver_rate": p.focal_driver_rate,
+    fixed_parameters = {                       # focal_driver_rate and length_mean are DRAWN since prior v2
         "max_distinct_driv_ratio": p.max_distinct_driv_ratio,
         "min_detectable": p.min_detectable,
         "max_region_CN": MAX_REGION_CN,
@@ -670,7 +798,6 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
         "WGD_rate": p.WGD_rate,
         "focal_gain_rate": p.focal_gain_rate,
         "chrom_dup_rate": p.chrom_dup_rate,
-        "length_mean": p.length_mean,
         "mag_mean": p.mag_mean,
         "lifespan_mean": p.lifespan_mean,
     }
@@ -692,9 +819,14 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
         "arm_ratios": {c: arm_ratios[c] for c in CHROM_ORDER},
         # same rule as sistem.genome.genome / arm_library: round(nregions * arm_ratio)
         "centromere_block": {c: round(nregions[c] * arm_ratios[c]) for c in CHROM_ORDER},
+        "prior_version": PRIOR_VERSION,
         "prior": {
-            "arm_rate": ["uniform", *ARM_RATE_RANGE],
-            "chromosomal_rate": ["uniform", *CHROM_RATE_RANGE],
+            "arm_rate": ["loguniform", *ARM_RATE_RANGE],
+            "chromosomal_rate": ["loguniform", *CHROM_RATE_RANGE],
+            "focal_driver_rate": ["loguniform", *FOCAL_RATE_RANGE],
+            "length_mean_blocks": ["loguniform", *LENGTH_MEAN_RANGE],
+            "draw_order": "arm_rate, chromosomal_rate, focal_driver_rate, length_mean, pi, q, m, then blocks",
+            "v1_to_v2_change": "2026-10-20 after step 1 (change-size comparison with TCGA/PCAWG non-WGD cohorts): rates log-uniform; chromosome range widened to 1e-4; focal rate drawn (was fixed 5e-4); focal length_mean drawn (was fixed 1.5 blocks) so partial-arm segments can occur",
             "pi": ["uniform", *PI_RANGE],
             "q": ["uniform", *Q_RANGE],
             "m": ["uniform", *M_RANGE],
@@ -706,6 +838,7 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
             "applied": SISTEM_PATCHES,
             "region_driver_start_regions_tail_fix": "BaseRegionLibrary.get_driver_start_regions scanned sequence[:-size] (region_library.py:144), so focal driver events could never cover the last position of a homolog; replaced by a version that examines every position with start in [max(0,i-size+1), min(i,len-size)], matching the bound the passenger function already uses",
             "region_fitness_rounded_ploidy": "BaseRegionLibrary.compute_fitness exponent is n/round(p) (CINner, Dinh et al. 2025 S1 Eq 1-2) instead of n/p with continuous p (region_library.py:28); the continuous form rewarded deleting neutral DNA and tumours collapsed to the min_ploidy floor (ploidy median 1.51 in the 2026-10-19 calibration). init_max_fit unpatched (metastatic growth only)",
+            "focal_deletion_gene_ids_record_fix": "Cell.focal_deletion recorded gene_ids after applying the deletion (lineage/cell.py:47), so the record held the blocks that slid into those positions, or nothing at a chromosome end; the slice is now captured before deleting. Bookkeeping only, no change to the simulated genomes",
             "region_nullisomy_lethal": "BaseRegionLibrary.check_viability additionally rejects a clone with any block at 0 total copies (CINner nullisomy_max = 0); SISTEM had no minimum copy number (19.9% of arms at CN 0 in the arm dataset)",
         },
         "cap_formula": f"int({MAX_DISTINCT_DRIV_RATIO} * n_drivers)",
@@ -721,6 +854,9 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
             "trial_seed_formula": "(rank_seed + t) % (2**32-1)",
         },
         "sim_log": SIM_LOG,
+        "events": {"event_categories": list(EVENT_CATEGORIES), "event_columns": list(EVENT_COLUMNS),
+                   "note": "true per-lineage CNA events from clone.events (surviving lineages only); -1 = not applicable; "
+                           "first_block/last_block are block ids for focal events, n_blocks their count"},
         "files": {"sim": ["parameters.pkl"], "trial": ["results.pkl", "clones.npz"] + (["sim.log"] if SIM_LOG else [])},
     }
     # Atomic write: in a SLURM job array every task is "rank 0" and writes this same

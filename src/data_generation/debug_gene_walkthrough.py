@@ -79,7 +79,7 @@ prior_seed = base_seed + sim_id * s.PRIOR_SEED_STRIDE                      # sam
 rng = np.random.default_rng(prior_seed)
 theta = s.sample_theta(rng, nregions, s.CHROM_ORDER)                       # <-- BREAKPOINT
 print(f"prior_seed={prior_seed}")
-for k in ("arm_rate", "chromosomal_rate", "pi", "q", "m"):
+for k in ("arm_rate", "chromosomal_rate", "focal_driver_rate", "length_mean", "pi", "q", "m"):
     print(f"  {k:16s} = {theta[k]:.6g}")
 nz = [(c, r, d) for c in s.CHROM_ORDER for r, d in enumerate(theta["delta_dict"][c]) if d != 0]
 print(f"  driver blocks    = {len(nz)} of {D}  (expected about pi*D = {theta['pi'] * D:.1f})")
@@ -115,7 +115,8 @@ os.makedirs(trial_dir, exist_ok=True)
 np.random.seed(prior_seed + 1)                       # SISTEM uses numpy's global RNG
 params = Parameters(
     region_len=s.REGION_LEN,
-    focal_driver_rate=s.FOCAL_DRIVER_RATE,
+    focal_driver_rate=theta["focal_driver_rate"],   # drawn per theta since prior v2
+    length_mean=theta["length_mean"],
     max_distinct_driv_ratio=s.MAX_DISTINCT_DRIV_RATIO,
     min_detectable=20_000,                           # tiny tumour for learning (production: 5e6)
     arm_rate=theta["arm_rate"],
