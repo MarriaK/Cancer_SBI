@@ -66,6 +66,18 @@ C6  CN and ploidy bounds. No DRIVER block may exceed fixed_parameters
 C7  Cost. wall_seconds mean/median/max, mean bytes per trial of clones.npz +
     results.pkl + sim.log, extrapolated to 6,000 x 25 and 10,000 x 25 trials.
     INFO.
+
+C8  Events table (clones.npz "events"). Columns are looked up BY NAME from the
+    saved "event_columns" array, so both schemas are read: schema 1 (prior v2,
+    9 columns) and schema 2 (prior v3, 10 columns, adds "terminal" = D-H
+    end-anchored event). Reports the schema, event counts per category, driver
+    focal events and, when the "terminal" column exists, the terminal share of
+    driver focal events overall and per trial with p_term. FAIL if a table's
+    width differs from its event_columns, if a column needed here is missing,
+    or if a prior_version >= 3 output lacks the "terminal" column; else INFO.
+
+The header reports manifest prior_version (1, 2 and 3 are known) and the
+per-theta table shows p_term (prior v3; "-" for older outputs).
 """
 
 from __future__ import annotations
@@ -85,6 +97,8 @@ EXTRAPOLATE_THETAS = (6000, 10000)
 EXTRAPOLATE_TRIALS = 25
 CLONE_ARRAYS = ["block_cn", "popsize", "ploidy", "fitness", "nWGD", "n_altered_drivers", "bulk"]
 # bulk is (D,) not (n_clones,): the popsize-weighted mean profile of the trial.
+EVENT_ARRAYS = ["events", "event_columns", "event_categories"]   # optional (absent in the oldest outputs)
+KNOWN_PRIOR_VERSIONS = (1, 2, 3)
 
 
 def sim_sort_key(name: str) -> tuple:
@@ -125,7 +139,7 @@ def load_pickle(path: Path):
 def load_trial(trial_dir: Path) -> Dict:
     """Read one trial. Never raises; problems go into trial['errors']."""
     trial = {"dir": trial_dir, "name": trial_dir.name, "errors": [],
-             "results": None, "clones": None}
+             "results": None, "clones": None, "events": None}
     try:
         trial["results"] = load_pickle(trial_dir / "results.pkl")
     except Exception as exc:  # missing, empty or corrupt pickle
@@ -139,6 +153,10 @@ def load_trial(trial_dir: Path) -> Dict:
                     trial["errors"].append(f"clones.npz missing arrays {missing}")
                 else:
                     trial["clones"] = {k: z[k] for k in CLONE_ARRAYS}
+                    trial["events"] = ({k: z[k] for k in EVENT_ARRAYS}
+                                       if all(k in z.files for k in EVENT_ARRAYS) else None)
+                    if trial["events"] is not None and "events_schema_version" in z.files:
+                        trial["events"]["schema_version"] = int(z["events_schema_version"])
         except Exception as exc:
             trial["errors"].append(f"clones.npz unreadable: {exc!r}")
     return trial
@@ -335,6 +353,79 @@ def check_c4(sims: List[Dict]) -> Tuple[str, List[str]]:
     return ("PASS" if total and frac >= CAP_FRACTION_MIN else "FAIL"), lines
 
 
+def event_column_index(event_columns) -> Dict[str, int]:
+    """{column name: position} from a saved event_columns array (never assume positions)."""
+    return {str(c): i for i, c in enumerate(np.asarray(event_columns).tolist())}
+
+
+def check_c8(sims: List[Dict], manifest: Dict) -> Tuple[str, List[str]]:
+    prior_version = int(manifest.get("prior_version", 1))
+    schemas, problems = {}, []
+    n_tables = n_events = n_drv_focal = n_term = n_term_gain = 0
+    per_cat: Dict[str, int] = {}
+    with_pterm, zero_term = [], 0
+    for sim in sims:
+        p_term = (sim["params"] or {}).get("p_term")
+        for t in sim["trials"]:
+            if not is_complete(t):
+                continue
+            ev = t.get("events")
+            if ev is None:
+                problems.append(f"{sim['name']}/{t['name']}: no events table")
+                continue
+            col = event_column_index(ev["event_columns"])
+            E = np.asarray(ev["events"])
+            E = E.reshape(-1, len(col)) if E.size == 0 else E
+            if E.ndim != 2 or E.shape[1] != len(col):
+                problems.append(f"{sim['name']}/{t['name']}: events shape {E.shape} vs {len(col)} event_columns")
+                continue
+            need = ["category", "driver"]
+            missing = [c for c in need if c not in col]
+            if missing:
+                problems.append(f"{sim['name']}/{t['name']}: event columns missing {missing}")
+                continue
+            schema = ev.get("schema_version", 2 if "terminal" in col else 1)
+            schemas[schema] = schemas.get(schema, 0) + 1
+            n_tables += 1
+            n_events += E.shape[0]
+            cats = [str(c) for c in np.asarray(ev["event_categories"]).tolist()]
+            for i, name in enumerate(cats):
+                per_cat[name] = per_cat.get(name, 0) + int((E[:, col["category"]] == i).sum())
+            focal = np.isin(E[:, col["category"]], [cats.index(c) for c in ("focal_amplification", "focal_deletion")
+                                                    if c in cats])
+            drv_focal = focal & (E[:, col["driver"]] == 1)
+            n_drv_focal += int(drv_focal.sum())
+            if "terminal" in col:
+                term = drv_focal & (E[:, col["terminal"]] == 1)
+                n_term += int(term.sum())
+                if "focal_amplification" in cats:
+                    n_term_gain += int((term & (E[:, col["category"]] == cats.index("focal_amplification"))).sum())
+                if p_term is not None and float(p_term) > 0:
+                    with_pterm.append((float(p_term), int(term.sum()), int(drv_focal.sum())))
+                    zero_term += int(term.sum() == 0)
+            elif prior_version >= 3:
+                problems.append(f"{sim['name']}/{t['name']}: prior_version {prior_version} but no 'terminal' column")
+    lines = [f"manifest prior_version {prior_version}; manifest events schema_version "
+             f"{(manifest.get('events') or {}).get('schema_version', 'absent (1)')}",
+             f"tables read {n_tables}; by schema {dict(sorted(schemas.items()))}; events {n_events}",
+             "per category: " + ", ".join(f"{k} {v}" for k, v in per_cat.items()),
+             f"driver focal events {n_drv_focal}"]
+    if any(s >= 2 for s in schemas):
+        share = n_term / n_drv_focal if n_drv_focal else float("nan")
+        lines.append(f"terminal (D-H) driver focal events {n_term} (gains {n_term_gain}, losses {n_term - n_term_gain}); "
+                     f"share {fmt(share)}")
+        if with_pterm:
+            pt = np.asarray([x[0] for x in with_pterm])
+            sh = np.asarray([x[1] / x[2] if x[2] else np.nan for x in with_pterm])
+            lines.append(f"trials with p_term > 0: {len(with_pterm)}; p_term {dist(pt)}; "
+                         f"per-trial terminal share {dist(sh[np.isfinite(sh)])}; trials with 0 terminal events {zero_term}")
+    else:
+        lines.append("no 'terminal' column (schema 1, prior v2 or older): terminal share not applicable")
+    lines += [f"    ! {x}" for x in problems[:20]] + ([f"    ... and {len(problems) - 20} more"] if len(problems) > 20 else [])
+    hard = [x for x in problems if "no events table" not in x]
+    return ("FAIL" if hard else "INFO"), lines
+
+
 def check_c5() -> Tuple[str, List[str]]:
     return "INFO", ["requires per-event instrumentation of SISTEM's mutation functions; not checkable from saved outputs",
                     "(focal events are not recorded in saved outputs; check skipped)"]
@@ -446,21 +537,25 @@ def main(argv=None) -> int:
     n_complete = sum(is_complete(t) for s in sims for t in s["trials"])
     out += ["=" * 70,
             f"Root: {root}",
-            f"dataset_kind {manifest.get('dataset_kind')}; sistem_version {manifest.get('sistem_version')}",
+            f"dataset_kind {manifest.get('dataset_kind')}; sistem_version {manifest.get('sistem_version')}; "
+            f"prior_version {manifest.get('prior_version', '?')}"
+            + ("" if manifest.get("prior_version") in KNOWN_PRIOR_VERSIONS else "  (WARNING: unknown prior_version)"),
+            "sistem_patches applied: " + ", ".join((manifest.get("sistem_patches") or {}).get("applied", [])),
             f"D {manifest['D']}; sum(nregions) {sum(manifest['nregions'].values())}; "
             f"chromosomes {len(manifest['chrom_order'])}",
             f"ntrials_policy {json.dumps(manifest.get('ntrials_policy'))}",
             f"sims found {len(sims)}; trials found {n_trials}; complete trials {n_complete}",
             "=" * 70, "",
             "Per-theta summary:",
-            f"  {'sim_id':>8} {'n_drivers':>9} {'cap':>5} {'ntrials_used':>12} {'trials':>6} {'n_complete':>10}"]
+            f"  {'sim_id':>8} {'n_drivers':>9} {'cap':>5} {'ntrials_used':>12} {'trials':>6} {'n_complete':>10} {'p_term':>7}"]
     if manifest["D"] != sum(manifest["nregions"].values()):
         out.append("  WARNING: manifest D != sum(nregions)")
     for s in sims:
         p = s["params"] or {}
         out.append(f"  {str(p.get('sim_id', s['name'])):>8} {str(p.get('n_drivers', '?')):>9} "
                    f"{str(p.get('cap', '?')):>5} {str(p.get('ntrials_used', '?')):>12} "
-                   f"{len(s['trials']):>6} {sum(is_complete(t) for t in s['trials']):>10}")
+                   f"{len(s['trials']):>6} {sum(is_complete(t) for t in s['trials']):>10} "
+                   f"{(fmt(p['p_term'], 3) if p.get('p_term') is not None else '-'):>7}")
         for e in s["errors"]:
             out.append(f"    ! {e}")
         if p and len(p.get("driver_mask", [])) != manifest["D"]:
@@ -473,7 +568,8 @@ def main(argv=None) -> int:
               ("C4 n_altered_drivers < cap", lambda: check_c4(sims)),
               ("C5 focal events hit a driver", check_c5),
               ("C6 driver CN / ploidy bounds", lambda: check_c6(sims, manifest)),
-              ("C7 wall time and bytes", lambda: check_c7(sims))]
+              ("C7 wall time and bytes", lambda: check_c7(sims)),
+              ("C8 events table (by column name)", lambda: check_c8(sims, manifest))]
     statuses = []
     for title, fn in checks:
         try:

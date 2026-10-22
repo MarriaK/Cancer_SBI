@@ -33,7 +33,12 @@ frac_arm_end_bounded     fraction of those runs touching the first or last unmas
                          arm, i.e. EITHER arm end (the centromere end included). This is broader
                          than the telomere-only "telomere-bounded" SCNAs of Zack et al. 2013, Nat
                          Genet 45:1134 (see the function docstring for the exact convention).
-                         The three segment statistics are 0 when the profile has no altered run
+frac_telomere_bounded    fraction of the same runs touching the TELOMERIC end of their arm: the
+                         first unmasked block of a p arm or the last unmasked block of a q arm
+                         (Zack et al. 2013 telomere-bounded SCNAs; centromere-bounded runs do not
+                         count), so frac_telomere_bounded <= frac_arm_end_bounded. Pre-registered
+                         2026-10-22 before the calibration-v3 check.
+                         The four segment statistics are 0 when the profile has no altered run
                          ("0 = no altered segment"), NaN only when the profile is fully masked.
 cn_frac_0 .. cn_frac_5plus  fraction of unmasked blocks at total CN 0, 1, 2, 3, 4, >= 5 (Steele et
                          al. 2022, Nature 606:984, total-CN bins collapsed)
@@ -44,7 +49,17 @@ wgii                     weighted genome instability index: per chromosome the f
 subclonal_frac           fraction of blocks with ``|x_cw - round(x_cw)| > 0.1 + 1e-6`` (the 1e-6
                          makes float32 inputs behave like float64 at the boundary), a proxy for the
                          genome fraction with subclonal CN (Dentro et al. 2021, Cell 184:2239)
+subclonal_frac_nobp      subclonal_frac after removing every block that carries a breakpoint of
+                         ``x_int`` (its CN differs from the nearest unmasked block to its left or
+                         right within the chromosome; masked blocks are skipped, as in
+                         n_breakpoints). Reason: on real data a block straddling a clonal segment
+                         boundary has a non-integer length-weighted mean CN that is not
+                         subclonality. Both are reported (pre-registered 2026-10-22).
 =======================  ==========================================================================
+
+Simulation-only diagnostics (``SIM_DIAG_COLUMNS``; never gating, not in ``STAT_COLUMNS``):
+``cn_max_driver`` / ``cn_max_passenger`` = maximum unmasked ``x_int`` over the driver / non-driver
+blocks of ``driver_mask``; NaN when no mask is given (always, for real tumours) or the set is empty.
 """
 from __future__ import annotations
 
@@ -63,18 +78,22 @@ STAT_COLUMNS: tuple[str, ...] = (
     "aneuploidy_score", "n_arm_gain_calls", "n_arm_loss_calls",
     "n_chrom", "n_arm", "n_focal_strict", "n_broad",
     "n_breakpoints", "breakpoints_per_100mb",
-    "seg_len_median_mb", "seg_len_p90_mb", "frac_arm_end_bounded",
+    "seg_len_median_mb", "seg_len_p90_mb", "frac_arm_end_bounded", "frac_telomere_bounded",
     "cn_frac_0", "cn_frac_1", "cn_frac_2", "cn_frac_3", "cn_frac_4", "cn_frac_5plus",
-    "cn_max", "wgii", "subclonal_frac",
+    "cn_max", "wgii", "subclonal_frac", "subclonal_frac_nobp",
 )
 
-CW_COLUMNS: tuple[str, ...] = ("ploidy_cw", "subclonal_frac")
+CW_COLUMNS: tuple[str, ...] = ("ploidy_cw", "subclonal_frac", "subclonal_frac_nobp")
+
+# Simulation-only diagnostics (need the driver block mask); never part of the PPC tests.
+SIM_DIAG_COLUMNS: tuple[str, ...] = ("cn_max_driver", "cn_max_passenger")
 
 # Prior knob(s) each statistic is most sensitive to (Notion 3.5 section 4). Knob names: q (WGD /
 # ploidy-shift probability), A (arm event rate), C (whole-chromosome event rate), F (focal driver
 # rate), pi (driver fraction), m (driver effect size), cap (viability CN cap), length_mean (focal
-# length mean); "pi*m" = their product. frac_arm_end_bounded, n_arm_*_calls and cn_max are not in
-# the Notion table; their entries follow the closest listed statistic (aneuploidy_score, cn_frac).
+# length mean); "pi*m" = their product. frac_arm_end_bounded, frac_telomere_bounded, n_arm_*_calls,
+# cn_max and subclonal_frac_nobp are not in the Notion table; their entries follow the closest listed
+# statistic (aneuploidy_score, cn_frac, subclonal_frac).
 STAT_KNOBS: dict[str, tuple[str, ...]] = {
     "ploidy": ("q", "A", "C"),
     "ploidy_cw": ("q", "A", "C"),
@@ -91,6 +110,7 @@ STAT_KNOBS: dict[str, tuple[str, ...]] = {
     "seg_len_median_mb": ("length_mean", "F"),
     "seg_len_p90_mb": ("length_mean", "F"),
     "frac_arm_end_bounded": ("A", "C", "F"),
+    "frac_telomere_bounded": ("A", "C", "F"),
     "cn_frac_0": ("m", "pi", "cap"),
     "cn_frac_1": ("m", "pi", "cap"),
     "cn_frac_2": ("m", "pi", "cap"),
@@ -100,6 +120,7 @@ STAT_KNOBS: dict[str, tuple[str, ...]] = {
     "cn_max": ("m", "pi", "cap"),
     "wgii": ("pi", "A", "C"),
     "subclonal_frac": ("A", "C", "F", "m"),   # A, C, F raise it; strong selection (m) lowers it
+    "subclonal_frac_nobp": ("A", "C", "F", "m"),
 }
 
 
@@ -144,47 +165,67 @@ def _info(grid: Grid) -> _GridInfo:
 
 
 def _segment_stats(x: np.ndarray, unm: np.ndarray, grid: Grid, baseline: int,
-                   info: _GridInfo) -> tuple[float, float, float]:
-    """seg_len_median_mb, seg_len_p90_mb, frac_arm_end_bounded of one (int64) profile.
+                   info: _GridInfo) -> tuple[float, float, float, float]:
+    """seg_len_median_mb, seg_len_p90_mb, frac_arm_end_bounded, frac_telomere_bounded of one
+    (int64) profile.
 
     Runs are :func:`ppc.decompose.segments` with ``by='value', within='arm'``: maximal runs of
     identical ``x - baseline != 0`` over unmasked blocks (masked blocks transparent), never crossing
     the centromere. Length = unmasked blocks * Mb per block. A run is "arm-end-bounded" if it
     contains the first or the last unmasked block of its arm, i.e. it touches EITHER end of the arm:
     an arm-end run at the centromere side counts, as does a whole-arm run. This is broader than
-    Zack et al. 2013's telomere-bounded class (telomere end only).
+    Zack et al. 2013's telomere-bounded class, which is frac_telomere_bounded: the run contains the
+    first unmasked block of a p arm or the last unmasked block of a q arm (telomere end only).
 
-    A profile with no altered run returns (0.0, 0.0, 0.0): 0 = no altered segment. This keeps
+    A profile with no altered run returns (0.0, 0.0, 0.0, 0.0): 0 = no altered segment. This keeps
     quiet tumours (e.g. many THCA) in the joint tests instead of dropping them as NaN rows.
     """
     runs = segments(x, grid, baseline, by="value", within="arm")
     if not runs:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     lens = np.array([r.n_blocks for r in runs], dtype=np.float64) * info.mb_per_block
-    bounded = 0
+    bounded = telomeric = 0
     for r in runs:
         a = grid.arms[info.arm_index[r.arm]]
         u = np.flatnonzero(unm[a.start:a.end])
         first, last = a.start + int(u[0]), a.start + int(u[-1])
-        if r.start == first or r.end - 1 == last:
-            bounded += 1
-    return float(np.median(lens)), float(np.percentile(lens, 90)), bounded / len(runs)
+        at_first, at_last = r.start == first, r.end - 1 == last
+        bounded += at_first or at_last
+        telomeric += at_first if a.arm == "p" else at_last
+    n = len(runs)
+    return float(np.median(lens)), float(np.percentile(lens, 90)), bounded / n, telomeric / n
+
+
+def _breakpoint_blocks(x: np.ndarray, unm: np.ndarray, info: _GridInfo) -> np.ndarray:
+    """Bool [D]: unmasked blocks whose CN differs from the nearest unmasked block on either side
+    within the same chromosome (both blocks of every pair counted in n_breakpoints)."""
+    idx = np.flatnonzero(unm)
+    xu, cu = x[idx], info.chrom_id[idx]
+    step = (xu[1:] != xu[:-1]) & (cu[1:] == cu[:-1])
+    out = np.zeros(x.shape, dtype=bool)
+    out[idx[:-1][step]] = True
+    out[idx[1:][step]] = True
+    return out
 
 
 def per_tumour_stats(x_int: np.ndarray, grid: Grid, baseline: int = 2,
-                     x_cw: np.ndarray | None = None) -> dict[str, float]:
-    """All ``STAT_COLUMNS`` for ONE profile (definitions and references in the module docstring).
+                     x_cw: np.ndarray | None = None,
+                     driver_mask: np.ndarray | None = None) -> dict[str, float]:
+    """All ``STAT_COLUMNS`` plus ``SIM_DIAG_COLUMNS`` for ONE profile (definitions and references in
+    the module docstring).
 
     ``x_int``: int block CN, ``-1`` masked (apply the structural mask first). ``baseline``: CN of
     an unaltered block (2, or ``2 * 2**n_wgd``). ``x_cw``: optional cell-weighted float profile
-    (``NaN`` masked); without it ``ploidy_cw`` and ``subclonal_frac`` are NaN. ASCAT (TCGA) profiles
-    carry no cell-weighted information, so their ``subclonal_frac`` is always NaN; for simulations
-    pass the cell-weighted ``bulk`` (``SimCohort.block_cn_mean``).
+    (``NaN`` masked); without it the ``CW_COLUMNS`` are NaN. ASCAT (TCGA) profiles carry no
+    cell-weighted information, so their ``subclonal_frac`` is always NaN; for simulations pass the
+    cell-weighted ``bulk`` (``SimCohort.block_cn_mean``). ``driver_mask``: optional bool [D] of the
+    simulator's driver blocks (simulations only); without it ``cn_max_driver`` and
+    ``cn_max_passenger`` are NaN.
 
     Event counts come from :func:`ppc.decompose.decompose`, with ``n_focal_strict`` as in
     :func:`ppc.step1_change_sizes.derive_per_tumour`. A profile with no unmasked block returns NaN
     for every ratio/length statistic and 0 for the counts. A profile with unmasked blocks but no
-    altered run gets 0 for seg_len_median_mb, seg_len_p90_mb and frac_arm_end_bounded.
+    altered run gets 0 for the four segment statistics.
     """
     x = np.asarray(x_int).astype(np.int64)
     if x.shape != (grid.D,):
@@ -196,7 +237,7 @@ def per_tumour_stats(x_int: np.ndarray, grid: Grid, baseline: int = 2,
     dec = decompose(x, grid, baseline)
     calls = np.array(list(dec.arm_calls.values()), dtype=np.int64)
 
-    out: dict[str, float] = dict.fromkeys(STAT_COLUMNS, np.nan)
+    out: dict[str, float] = dict.fromkeys(STAT_COLUMNS + SIM_DIAG_COLUMNS, np.nan)
     out["aneuploidy_score"] = float(np.count_nonzero(calls))
     out["n_arm_gain_calls"] = float(np.count_nonzero(calls > 0))
     out["n_arm_loss_calls"] = float(np.count_nonzero(calls < 0))
@@ -224,8 +265,8 @@ def per_tumour_stats(x_int: np.ndarray, grid: Grid, baseline: int = 2,
         a_c = np.bincount(cu, weights=alt, minlength=info.n_chrom)
         has = n_c > 0
         out["wgii"] = float(np.mean(a_c[has] / n_c[has]))
-        (out["seg_len_median_mb"], out["seg_len_p90_mb"],
-         out["frac_arm_end_bounded"]) = _segment_stats(x, unm, grid, baseline, info)
+        (out["seg_len_median_mb"], out["seg_len_p90_mb"], out["frac_arm_end_bounded"],
+         out["frac_telomere_bounded"]) = _segment_stats(x, unm, grid, baseline, info)
 
     if x_cw is not None:
         cw = np.asarray(x_cw, dtype=np.float64)
@@ -235,8 +276,19 @@ def per_tumour_stats(x_int: np.ndarray, grid: Grid, baseline: int = 2,
         if ok.any():
             v = cw[ok]
             out["ploidy_cw"] = float(v.mean())
-            out["subclonal_frac"] = float(np.mean(np.abs(v - np.round(v))
-                                              > SUBCLONAL_TOL + _SUBCLONAL_EPS))
+            sub = np.abs(v - np.round(v)) > SUBCLONAL_TOL + _SUBCLONAL_EPS
+            out["subclonal_frac"] = float(np.mean(sub))
+            keep = ~_breakpoint_blocks(x, unm, info)[ok]
+            if keep.any():
+                out["subclonal_frac_nobp"] = float(np.mean(sub[keep]))
+
+    if driver_mask is not None:
+        dm = np.asarray(driver_mask, dtype=bool)
+        if dm.shape != (grid.D,):
+            raise ValueError(f"driver_mask must have shape ({grid.D},), got {dm.shape}")
+        for col, sel in (("cn_max_driver", dm & unm), ("cn_max_passenger", ~dm & unm)):
+            if sel.any():
+                out[col] = float(x[sel].max())
     return out
 
 

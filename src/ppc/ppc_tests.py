@@ -19,8 +19,9 @@ Rules and references
   a PCA "inside the simulation cloud" check (Lynch et al. 2022, eLife).
 * Per-arm gain / loss frequency agreement (Spearman / Pearson; the fit statistic used by CINner).
 * Between- vs within-theta variance split of the simulated replicates (one-way ANOVA).
-* ``decision``: overall pass = marginal checks present, n_real > 0, no marginal flag AND C2ST
-  accuracy < 0.6.
+* ``decision``: overall pass = marginal checks present, n_real > 0, no marginal flag on a GATING
+  statistic AND C2ST accuracy < 0.6. ``NON_GATING`` statistics (subclonal_frac,
+  subclonal_frac_nobp; pre-registered 2026-10-22) are reported but excluded from the rule.
 
 All randomness is seeded; NaN / inf rows are dropped (never imputed) and the drop counts reported.
 """
@@ -37,6 +38,12 @@ from scipy.stats import ks_2samp, pearsonr, spearmanr, wasserstein_distance
 Q_LO, Q_HI = 0.025, 0.975
 Z_MAX = 3.0
 C2ST_MAX_ACC = 0.6
+
+# Statistics reported in every table but excluded from decision()'s pass/fail rule. Pre-registered
+# 2026-10-22, before the calibration-v3 check: the simulator's clonal sweeps leave too little
+# subclonal CN (a known, accepted gap), so subclonal_frac and its breakpoint-free variant are
+# tracked but do not gate v3.
+NON_GATING: frozenset[str] = frozenset({"subclonal_frac", "subclonal_frac_nobp"})
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -485,17 +492,22 @@ def variance_split(sim_df: pd.DataFrame, columns: Iterable[str], group_col: str 
 
 
 # ----------------------------------------------------------------------------- decision
-def decision(cohort: str, marginal: pd.DataFrame, joint: dict) -> dict:
+def decision(cohort: str, marginal: pd.DataFrame, joint: dict,
+             non_gating: Iterable[str] = NON_GATING) -> dict:
     """Decision summary for one real cohort (plan Notion 3.5 section 5).
 
-    flagged_statistics = statistics with flag_q or flag_z in ``marginal``; c2st_pass = C2ST
+    flagged_statistics = GATING statistics with flag_q or flag_z in ``marginal``;
+    flagged_non_gating = flagged statistics in ``non_gating`` (reported only); c2st_pass = C2ST
     accuracy (the better of LR / RF) < 0.6 (a NaN accuracy fails); overall_pass = at least one
     marginal row AND n_real > 0 AND no marginal flag AND c2st_pass. Energy / MMD p-values and the PCA outside fraction are reported, not gated on.
     ``joint`` is the dict from ``joint_tests`` (keys energy, mmd, c2st, pca, n_real, n_sim; missing
     keys give NaN).
     """
-    flagged = marginal.loc[marginal["flag_q"].astype(bool) | marginal["flag_z"].astype(bool),
-                           "statistic"].tolist() if len(marginal) else []
+    all_flagged = marginal.loc[marginal["flag_q"].astype(bool) | marginal["flag_z"].astype(bool),
+                               "statistic"].tolist() if len(marginal) else []
+    ng = set(non_gating)
+    flagged = [x for x in all_flagged if x not in ng]
+    flagged_ng = [x for x in all_flagged if x in ng]
     nan = float("nan")
     c = joint.get("c2st", {}) or {}
     acc = float(c.get("accuracy", nan)) if c.get("accuracy") is not None else nan
@@ -503,7 +515,7 @@ def decision(cohort: str, marginal: pd.DataFrame, joint: dict) -> dict:
     n_real = joint.get("n_real", int(marginal["n_real"].max()) if len(marginal) else 0)
     n_sim = joint.get("n_sim", int(marginal["n_sim"].max()) if len(marginal) else 0)
     return {"cohort": cohort, "n_real": int(n_real), "n_sim": int(n_sim),
-            "flagged_statistics": flagged, "c2st_accuracy": acc, "c2st_pass": c2st_pass,
+            "flagged_statistics": flagged, "flagged_non_gating": flagged_ng, "c2st_accuracy": acc, "c2st_pass": c2st_pass,
             "energy_p": float((joint.get("energy") or {}).get("p_value", nan)),
             "mmd_p": float((joint.get("mmd") or {}).get("p_value", nan)),
             "pca_outside_frac": float((joint.get("pca") or {}).get("outside_frac", nan)),

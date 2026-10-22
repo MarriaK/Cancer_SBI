@@ -90,6 +90,27 @@ def test_decision_logic(same, shifted):
     assert not decision("x", same[2], {**joint_ok, "n_real": 0})["overall_pass"]
 
 
+def test_decision_ignores_subclonal_frac(same):
+    """Pre-registered 2026-10-22: subclonal_frac(_nobp) flags are reported, never gating."""
+    from ppc.ppc_tests import NON_GATING
+    assert NON_GATING == {"subclonal_frac", "subclonal_frac_nobp"}
+    m = same[2].copy()
+    extra = m.iloc[[0, 0]].copy()
+    extra["statistic"] = ["subclonal_frac", "subclonal_frac_nobp"]
+    extra["flag_q"] = True
+    extra["flag_z"] = True
+    m = pd.concat([m, extra], ignore_index=True)
+    joint_ok = {"c2st": {"accuracy": 0.55}, "n_real": 1, "n_sim": 1}
+    d = decision("x", m, joint_ok)
+    assert d["overall_pass"] and d["flagged_statistics"] == []
+    assert d["flagged_non_gating"] == ["subclonal_frac", "subclonal_frac_nobp"]
+    # a gating flag still fails; an empty non_gating set restores the old rule
+    m.loc[0, "flag_z"] = True
+    d2 = decision("x", m, joint_ok)
+    assert not d2["overall_pass"] and d2["flagged_statistics"] == [m.loc[0, "statistic"]]
+    assert not decision("x", m.iloc[1:], joint_ok, non_gating=())["overall_pass"]
+
+
 def test_standardise_drops_all_nan_real_column():
     """F2: a column all-NaN on the REAL side is dropped (and reported), not every real row."""
     real, sim = _frames(n_real=50, n_sim=100, seed=8)

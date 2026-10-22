@@ -248,10 +248,11 @@ def _clean(ax):
 
 
 def fig_ecdf(stats: dict, roles: dict, simA: str, simB: str, label: str, path: str) -> None:
-    """5x5 grid of ECDFs, one panel per statistic (sim A thick black + 2.5-97.5% band, sim B grey)."""
+    """Grid of ECDFs (5 per row), one panel per statistic (sim A thick black + 2.5-97.5% band, sim B grey)."""
     plt = _plt()
     import matplotlib.patches as mpatches
-    fig, axes = plt.subplots(5, 5, figsize=(24, 21), dpi=150)
+    nrow = -(-len(STAT_COLUMNS) // 5)
+    fig, axes = plt.subplots(nrow, 5, figsize=(24, 4.2 * nrow), dpi=150)
     axs = axes.ravel()
     for ax, s in zip(axs, STAT_COLUMNS):
         m = stats[simA][s].to_numpy(dtype=float)
@@ -495,8 +496,10 @@ def collect_caveats(stats: dict, roles: dict, joint: pd.DataFrame, meta: pd.Data
         if part:
             cav.append(f"{lab}: some NaN rows in {', '.join(f'{c} ({int(df[c].isna().sum())})' for c in part)} "
                        "(dropped per test, never imputed).")
-    cav.append("TCGA cohorts have no cell-weighted profile: ploidy_cw and subclonal_frac are NaN and are "
+    cav.append(f"TCGA cohorts have no cell-weighted profile: {', '.join(CW_COLUMNS)} are NaN and are "
                "excluded from their marginal checks and joint tests.")
+    cav.append(f"Non-gating (pre-registered 2026-10-22): {', '.join(sorted(pt.NON_GATING))} are reported but "
+               "excluded from ppc_tests.decision (column flagged_non_gating in decisions.csv).")
     drops = sorted(set(";".join(joint["cols_dropped"].fillna("")).split(";")) - {""})
     rdrops = sorted(set(";".join(joint["cols_dropped_real_nan"].fillna("")).split(";")) - {""})
     sdrops = [c for c in drops if c not in rdrops]
@@ -654,6 +657,7 @@ def main(argv=None) -> None:
         drows.append({**d, "n_flagged": len(fl),
                       "n_flagged_non_degenerate": sum(1 for x in fl if x not in degen["A"]),
                       "flagged_statistics": ";".join(fl),
+                      "flagged_non_gating": ";".join(d["flagged_non_gating"]),
                       "flagged_degenerate": ";".join(x for x in fl if x in degen["A"])})
     dec = pd.DataFrame(drows)
     dec.to_csv(os.path.join(out, "decisions.csv"), index=False)

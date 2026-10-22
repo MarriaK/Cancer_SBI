@@ -8,8 +8,8 @@ layout, retry loop (up to 5 attempts per trial), per-trial seeding and CLI
 |---|---|---|
 | Simulator | `simulate_arm_selection.py` (was `dataSimulator_MPI.py`) | `simulate_gene_selection.py` |
 | SISTEM library | `FittedArmLibrary`, 44 arm coefficients | `FittedRegionLibrary`, one coefficient per 5 Mb block (D = 589) |
-| Prior | Normal(0, 0.2) on arm deltas; rates uniform; focal rate and length fixed | sparse spike-and-slab on block deltas; event rates, focal rate and focal length log-uniform and drawn per theta (prior v2, see script docstring; `prior_version` in manifest and parameters.pkl) |
-| Per-trial output | `results.pkl` (largest-clone + bulk arm CN ratios), `CNratios_all.pkl.gz` | `results.pkl` (bookkeeping only), `clones.npz` (per-clone block CNs + popsize, ploidy, fitness, nWGD, n_altered_drivers, the bulk profile, and the TRUE event history: `event_counts` per clone per category and the unique `events` table of all surviving lineages; largest clone = argmax popsize) |
+| Prior | Normal(0, 0.2) on arm deltas; rates uniform; focal rate and length fixed | sparse spike-and-slab on block deltas; event rates, focal rate and focal length log-uniform and drawn per theta; prior v3 (2026-10-22): q ~ U(0.30, 0.55), focal rate logU(1e-4, 1e-3), plus the nuisance parameter p_term ~ U(0.35, 0.75) drawn last (see script docstring; `prior_version` in manifest and parameters.pkl) |
+| Per-trial output | `results.pkl` (largest-clone + bulk arm CN ratios), `CNratios_all.pkl.gz` | `results.pkl` (bookkeeping only), `clones.npz` (per-clone block CNs + popsize, ploidy, fitness, nWGD, n_altered_drivers, the bulk profile, and the TRUE event history: `event_counts` per clone per category and the unique `events` table of all surviving lineages, 10 columns since prior v3 incl. `terminal`; read columns by name via `event_columns`; largest clone = argmax popsize) |
 | Checker | `update_checker.py` | `check_gene_selection_outputs.py` |
 | Repair | `fixed_dataSimulation.py` | none yet |
 
@@ -27,20 +27,31 @@ and is kept behaviour-identical (its known defects included); do not edit it.
 Block vectors are flattened chr1..chr22 in numeric order (`manifest["chrom_order"]`).
 
 **SISTEM runtime patches.** The gene script does not edit SISTEM; `apply_sistem_patches()`
-replaces three `BaseRegionLibrary` methods in memory at import time (same effect with the
-pip-installed package on the cluster), self-tests each one, and records them in
-`manifest["sistem_patches"]`:
+replaces three `BaseRegionLibrary` methods, `Cell.focal_deletion` and `mutation.gen_focal_event`
+in memory at import time (same effect with the pip-installed package on the cluster),
+self-tests each one, and records them in `manifest["sistem_patches"]`:
 
 1. `get_driver_start_regions`: off-by-one (`sequence[:-size]`) meant the last block of every
    chromosome could never receive a focal event.
 2. `compute_fitness`: exponent `n / round(p)` as in CINner (which SISTEM's region model is
    adapted from) instead of `n / p` with continuous ploidy; the continuous form rewarded
    deleting neutral DNA and tumours collapsed to the 1.5 ploidy floor (calibration 2026-10-19).
+   (D-E. Superseded since prior v3 by patch 5, whose body keeps this rounding.)
 3. `check_viability`: a clone with any block at 0 copies is non-viable (CINner `nullisomy_max = 0`).
 4. `Cell.focal_deletion`: SISTEM recorded a deletion's `gene_ids` *after* deleting (so the record held the
    wrong blocks); the slice is captured first. Bookkeeping only; needed for the event tables.
+5. `compute_fitness` again (D-I, `region_gain_dosage_saturation`, prior v3): gain drivers
+   (delta > 0) saturate, exponent `min(n, round(p) + 1) / round(p)`; loss drivers unchanged;
+   extra copies are neutral, not lethal. Removes the ploidy / high-copy excess of v2.
+6. `mutation.gen_focal_event` wrapper (D-H, `focal_terminal_events`, prior v3): with probability
+   `p_term` a driver focal event is end-anchored (homolog end to the target driver plus
+   floor(Exp(2)) blocks toward the centromere, strictly inside the arm); gains add 1 copy.
+   Passenger calls and `p_term = 0` delegate with no extra RNG draw. Recorded as `terminal = 1`
+   in the events table. Adopted only together with patch 5; advisor sign-off pending.
 
-Research and measurements: `cancer/reports/Fixing the ploidy collapse in SISTEM.md`.
+Research and measurements: `cancer/reports/Fixing the ploidy collapse in SISTEM.md`;
+prior v3 and patches 5-6: `cancer/research_notes/v3_design_2026-10-21/` (`workflow_result.json`
+holds the decision; `v3_common.py` the verified reference implementation).
 The arm script is left as is, so the arm dataset keeps SISTEM's original behaviour
 (including the ploidy collapse and 20% of arms at 0 copies).
 `check_gene_selection_outputs.py` validates this layout and recovers arm averages
