@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pilot acceptance checks (C1-C7) for the SISTEM region-model simulator.
+"""Pilot acceptance checks (C1-C9) for the SISTEM region-model simulator.
 
 Read-only. It runs over the output tree written by
 ``simulate_gene_selection.py`` and checks it against the file contract:
@@ -51,6 +51,9 @@ C3  Arm averages from blocks. For every clone, the 2 * len(chrom_order) arm
 C4  n_altered_drivers < cap (strictly) for > 95% of surviving clones
     (popsize > 0), cap from parameters.pkl. Reports the fraction and the
     distribution of n_altered_drivers / cap. FAIL if the fraction < 0.95.
+    The gate uses the END-OF-GROWTH n_altered_drivers. Prior v4 outputs also
+    hold n_altered_drivers_post (same rule on the post-overlay block_cn); it
+    is reported (INFO) but does not gate.
 
 C5  Every growth-phase focal event overlaps >= 1 driver block. NOT checkable
     from saved outputs: SISTEM does not record individual events, only the
@@ -68,16 +71,32 @@ C7  Cost. wall_seconds mean/median/max, mean bytes per trial of clones.npz +
     INFO.
 
 C8  Events table (clones.npz "events"). Columns are looked up BY NAME from the
-    saved "event_columns" array, so both schemas are read: schema 1 (prior v2,
-    9 columns) and schema 2 (prior v3, 10 columns, adds "terminal" = D-H
-    end-anchored event). Reports the schema, event counts per category, driver
+    saved "event_columns" array, so all schemas are read: schema 1 (prior v2,
+    9 columns), schema 2 (prior v3, 10 columns, adds "terminal" = D-H
+    end-anchored event) and schema 3 (prior v4, 11 columns, adds "node"; two
+    passenger categories). Reports the schema, event counts per category, driver
     focal events and, when the "terminal" column exists, the terminal share of
-    driver focal events overall and per trial with p_term. FAIL if a table's
-    width differs from its event_columns, if a column needed here is missing,
-    or if a prior_version >= 3 output lacks the "terminal" column; else INFO.
+    DRIVER focal events (passenger rows excluded) overall and per trial with
+    p_term. FAIL if a table's width differs from its event_columns, if a column
+    needed here is missing, or if a prior_version >= 3 output lacks the
+    "terminal" column; else INFO.
 
-The header reports manifest prior_version (1, 2 and 3 are known) and the
-per-theta table shows p_term (prior v3; "-" for older outputs).
+C9  Passenger overlay (prior v4, deviation D-J) and the 0-copy sanity check.
+    Passenger events per trial (mean / median; categories passenger_gain /
+    passenger_loss, found by name), pooled loss share, terminal share and
+    trunk share (node 0: applied to the founder before growth, clonal) of
+    passenger events, results.pkl proposal / rejection counts of the
+    post-growth edge overlay (zero, cap, altered, ploidy) and of the trunk.
+    For schema-3 tables: results n_passengers_applied + n_trunk_applied must
+    equal the passenger rows, the passenger columns of event_counts must sum to
+    sum over passenger events of the surviving descendants of the event's node,
+    and the genealogy arrays must be consistent (one root, parent before child,
+    node_clone / clone_node inverse). Every output (any schema): no clone may
+    have a block at 0 copies (patch D-F; the overlay rejects such losses).
+    FAIL on any of these; else INFO (schema < 3: no passengers, INFO).
+
+The header reports manifest prior_version (1-4 are known) and the per-theta
+table shows p_term (prior v3+) and pass_rate (prior v4; "-" for older outputs).
 """
 
 from __future__ import annotations
@@ -98,7 +117,9 @@ EXTRAPOLATE_TRIALS = 25
 CLONE_ARRAYS = ["block_cn", "popsize", "ploidy", "fitness", "nWGD", "n_altered_drivers", "bulk"]
 # bulk is (D,) not (n_clones,): the popsize-weighted mean profile of the trial.
 EVENT_ARRAYS = ["events", "event_columns", "event_categories"]   # optional (absent in the oldest outputs)
-KNOWN_PRIOR_VERSIONS = (1, 2, 3)
+GENEALOGY_ARRAYS = ["node_parent", "node_birth_gen", "node_clone", "clone_node"]   # schema 3 (prior v4)
+PASSENGER_CATEGORIES = ("passenger_gain", "passenger_loss")
+KNOWN_PRIOR_VERSIONS = (1, 2, 3, 4)
 
 
 def sim_sort_key(name: str) -> tuple:
@@ -139,7 +160,7 @@ def load_pickle(path: Path):
 def load_trial(trial_dir: Path) -> Dict:
     """Read one trial. Never raises; problems go into trial['errors']."""
     trial = {"dir": trial_dir, "name": trial_dir.name, "errors": [],
-             "results": None, "clones": None, "events": None}
+             "results": None, "clones": None, "events": None, "genealogy": None}
     try:
         trial["results"] = load_pickle(trial_dir / "results.pkl")
     except Exception as exc:  # missing, empty or corrupt pickle
@@ -157,6 +178,12 @@ def load_trial(trial_dir: Path) -> Dict:
                                        if all(k in z.files for k in EVENT_ARRAYS) else None)
                     if trial["events"] is not None and "events_schema_version" in z.files:
                         trial["events"]["schema_version"] = int(z["events_schema_version"])
+                    if trial["events"] is not None and "event_counts" in z.files:
+                        trial["events"]["event_counts"] = z["event_counts"]
+                    if "n_altered_drivers_post" in z.files:
+                        trial["clones"]["n_altered_drivers_post"] = z["n_altered_drivers_post"]
+                    trial["genealogy"] = ({k: z[k] for k in GENEALOGY_ARRAYS}
+                                          if all(k in z.files for k in GENEALOGY_ARRAYS) else None)
         except Exception as exc:
             trial["errors"].append(f"clones.npz unreadable: {exc!r}")
     return trial
@@ -332,6 +359,7 @@ def check_c3(sims: List[Dict], manifest: Dict) -> Tuple[str, List[str]]:
 
 def check_c4(sims: List[Dict]) -> Tuple[str, List[str]]:
     ratios, below, total = [], 0, 0
+    post_ratios, post_below, post_total = [], 0, 0
     for sim in sims:
         if sim["params"] is None:
             continue
@@ -345,11 +373,23 @@ def check_c4(sims: List[Dict]) -> Tuple[str, List[str]]:
             total += nad.size
             below += int((nad < cap).sum())
             ratios.append(nad / cap if cap > 0 else np.full(nad.shape, np.inf))
+            if "n_altered_drivers_post" in cl:
+                pa = cl["n_altered_drivers_post"][alive].astype(float)
+                post_total += pa.size
+                post_below += int((pa < cap).sum())
+                post_ratios.append(pa / cap if cap > 0 else np.full(pa.shape, np.inf))
     frac = below / total if total else float("nan")
     r = np.concatenate(ratios) if ratios else np.empty(0)
     lines = [f"surviving clones {total}; with n_altered_drivers < cap {below}; "
-             f"fraction {fmt(frac)} (need >= {CAP_FRACTION_MIN})",
+             f"fraction {fmt(frac)} (need >= {CAP_FRACTION_MIN}; gate on the end-of-growth value)",
              f"n_altered_drivers / cap: {dist(r)}"]
+    if post_total:
+        rp = np.concatenate(post_ratios)
+        lines += [f"post-overlay (INFO, not gating): with n_altered_drivers_post < cap {post_below} of {post_total}; "
+                  f"fraction {fmt(post_below / post_total)}",
+                  f"n_altered_drivers_post / cap: {dist(rp)}"]
+    else:
+        lines.append("n_altered_drivers_post: not in these outputs (prior v3 or older)")
     return ("PASS" if total and frac >= CAP_FRACTION_MIN else "FAIL"), lines
 
 
@@ -384,7 +424,7 @@ def check_c8(sims: List[Dict], manifest: Dict) -> Tuple[str, List[str]]:
             if missing:
                 problems.append(f"{sim['name']}/{t['name']}: event columns missing {missing}")
                 continue
-            schema = ev.get("schema_version", 2 if "terminal" in col else 1)
+            schema = ev.get("schema_version", 3 if "node" in col else 2 if "terminal" in col else 1)
             schemas[schema] = schemas.get(schema, 0) + 1
             n_tables += 1
             n_events += E.shape[0]
@@ -424,6 +464,125 @@ def check_c8(sims: List[Dict], manifest: Dict) -> Tuple[str, List[str]]:
     lines += [f"    ! {x}" for x in problems[:20]] + ([f"    ... and {len(problems) - 20} more"] if len(problems) > 20 else [])
     hard = [x for x in problems if "no events table" not in x]
     return ("FAIL" if hard else "INFO"), lines
+
+
+def _descendant_clone_counts(g: Dict) -> np.ndarray:
+    """Number of surviving clones in each node's subtree (node order has parents first)."""
+    parent = np.asarray(g["node_parent"], dtype=np.int64)
+    cnt = (np.asarray(g["node_clone"]) >= 0).astype(np.int64)
+    for v in range(len(parent) - 1, 0, -1):
+        cnt[parent[v]] += cnt[v]
+    return cnt
+
+
+def _genealogy_problems(g: Dict, n_clones: int) -> List[str]:
+    parent = np.asarray(g["node_parent"], dtype=np.int64)
+    bgen = np.asarray(g["node_birth_gen"], dtype=np.int64)
+    node_clone = np.asarray(g["node_clone"], dtype=np.int64)
+    clone_node = np.asarray(g["clone_node"], dtype=np.int64)
+    out = []
+    if len(clone_node) != n_clones:
+        out.append(f"clone_node length {len(clone_node)} != n_clones {n_clones}")
+    if np.flatnonzero(parent < 0).tolist() != [0]:
+        out.append("not exactly one root at node 0")
+    elif not np.all(parent[1:] < np.arange(1, len(parent))):
+        out.append("node_parent[i] >= i for some node")
+    elif np.any(bgen[1:] < bgen[parent[1:]]):
+        out.append("a node born before its parent")
+    if len(clone_node) == n_clones and not np.array_equal(node_clone[clone_node], np.arange(n_clones)):
+        out.append("node_clone[clone_node] is not the identity")
+    if int((node_clone >= 0).sum()) != n_clones:
+        out.append("node_clone marks a different number of clones")
+    return out
+
+
+def check_c9(sims: List[Dict]) -> Tuple[str, List[str]]:
+    per_trial, problems = [], []
+    n_loss = n_gain = n_term = n_root = 0
+    n_zero_trials = n_zero_clones = n_trials = n_schema3 = 0
+    rej = {"proposed": 0, "applied": 0, "rejected_zero": 0, "rejected_cap": 0, "rejected_altered": 0,
+           "rejected_ploidy": 0, "trunk_proposed": 0, "trunk_applied": 0, "trunk_rejected": 0}
+    for sim in sims:
+        for t in sim["trials"]:
+            if not is_complete(t):
+                continue
+            n_trials += 1
+            cn = t["clones"]["block_cn"]
+            z = (cn == 0).any(axis=1)
+            if z.any():
+                n_zero_trials += 1
+                n_zero_clones += int(z.sum())
+                problems.append(f"{sim['name']}/{t['name']}: {int(z.sum())} clones with a 0-copy block")
+            ev = t.get("events")
+            if ev is None:
+                continue
+            cats = [str(c) for c in np.asarray(ev["event_categories"]).tolist()]
+            if not all(c in cats for c in PASSENGER_CATEGORIES):
+                continue                                    # schema < 3: no passenger overlay
+            n_schema3 += 1
+            col = event_column_index(ev["event_columns"])
+            E = np.asarray(ev["events"]).reshape(-1, len(col))
+            gi, li = cats.index("passenger_gain"), cats.index("passenger_loss")
+            pmask = np.isin(E[:, col["category"]], (gi, li))
+            P = E[pmask]
+            per_trial.append(int(P.shape[0]))
+            n_loss += int((P[:, col["category"]] == li).sum())
+            n_gain += int((P[:, col["category"]] == gi).sum())
+            if "terminal" in col:
+                n_term += int((P[:, col["terminal"]] == 1).sum())
+            if "node" in col:
+                n_root += int((P[:, col["node"]] == 0).sum())
+            if P.size and (np.any(P[:, col["driver"]] != 0)):
+                problems.append(f"{sim['name']}/{t['name']}: passenger rows with driver != 0")
+            res = t["results"]
+            if "n_passengers_proposed" in res:
+                rej["proposed"] += int(res["n_passengers_proposed"])
+                rej["applied"] += int(res["n_passengers_applied"])
+                for k in ("zero", "cap", "altered", "ploidy"):
+                    rej[f"rejected_{k}"] += int(res.get(f"n_passengers_rejected_{k}") or 0)
+                for k in ("proposed", "applied", "rejected"):
+                    rej[f"trunk_{k}"] += int(res.get(f"n_trunk_{k}") or 0)
+                n_res = int(res["n_passengers_applied"]) + int(res.get("n_trunk_applied") or 0)
+                if n_res != P.shape[0]:
+                    problems.append(f"{sim['name']}/{t['name']}: results applied (edge + trunk) "
+                                    f"{n_res} != passenger rows {P.shape[0]}")
+            g = t.get("genealogy")
+            if g is None:
+                problems.append(f"{sim['name']}/{t['name']}: schema 3 without genealogy arrays")
+                continue
+            gp = _genealogy_problems(g, cn.shape[0])
+            problems += [f"{sim['name']}/{t['name']}: genealogy: {x}" for x in gp]
+            if not gp and "node" in col:
+                nodes = P[:, col["node"]].astype(np.int64)
+                if nodes.size and (nodes.min() < 0 or nodes.max() >= len(g["node_parent"])):
+                    problems.append(f"{sim['name']}/{t['name']}: passenger node ids out of range")
+                elif "event_counts" in ev:
+                    ec = np.asarray(ev["event_counts"])
+                    got = int(ec[:, [gi, li]].sum()) if ec.shape[1] == len(cats) else None
+                    want = int(_descendant_clone_counts(g)[nodes].sum())
+                    if got != want:
+                        problems.append(f"{sim['name']}/{t['name']}: passenger event_counts sum {got} != "
+                                        f"descendants of passenger nodes {want}")
+    n_p = n_loss + n_gain
+    lines = [f"complete trials {n_trials}; with passenger categories (schema 3) {n_schema3}"]
+    if n_schema3:
+        a = np.asarray(per_trial, dtype=float)
+        n_rej = rej["rejected_zero"] + rej["rejected_cap"] + rej["rejected_altered"] + rej["rejected_ploidy"]
+        lines += [f"passenger events per trial: mean {fmt(a.mean())}  median {fmt(np.median(a))}  "
+                  f"min {fmt(a.min())}  max {fmt(a.max())}",
+                  f"pooled: {n_p} events; loss share {fmt(n_loss / n_p if n_p else None)}; "
+                  f"terminal share {fmt(n_term / n_p if n_p else None)}; "
+                  f"trunk (node 0, founder, clonal) share {fmt(n_root / n_p if n_p else None)} ({n_root} events)",
+                  f"trunk: proposed {rej['trunk_proposed']}; applied {rej['trunk_applied']}; rejected {rej['trunk_rejected']}",
+                  f"edge overlay (results.pkl): proposed {rej['proposed']}; applied {rej['applied']}; rejected {n_rej} "
+                  f"(zero {rej['rejected_zero']}, cap {rej['rejected_cap']}, altered {rej['rejected_altered']}, "
+                  f"ploidy {rej['rejected_ploidy']}); "
+                  f"rejected fraction {fmt(n_rej / rej['proposed'] if rej['proposed'] else None)}"]
+    else:
+        lines.append("no passenger categories (schema < 3, prior v3 or older): overlay statistics not applicable")
+    lines.append(f"0-copy blocks: trials {n_zero_trials}, clones {n_zero_clones} (expected 0)")
+    lines += [f"    ! {x}" for x in problems[:20]] + ([f"    ... and {len(problems) - 20} more"] if len(problems) > 20 else [])
+    return ("FAIL" if problems else "INFO"), lines
 
 
 def check_c5() -> Tuple[str, List[str]]:
@@ -547,7 +706,8 @@ def main(argv=None) -> int:
             f"sims found {len(sims)}; trials found {n_trials}; complete trials {n_complete}",
             "=" * 70, "",
             "Per-theta summary:",
-            f"  {'sim_id':>8} {'n_drivers':>9} {'cap':>5} {'ntrials_used':>12} {'trials':>6} {'n_complete':>10} {'p_term':>7}"]
+            f"  {'sim_id':>8} {'n_drivers':>9} {'cap':>5} {'ntrials_used':>12} {'trials':>6} {'n_complete':>10} {'p_term':>7} "
+            f"{'pass_rate':>9}"]
     if manifest["D"] != sum(manifest["nregions"].values()):
         out.append("  WARNING: manifest D != sum(nregions)")
     for s in sims:
@@ -555,7 +715,8 @@ def main(argv=None) -> int:
         out.append(f"  {str(p.get('sim_id', s['name'])):>8} {str(p.get('n_drivers', '?')):>9} "
                    f"{str(p.get('cap', '?')):>5} {str(p.get('ntrials_used', '?')):>12} "
                    f"{len(s['trials']):>6} {sum(is_complete(t) for t in s['trials']):>10} "
-                   f"{(fmt(p['p_term'], 3) if p.get('p_term') is not None else '-'):>7}")
+                   f"{(fmt(p['p_term'], 3) if p.get('p_term') is not None else '-'):>7} "
+                   f"{(fmt(p['pass_rate'], 3) if p.get('pass_rate') is not None else '-'):>9}")
         for e in s["errors"]:
             out.append(f"    ! {e}")
         if p and len(p.get("driver_mask", [])) != manifest["D"]:
@@ -569,7 +730,8 @@ def main(argv=None) -> int:
               ("C5 focal events hit a driver", check_c5),
               ("C6 driver CN / ploidy bounds", lambda: check_c6(sims, manifest)),
               ("C7 wall time and bytes", lambda: check_c7(sims)),
-              ("C8 events table (by column name)", lambda: check_c8(sims, manifest))]
+              ("C8 events table (by column name)", lambda: check_c8(sims, manifest)),
+              ("C9 passenger overlay / 0-copy blocks", lambda: check_c9(sims))]
     statuses = []
     for title, fn in checks:
         try:

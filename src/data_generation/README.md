@@ -8,8 +8,8 @@ layout, retry loop (up to 5 attempts per trial), per-trial seeding and CLI
 |---|---|---|
 | Simulator | `simulate_arm_selection.py` (was `dataSimulator_MPI.py`) | `simulate_gene_selection.py` |
 | SISTEM library | `FittedArmLibrary`, 44 arm coefficients | `FittedRegionLibrary`, one coefficient per 5 Mb block (D = 589) |
-| Prior | Normal(0, 0.2) on arm deltas; rates uniform; focal rate and length fixed | sparse spike-and-slab on block deltas; event rates, focal rate and focal length log-uniform and drawn per theta; prior v3 (2026-10-22): q ~ U(0.30, 0.55), focal rate logU(1e-4, 1e-3), plus the nuisance parameter p_term ~ U(0.35, 0.75) drawn last (see script docstring; `prior_version` in manifest and parameters.pkl) |
-| Per-trial output | `results.pkl` (largest-clone + bulk arm CN ratios), `CNratios_all.pkl.gz` | `results.pkl` (bookkeeping only), `clones.npz` (per-clone block CNs + popsize, ploidy, fitness, nWGD, n_altered_drivers, the bulk profile, and the TRUE event history: `event_counts` per clone per category and the unique `events` table of all surviving lineages, 10 columns since prior v3 incl. `terminal`; read columns by name via `event_columns`; largest clone = argmax popsize) |
+| Prior | Normal(0, 0.2) on arm deltas; rates uniform; focal rate and length fixed | sparse spike-and-slab on block deltas; event rates, focal rate and focal length log-uniform and drawn per theta; prior v3 (2026-10-22): q ~ U(0.30, 0.55), focal rate logU(1e-4, 1e-3), plus the nuisance parameter p_term ~ U(0.35, 0.75) drawn last; prior v4 (2026-10-23, below): lower rate floors, p_term floor 0.25, rates coupled by a shared instability level, neutral passenger overlay (see script docstring; `prior_version` in manifest and parameters.pkl) |
+| Per-trial output | `results.pkl` (largest-clone + bulk arm CN ratios), `CNratios_all.pkl.gz` | `results.pkl` (bookkeeping only), `clones.npz` (per-clone block CNs + popsize, ploidy, fitness, nWGD, n_altered_drivers, the bulk profile, and the TRUE event history: `event_counts` per clone per category and the unique `events` table of all surviving lineages, 10 columns since prior v3 incl. `terminal`, 11 since prior v4 incl. `node`, plus the genealogy arrays; read columns by name via `event_columns`; largest clone = argmax popsize) |
 | Checker | `update_checker.py` | `check_gene_selection_outputs.py` |
 | Repair | `fixed_dataSimulation.py` | none yet |
 
@@ -48,6 +48,49 @@ self-tests each one, and records them in `manifest["sistem_patches"]`:
    floor(Exp(2)) blocks toward the centromere, strictly inside the arm); gains add 1 copy.
    Passenger calls and `p_term = 0` delegate with no extra RNG draw. Recorded as `terminal = 1`
    in the events table. Adopted only together with patch 5; advisor sign-off pending.
+
+**Prior v4 (2026-10-23, Stage 1 provisional; `PRIOR_VERSION = 4`).** Design and review:
+`cancer/research_notes/v4_design_2026-10-23/review/REVIEW.md` (P1, P6, P7). The Stage 1 harness overrides the
+constants per arm; `V3_RANGES` (and `V3_SETTINGS`, which adds `RHO_CIN = 0`, `PASSENGERS_ENABLED = False`)
+restore v3.
+
+- *Prior.* Same draws as v3 through `p_term`, then `cin_level` L ~ U(0,1) and `u_pass` ~ U(0,1). Lower rate floors
+  (arm 3e-6, chromosome 3e-7, focal 3e-5; v3: 1e-5, 1e-6, 1e-4) and `p_term` floor 0.25 (v3 0.35). A Gaussian copula
+  (`RHO_CIN = 0.5`, `scipy.special.ndtr/ndtri`) couples the three event rates through L; marginals stay
+  log-uniform. `pass_rate` ~ the same copula on `u_pass` over logU(5e-4, 1.5e-2) passenger events per lineage per
+  generation. parameters.pkl holds the realised rates plus `*_indep` (pre-copula), `cin_level`, `pass_rate`.
+  With `V3_RANGES` and `RHO_CIN = 0` every v3 field is reproduced exactly for the same prior seed. Under
+  `RHO_CIN > 0` only the quantiles of the pre-copula `*_indep` rates are paired with v3, not the realised rates.
+  With `--ntrials-range`, the ntrials draw now comes after `cin_level` and `u_pass`, so `ntrials_used` is not
+  paired with v3.
+- *Passenger overlay (deviation D-J, `passenger_overlay.py`).* After growth, Poisson(`pass_rate` x edge length)
+  +-1 copy events (neutral by construction) land on each edge of the clone genealogy and apply to every surviving descendant
+  (driver-blind; 75% losses; 30% telomere-anchored, never a whole arm; interstitial length Exp(2), terminal Exp(4)
+  blocks). Rejected, not applied, if a block would reach 0 copies, a driver block would exceed `MAX_REGION_CN`,
+  the altered-driver cap would be exceeded, or a clone's ploidy would leave [1.5, 8].
+  Trunk: before growth, `grow()` puts Poisson(`pass_rate` x `PASS_TRUNK_GENS` = 2000) passengers (same window rules)
+  on the founder genome with SISTEM's own Clone methods, each kept only if SISTEM's (patched) viability check passes.
+  These are the clonal passengers of the lineage before the founding cell; every clone inherits them and growth
+  respects them (rows with node 0, gen 0). They are not neutral: a trunk window covering a driver block changes
+  the founder's driver counts (fitness, altered-driver cap, saturation headroom). Because the founder genome
+  changes, growth with `PASS_TRUNK_GENS > 0` is a different trajectory from the passenger-free run; it is identical
+  only with `PASS_TRUNK_GENS = 0`. Kept by lead decision; trunk size is a growth-arm dimension of the sweep.
+  RNGs: trunk `np.random.default_rng([trial_seed, 7_000_003, 0])`, overlay `default_rng([trial_seed, 7_000_003, 1])`
+  (seed sequences; both lists saved in results.pkl as `trunk_seed`, `overlay_seed`); neither touches the global
+  growth stream. `PASSENGERS_ENABLED = False` turns both off.
+- *Outputs.* `block_cn`, `bulk`, `ploidy` are post-overlay; `fitness`, `n_altered_drivers` are end-of-growth.
+  Events schema 3: 9 categories (`passenger_gain`, `passenger_loss` appended), 11 columns (`node` appended).
+  clones.npz adds the genealogy (`node_parent`, `node_birth_gen`, `node_clone`, `clone_node`); results.pkl adds
+  `n_passengers_proposed/applied/rejected` (+ `_zero/_cap/_altered/_ploidy`) for the post-growth edge events,
+  `n_trunk_proposed/applied/rejected/rejected_by` for the founder trunk (rule order zero, cap, altered, ploidy, plus
+  `absent` for the trunk only), and `overlay_seconds`. clones.npz also has `n_altered_drivers_post` (same rule on the
+  post-overlay block_cn) next to the end-of-growth `n_altered_drivers`.
+- *API for the harness.* `grow(params, delta_dict, chrom_lens, arm_ratios, pass_rate=None, trunk_seed=None)` returns a
+  `GrowthResult` (founder trunk when `pass_rate` is given; no overlay);
+  `run_overlay(growth, passenger_params(rate), rng)` or `passenger_overlay.apply_passenger_overlay(...)` with
+  `overlay_inputs(growth)`; `pack_summary(growth, overlay)` builds the saved dict.
+- *Checker.* Reads schemas 1-3; new C9 reports passenger counts, loss, terminal and root (trunk) shares, rejections,
+  and fails on any 0-copy block.
 
 Research and measurements: `cancer/reports/Fixing the ploidy collapse in SISTEM.md`;
 prior v3 and patches 5-6: `cancer/research_notes/v3_design_2026-10-21/` (`workflow_result.json`

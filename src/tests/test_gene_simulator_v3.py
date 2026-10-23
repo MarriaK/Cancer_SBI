@@ -11,6 +11,10 @@ Covers decision.test_requirements of research_notes/v3_design_2026-10-21/workflo
   5. install_DH is idempotent and refuses unknown wrappers.
   6. The D-I and D-H self-tests run at import.
 Tiny tumours (min_detectable 2e4, ~2 s per run). Nothing here touches the cluster or SISTEM's files.
+
+Prior v4 (2026-10-23) adapted a few assertions here that v4 made obsolete (PRIOR_VERSION 4, events schema 3, two
+extra prior draws after p_term, the caller's new keyword arguments); each such place says "v4:". The v4
+behaviour itself is tested in test_gene_simulator_v4.py.
 """
 import importlib
 import json
@@ -67,7 +71,8 @@ def test_patches_installed_and_selftests_pass_at_import():
     assert mutation.gen_focal_event is sgs._gen_focal_event_v3
     assert sgs._is_upstream_gen_focal(sgs._ORIG_GEN_FOCAL)
     assert sgs._P_TERM == 0.0
-    assert sgs.PRIOR_VERSION == 3 and sgs.GAIN_SAT_EXTRA == 1 and sgs.TERMINAL_MAG == 1 and sgs.TERM_EXT_MEAN == 2.0
+    # v4: PRIOR_VERSION is 4 since 2026-10-23 (D-I / D-H constants unchanged)
+    assert sgs.PRIOR_VERSION == 4 and sgs.GAIN_SAT_EXTRA == 1 and sgs.TERMINAL_MAG == 1 and sgs.TERM_EXT_MEAN == 2.0
     for name in ("region_gain_dosage_saturation", "focal_terminal_events", "region_fitness_rounded_ploidy"):
         assert name in sgs.SISTEM_PATCHES
     # the self-tests are re-runnable and leave the global RNG untouched
@@ -174,7 +179,9 @@ class _RecordingRng:
 
 
 def _theta_with(constants, seed):
+    """v4: the v3 prior is the v4 code with sgs.V3_SETTINGS (v3 ranges, RHO_CIN = 0); `constants` go on top."""
     _, _, nregions = sgs.genome_grid()
+    constants = {**sgs.V3_SETTINGS, **constants}
     saved = {k: getattr(sgs, k) for k in constants}
     try:
         for k, v in constants.items():
@@ -192,10 +199,11 @@ def test_sample_theta_v3_paired_with_v2(sim_id):
     seed = _prior_seed(sim_id)
     th3, calls3 = _theta_with({}, seed)
     th2, calls2 = _theta_with(V2_CONSTANTS, seed)
-    # p_term is the LAST draw and the only extra one; everything before it consumes the rng identically
-    assert calls3[-1] == ("uniform", sgs.PTERM_RANGE, ())
+    # p_term is the last v3 draw and the only extra one over v2; everything before it consumes the rng identically.
+    # v4: two more draws (cin_level, u_pass) follow p_term, so p_term is calls[-3] (v4 pairing: test_gene_simulator_v4.py)
+    assert calls3[-3] == ("uniform", sgs.V3_RANGES["PTERM_RANGE"], ()) and calls3[-2:] == [("uniform", (), ())] * 2
     assert [c[0] for c in calls3] == [c[0] for c in calls2]
-    assert 0.35 <= th3["p_term"] <= 0.75 and sgs.PTERM_RANGE == (0.35, 0.75)
+    assert 0.35 <= th3["p_term"] <= 0.75 and sgs.V3_RANGES["PTERM_RANGE"] == (0.35, 0.75)
     assert sgs.Q_RANGE[0] <= th3["q"] <= sgs.Q_RANGE[1]
     for k in ("arm_rate", "chromosomal_rate", "length_mean", "pi", "m"):
         assert th3[k] == th2[k], k
@@ -226,18 +234,23 @@ def test_sample_theta_v3_paired_with_v2(sim_id):
 # ----------------------------------------------------------------------------- 3. _P_TERM lifecycle
 def _fake_summary():
     D = 589
+    # v4: 9 event categories, genealogy arrays and overlay counters are part of the summary (schema 3)
     return {"block_cn": np.full((1, D), 2, np.int16), "popsize": np.array([10], np.int64),
             "ploidy": np.array([2.0], np.float32), "fitness": np.array([1.0]), "nWGD": np.array([0], np.int16),
-            "n_altered_drivers": np.array([0], np.int16), "bulk": np.full(D, 2.0, np.float32),
-            "event_counts": np.zeros((1, 7), np.int32),
-            "events": np.zeros((0, len(sgs.EVENT_COLUMNS)), np.int32), "driver_count_mismatches": 0}
+            "n_altered_drivers": np.array([0], np.int16), "n_altered_drivers_post": np.array([0], np.int16),
+            "bulk": np.full(D, 2.0, np.float32),
+            "event_counts": np.zeros((1, len(sgs.EVENT_CATEGORIES)), np.int32),
+            "events": np.zeros((0, len(sgs.EVENT_COLUMNS)), np.int32), "driver_count_mismatches": 0,
+            "node_parent": np.array([-1], np.int32), "node_birth_gen": np.array([0], np.int32),
+            "node_clone": np.array([0], np.int32), "clone_node": np.array([0], np.int32),
+            **{k: 0 for k in sgs.OVERLAY_RESULT_KEYS}}
 
 
 def test_pterm_set_per_trial_and_reset_after_return(tmp_path, monkeypatch):
     theta = _theta()
     seen = []
 
-    def fake_caller(params, delta_dict, chrom_lens, arm_ratios):
+    def fake_caller(params, delta_dict, chrom_lens, arm_ratios, **kw):     # v4: pass_rate / overlay_seed kwargs
         seen.append(sgs._P_TERM)
         return -2 if len(seen) == 1 else _fake_summary()       # one retry, then success
     monkeypatch.setattr(sgs, "simulate_gene_model_caller", fake_caller)
@@ -246,10 +259,10 @@ def test_pterm_set_per_trial_and_reset_after_return(tmp_path, monkeypatch):
     assert sgs._P_TERM == 0.0
     with open(tmp_path / "sim1" / "parameters.pkl", "rb") as f:
         P = pickle.load(f)
-    assert P["prior_version"] == 3 and P["p_term"] == theta["p_term"]
+    assert P["prior_version"] == sgs.PRIOR_VERSION and P["p_term"] == theta["p_term"]     # v4: version 4
     with np.load(tmp_path / "sim1" / "1" / "clones.npz") as z:
         assert z["event_columns"].tolist() == list(sgs.EVENT_COLUMNS)
-        assert int(z["events_schema_version"]) == sgs.EVENTS_SCHEMA_VERSION == 2
+        assert int(z["events_schema_version"]) == sgs.EVENTS_SCHEMA_VERSION == 3              # v4: schema 3
 
 
 def test_pterm_reset_after_raise(tmp_path, monkeypatch):
@@ -288,12 +301,15 @@ def test_v3_output_has_terminal_column_and_passes_checker(tmp_path, monkeypatch)
     sgs.simulate_gene_model(theta, str(sim_dir), 1, _prior_seed(SIM_ID), SIM_ID)
     assert sgs._P_TERM == 0.0
     M = json.loads((root / "manifest.json").read_text())
-    assert M["prior_version"] == 3
-    assert M["prior"]["p_term"] == ["uniform", 0.35, 0.75]
+    # v4: prior_version 4, p_term floor 0.25, focal floor 3e-5, schema 3 (11 columns, 'node' after 'terminal');
+    # the v3 values stay recorded under prior.v3_ranges
+    assert M["prior_version"] == 4
+    assert M["prior"]["p_term"] == ["uniform", 0.25, 0.75] and M["prior"]["v3_ranges"]["PTERM_RANGE"] == [0.35, 0.75]
     assert M["prior"]["q"] == ["uniform", 0.30, 0.55]
-    assert M["prior"]["focal_driver_rate"] == ["loguniform", 1e-4, 1e-3]
-    assert M["events"]["schema_version"] == 2 and M["events"]["event_columns"][-1] == "terminal"
-    assert len(M["events"]["event_columns"]) == 10
+    assert M["prior"]["focal_driver_rate"] == ["loguniform", 3e-5, 1e-3]
+    assert M["prior"]["v3_ranges"]["FOCAL_RATE_RANGE"] == [1e-4, 1e-3]
+    assert M["events"]["schema_version"] == 3 and M["events"]["event_columns"][-2:] == ["terminal", "node"]
+    assert len(M["events"]["event_columns"]) == 11
     sp = M["sistem_patches"]
     assert sp["region_gain_dosage_saturation"]["id"] == "D-I" and sp["focal_terminal_events"]["id"] == "D-H"
     assert sp["superseded"] == {"region_fitness_rounded_ploidy": "region_gain_dosage_saturation"}
@@ -301,14 +317,14 @@ def test_v3_output_has_terminal_column_and_passes_checker(tmp_path, monkeypatch)
     assert len(M["prior"]["v2_to_v3_changes"]["caveats"]) == 4
     with np.load(sim_dir / "1" / "clones.npz") as z:
         col = {c: i for i, c in enumerate(z["event_columns"].tolist())}
-        assert z["events"].shape[1] == 10 and "terminal" in col
+        assert z["events"].shape[1] == 11 and "terminal" in col                       # v4: 11 columns
         assert z["events"][:, col["terminal"]].sum() > 0
     out = tmp_path / "chk_v3"
     rc = chk.main(["--root", str(root), "--out-dir", str(out)])
     text = (out / "gene_pilot_checks.txt").read_text()
     assert rc == 0, text
-    assert "[PASS] C4" in text and "[INFO] C8" in text and "by schema {2: 1}" in text
-    assert "prior_version 3" in text and "pooled driver_count_mismatches 0" in text
+    assert "[PASS] C4" in text and "[INFO] C8" in text and "by schema {3: 1}" in text       # v4: schema 3
+    assert "prior_version 4" in text and "pooled driver_count_mismatches 0" in text
 
 
 @pytest.mark.skipif(not (V2_ROOT / "manifest.json").is_file(), reason="v2 calibration data not on this machine")

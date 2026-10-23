@@ -17,7 +17,7 @@ Per-tumour statistics (``STAT_COLUMNS``; prior knobs they respond to in ``STAT_K
 =======================  ==========================================================================
 ploidy / ploidy_cw       mean CN over unmasked blocks of ``x_int`` / ``x_cw``
 fga                      fraction of unmasked blocks with ``x_int != baseline`` (fraction genome
-                         altered; Hieronymus et al. 2014, PNAS 111:E2734, adapted to integer CN)
+                         altered; Hieronymus et al. 2014, PNAS 111:11139, adapted to integer CN)
 aneuploidy_score         number of the 39 called arms with a nonzero arm call (Taylor et al. 2018,
                          Cancer Cell 33:676); split into n_arm_gain_calls / n_arm_loss_calls
 n_chrom, n_arm,          whole-chromosome, arm, strict focal (focal minus ``*_orig_baseline``) and
