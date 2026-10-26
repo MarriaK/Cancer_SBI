@@ -96,11 +96,12 @@ restore v3.
 (scope revised after the design review: the pi floor / driver guard and the per-clone overlay rule were dropped).
 Same draws in the same order as v4; three settings changed:
 
-- `PASS_TRUNK_GENS` 2000 -> 1000 (arm-end share) and `PASS_RATE_RANGE` logU(5e-4, 1.5e-2) -> logU(1e-4, 1.5e-2).
+- `PASS_TRUNK_GENS` 2000 -> 1000 (arm-end share) and `PASS_RATE_RANGE` logU(5e-4, 1.5e-2) -> logU(1e-4, 3e-2)
+  (floor: quiet tumours; ceiling: keeps the busy end with the shorter trunk).
 - `RHO_CIN` (one weight for every rate) is replaced by `RHO_CIN_LOADINGS`, one copula loading per rate
-  (`arm_rate`, `chromosomal_rate`, `focal_driver_rate`, `pass_rate`). Provisional v4.1 values 0.5 / 0 / 0.5 / 0.5:
-  the whole-chromosome rate is decoupled (loading 0, so its realised value is its `chromosomal_rate_indep` draw
-  exactly); a factorial will set the final loadings. Harnesses override it with
+  (`arm_rate`, `chromosomal_rate`, `focal_driver_rate`, `pass_rate`). Final v4.1 values (factorial + 5e6 pilot, DECISION.md) 0.5 / 0.4 / 0.8 / 0.8:
+  focal and passenger rates share one segmental mechanism; the whole-chromosome rate is only partly coupled
+  (full decoupling made whole-chromosome and focal event counts anti-correlated beyond the real range). Harnesses override it with
   `setattr(sgs, "RHO_CIN_LOADINGS", {...})` (all four keys; the module value is read-only); setting the removed
   `RHO_CIN` makes `sample_theta` raise instead of being silently ignored. parameters.pkl and manifest.json record
   `rho_cin_loadings` (v4 outputs: scalar `rho_cin`).

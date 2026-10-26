@@ -1,8 +1,8 @@
 """Prior v4.1 (PRIOR_VERSION 5) of the gene-level simulator (simulate_gene_selection.py).
 
 Design: research_notes/v4_1_design_2026-10-26/DECISION.md, scope revised after the design review: v4.1 =
-PASS_TRUNK_GENS 1000, PASS_RATE_RANGE logU(1e-4, 1.5e-2) and one copula loading per rate (RHO_CIN_LOADINGS,
-whole-chromosome rate decoupled). pi, the block draws and the passenger overlay are v4's.
+PASS_TRUNK_GENS 1000, PASS_RATE_RANGE logU(1e-4, 3e-2) and one copula loading per rate (RHO_CIN_LOADINGS:
+arm 0.5, chromosomal 0.4, focal 0.8, pass 0.8). pi, the block draws and the passenger overlay are v4's.
   1. Reproduction: sample_theta with sgs.V4_SETTINGS equals a frozen copy of the v4 sample_theta bit for bit and the
      v4 calibration parameters.pkl (data_sim/gene_calib_v4 sim1-5, read-only) to ~1 ulp; with sgs.V3_SETTINGS the
      same against data_sim/gene_calib_v3 sim1-21.
@@ -37,7 +37,7 @@ V3_ROOT = PROJ / "data_sim" / "gene_calib_v3"
 V4_ROOT = PROJ / "data_sim" / "gene_calib_v4"
 TINY_MIN_DET = 2e4
 SIM_ID = 1
-V41_LOADINGS = {"arm_rate": 0.5, "chromosomal_rate": 0.0, "focal_driver_rate": 0.5, "pass_rate": 0.5}
+V41_LOADINGS = {"arm_rate": 0.5, "chromosomal_rate": 0.4, "focal_driver_rate": 0.8, "pass_rate": 0.8}
 
 
 def _prior_seed(sim_id, base=sgs.DEFAULT_SEED):
@@ -102,7 +102,7 @@ V4_SCALARS = V3_SCALARS + ("cin_level", "pass_rate", "pass_rate_indep", "arm_rat
                            "focal_driver_rate_indep")
 # the fields v4.1 must keep bit-identical to v4 (everything drawn, plus the realised rates whose loading is unchanged)
 PAIRED_WITH_V4 = ("length_mean", "pi", "q", "m", "p_term", "cin_level", "arm_rate_indep", "chromosomal_rate_indep",
-                  "focal_driver_rate_indep", "arm_rate", "focal_driver_rate")
+                  "focal_driver_rate_indep", "arm_rate")                  # arm_rate: same loading 0.5 as v4
 
 
 def _compare_with_calibration(P, th, scalars, seed):
@@ -168,8 +168,13 @@ def test_v41_defaults_keep_delta_and_draws_paired_with_v4(sim_id):
     assert th["delta_dict"] == ref["delta_dict"]                    # bit for bit: delta, driver set, signs
     for k in PAIRED_WITH_V4:
         assert th[k] == ref[k], k
-    # only the realised chromosomal rate (loading 0) and the passenger rate (new floor) differ
-    assert th["chromosomal_rate"] == th["chromosomal_rate_indep"] != ref["chromosomal_rate"]
+    # only the realised rates whose loading changed (chromosomal 0.4, focal 0.8) and the passenger rate (new range)
+    # differ, and each is the documented copula of its paired *_indep draw at its v4.1 loading
+    for k in ("chromosomal_rate", "focal_driver_rate"):
+        assert th[k] != ref[k], k
+        u = sgs.cin_copula_quantile(sgs.loguniform_quantile(th[f"{k}_indep"], *RATE_RANGES[k]), th["cin_level"],
+                                    V41_LOADINGS[k])
+        assert np.isclose(th[k], float(sgs.loguniform_from_quantile(u, *RATE_RANGES[k])), rtol=1e-12, atol=0), k
     assert th["pass_rate"] != ref["pass_rate"] and th["pass_rate_indep"] != ref["pass_rate_indep"]
     u = sgs.loguniform_quantile(th["pass_rate_indep"], *sgs.PASS_RATE_RANGE)           # same u_pass, new range
     assert abs(u - sgs.loguniform_quantile(ref["pass_rate_indep"], 5e-4, 1.5e-2)) < 1e-12
@@ -192,7 +197,7 @@ def test_v41_defaults_and_settings_dicts():
         for k in d:
             assert hasattr(sgs, k), k
     assert sgs.PRIOR_VERSION == 5
-    assert (sgs.PASS_TRUNK_GENS, sgs.PASS_RATE_RANGE) == (1000.0, (1e-4, 1.5e-2))
+    assert (sgs.PASS_TRUNK_GENS, sgs.PASS_RATE_RANGE) == (1000.0, (1e-4, 3e-2))
     assert sgs.rho_cin_loadings() == V41_LOADINGS and sgs.CIN_RATE_KEYS == tuple(V41_LOADINGS)
     assert set(sgs.V4_SETTINGS) == {"PASS_TRUNK_GENS", "PASS_RATE_RANGE", "RHO_CIN_LOADINGS"}
     assert sgs.V4_SETTINGS["PASS_TRUNK_GENS"] == 2000.0 and sgs.V4_SETTINGS["PASS_RATE_RANGE"] == (5e-4, 1.5e-2)
@@ -220,7 +225,8 @@ def _draws(n, seed, nreg={"chrZ": 0}, order=("chrZ",)):
     return [sgs.sample_theta(rng, nreg, list(order)) for _ in range(n)]
 
 
-def test_zero_loading_is_exact_for_chromosomal_rate():
+def test_zero_loading_is_exact_for_chromosomal_rate(monkeypatch):
+    monkeypatch.setattr(sgs, "RHO_CIN_LOADINGS", {**V41_LOADINGS, "chromosomal_rate": 0.0})
     for t in _draws(2000, 1):
         assert t["chromosomal_rate"] == t["chromosomal_rate_indep"]          # exact, no transform
 
@@ -252,10 +258,12 @@ def test_loadings_set_the_correlations_and_keep_marginals():
         z[k] = stats.norm.ppf(np.clip(q, 1e-12, 1 - 1e-12))
     zL = stats.norm.ppf(np.array([t["cin_level"] for t in th]))
     c = lambda a, b: float(np.corrcoef(a, b)[0, 1])
-    assert abs(c(z["arm_rate"], z["focal_driver_rate"]) - 0.5) < 0.02            # sqrt(0.5 * 0.5)
-    assert abs(c(z["arm_rate"], z["pass_rate"]) - 0.5) < 0.02
-    assert abs(c(z["arm_rate"], zL) - np.sqrt(0.5)) < 0.02
-    assert abs(c(z["chromosomal_rate"], z["arm_rate"])) < 0.03 and abs(c(z["chromosomal_rate"], zL)) < 0.03
+    L = V41_LOADINGS                                                    # corr(z_i, z_j) = sqrt(rho_i rho_j)
+    for a, b in (("arm_rate", "focal_driver_rate"), ("arm_rate", "pass_rate"), ("focal_driver_rate", "pass_rate"),
+                 ("chromosomal_rate", "arm_rate"), ("chromosomal_rate", "focal_driver_rate")):
+        assert abs(c(z[a], z[b]) - np.sqrt(L[a] * L[b])) < 0.02, (a, b)
+    for k in RATE_RANGES:
+        assert abs(c(z[k], zL) - np.sqrt(L[k])) < 0.02, k
 
 
 def test_unequal_loadings_give_sqrt_product_correlation(monkeypatch):
@@ -316,7 +324,7 @@ def test_e2e_v41_outputs_and_bookkeeping(e2e_v41):
     root, th, res, z, P = e2e_v41
     assert res["complete"], res
     assert P["prior_version"] == 5 and P["rho_cin_loadings"] == V41_LOADINGS and "rho_cin" not in P
-    assert P["chromosomal_rate"] == P["chromosomal_rate_indep"]
+    assert P["arm_rate"] != P["arm_rate_indep"] and P["chromosomal_rate"] != P["chromosomal_rate_indep"]   # all coupled
     assert P["passenger_params"]["trunk_gens"] == 1000.0
     assert res["n_passengers_proposed"] == res["n_passengers_applied"] + res["n_passengers_rejected"]
     assert res["n_trunk_proposed"] == res["n_trunk_applied"] + res["n_trunk_rejected"] and res["n_trunk_applied"] > 0
@@ -328,7 +336,7 @@ def test_e2e_v41_outputs_and_bookkeeping(e2e_v41):
     M = json.loads((root / "manifest.json").read_text())
     pr = M["prior"]
     assert M["prior_version"] == 5 and pr["rho_cin_loadings"] == V41_LOADINGS and "rho_cin" not in pr
-    assert pr["pi"] == ["uniform", 0.02, 0.12] and pr["pass_rate"] == ["loguniform", 1e-4, 1.5e-2]
+    assert pr["pi"] == ["uniform", 0.02, 0.12] and pr["pass_rate"] == ["loguniform", 1e-4, 3e-2]
     assert pr["draw_order"].endswith("cin_level, u_pass (last)")
     ch = pr["v4_to_v41_changes"]
     assert len(ch["changes"]) == 3 and all("DECISION.md" in x for x in ch["changes"])

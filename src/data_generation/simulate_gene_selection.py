@@ -10,11 +10,11 @@ seeding scheme), so the two files can be diffed side by side.
 Prior, version 4.1 = PRIOR_VERSION 5 (2026-10-26; research_notes/v4_1_design_2026-10-26/DECISION.md, scope revised
 after the design review):
     Version 4 below with three changes, same draws in the same order: PASS_TRUNK_GENS 2000 -> 1000;
-    PASS_RATE_RANGE logU(5e-4, 1.5e-2) -> logU(1e-4, 1.5e-2); the single copula weight RHO_CIN is replaced by one
-    loading per rate, RHO_CIN_LOADINGS (provisional: arm 0.5, focal 0.5, pass 0.5, chromosomal 0 = decoupled,
-    so the realised chromosomal_rate IS its *_indep draw). Pairing: for the same prior seed delta, the driver
-    set, pi, q, m, length_mean, p_term, cin_level, u_pass, the *_indep rates and (same loading) arm_rate and
-    focal_driver_rate are bit-identical to v4; chromosomal_rate and pass_rate differ. V4_SETTINGS restores v4
+    PASS_RATE_RANGE logU(5e-4, 1.5e-2) -> logU(1e-4, 3e-2); the single copula weight RHO_CIN is replaced by one
+    loading per rate, RHO_CIN_LOADINGS (final, from the factorial and the 5e6 pilot: arm 0.5, chromosomal 0.4,
+    focal 0.8, pass 0.8). Pairing: for the same prior seed delta, the driver set, pi, q, m, length_mean, p_term,
+    cin_level, u_pass, the *_indep rates and (same loading) arm_rate are bit-identical to v4; chromosomal_rate,
+    focal_driver_rate and pass_rate differ. V4_SETTINGS restores v4
     exactly; V3_SETTINGS restores v3 exactly. The pi range, the driver set rules and the D-J overlay are v4's.
 
 Prior, version 4 (2026-10-23, Stage 1 provisional; one draw per theta id, rng = default_rng(base_seed + sim_id*1000)):
@@ -725,14 +725,15 @@ ETA_CAP = 0.6                               # spec: eta = min(Exp(mean=m), 0.6)
 PTERM_RANGE = (0.25, 0.75)                  # v4 floor 0.25; v3 (0.35, 0.75); drawn after the blocks (D-H nuisance); v1/v2 none (= 0)
 # Shared instability level L (prior v4; per event type since v4.1). Gaussian-copula loading of L per coupled rate
 # (0 = that rate is independent of L: its realised value IS its *_indep draw, exactly). Prior v4 used ONE weight,
-# RHO_CIN = 0.5, for all four; v4.1 decouples the whole-chromosome rate (DECISION.md: real chromosome-focal
-# correlation ~0, distinct mechanisms). Provisional v4.1 values: a factorial sets the final ones. Override with
+# RHO_CIN = 0.5, for all four; v4.1 (DECISION.md, factorial + 5e6 pilot): focal and passenger rates share one
+# segmental mechanism (0.8), arm 0.5, whole-chromosome 0.4 (full decoupling, 0, made the realised chromosome-focal
+# COUNT correlation -0.37, beyond the real range, because whole-chromosome events replace selected focal events). Override with
 # setattr(sgs, "RHO_CIN_LOADINGS", {...}) giving all four keys (sample_theta rejects missing or extra keys).
 CIN_RATE_KEYS = ("arm_rate", "chromosomal_rate", "focal_driver_rate", "pass_rate")
 RHO_CIN_LOADINGS = MappingProxyType(     # read-only: replace the whole mapping, never edit it in place
-    {"arm_rate": 0.5, "chromosomal_rate": 0.0, "focal_driver_rate": 0.5, "pass_rate": 0.5})
-PASS_RATE_RANGE = (1e-4, 1.5e-2)            # log-uniform (through the copula): passenger events per lineage per generation;
-                                            # v4.1 floor 1e-4; v4 (5e-4, 1.5e-2)
+    {"arm_rate": 0.5, "chromosomal_rate": 0.4, "focal_driver_rate": 0.8, "pass_rate": 0.8})
+PASS_RATE_RANGE = (1e-4, 3e-2)              # log-uniform (through the copula): passenger events per lineage per generation;
+                                            # v4.1 floor 1e-4 (quiet tumours), ceiling 3e-2 (busy end with trunk 1000); v4 (5e-4, 1.5e-2)
 # The v3 values of every range v4 changed. setattr(sgs, k, v) for each item restores the v3 prior ranges;
 # V3_SETTINGS (below the passenger constants) restores the full v3 model.
 V3_RANGES = {
@@ -881,10 +882,10 @@ def sample_theta(rng, nregions, chrom_order):
     coupled through the shared level L (cin_copula_quantile; COPULA_RULE); the pre-copula draws are kept
     as *_indep. pass_rate = the same copula on u_pass over PASS_RATE_RANGE.
     Prior v4.1: each rate has its own loading RHO_CIN_LOADINGS[k] (v4: one RHO_CIN = 0.5 for all; v4.1
-    provisional: chromosomal_rate 0, the others 0.5), so a loading changes only its own rate. The draws and their
+    arm 0.5, chromosomal 0.4, focal 0.8, pass 0.8), so a loading changes only its own rate. The draws and their
     order are v4's: for the same prior seed every block draw (delta, driver set), pi, q, m, length_mean, p_term,
     cin_level, u_pass and the *_indep rates are bit-identical to v4; only realised rates whose loading changed
-    (v4.1: chromosomal_rate) and pass_rate / pass_rate_indep (PASS_RATE_RANGE floor 1e-4) differ. With
+    (v4.1: chromosomal_rate, focal_driver_rate) and pass_rate / pass_rate_indep (PASS_RATE_RANGE) differ. With
     V4_SETTINGS every v4 field is reproduced exactly, with V3_SETTINGS every v3 field.
     Every block is a driver candidate, including the last one of each chromosome: the SISTEM off-by-one
     that made it unreachable by focal events is patched at import (deviation D-D, apply_sistem_patches).
@@ -1690,7 +1691,7 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
             "length_mean_blocks": ["loguniform", *LENGTH_MEAN_RANGE],
             "cin_level": ["uniform", 0.0, 1.0],
             "rho_cin_loadings": rho_cin_loadings(),
-            "rho_cin_loadings_note": "Gaussian-copula loading of cin_level per rate (prior v4.1; provisional, a factorial sets the final values); 0 = the realised rate is its *_indep draw exactly; v4 used one rho_cin = 0.5 for all four (v4_settings)",
+            "rho_cin_loadings_note": "Gaussian-copula loading of cin_level per rate (prior v4.1; final values from the factorial and the 5e6 pilot, research_notes/v4_1_design_2026-10-26/DECISION.md); 0 = the realised rate is its *_indep draw exactly; v4 used one rho_cin = 0.5 for all four (v4_settings)",
             "pass_rate": ["loguniform", *PASS_RATE_RANGE],
             "pass_rate_note": "expected passenger events per lineage per generation (D-J overlay), through the same copula as the rates from u_pass (loading rho_cin_loadings['pass_rate']); ~2,600 generations -> ~0.26 to ~39 per lineage",
             "copula_rule": COPULA_RULE,
@@ -1702,10 +1703,10 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
                 "adopted": "2026-10-26, prior v4.1 = prior_version 5 (research_notes/v4_1_design_2026-10-26/DECISION.md, scope revised after the design review: no pi / driver-guard change, overlay unchanged); setattr(sgs, k, v) for each item of v4_settings restores v4 exactly",
                 "changes": [
                     "PASS_TRUNK_GENS 2000 -> 1000: restores the arm-end share (sweep B1 - B0 +0.044 [0.016, 0.072]; diagnostics projection 0.632-0.642) without moving driver Spearman or sign recovery (DECISION.md table)",
-                    "PASS_RATE_RANGE logU(5e-4, 1.5e-2) -> logU(1e-4, 1.5e-2): pre-registered fallback; tumours without segmental-instability mechanisms (DECISION.md table, biology)",
-                    "one copula loading per rate (RHO_CIN_LOADINGS) instead of one RHO_CIN; provisional arm 0.5, focal 0.5, pass 0.5, chromosomal 0 (decoupled): real chromosome-focal correlation ~0, distinct mechanisms (Davoli 2017), GBM needs many whole-chromosome events with few segmental ones (DECISION.md, rho); final loadings from a factorial",
+                    "PASS_RATE_RANGE logU(5e-4, 1.5e-2) -> logU(1e-4, 3e-2): floor = pre-registered fallback (tumours without segmental-instability mechanisms); ceiling 3e-2 restores the busy end lost with trunk 1000 (factorial G3/G4; pilot G4 P(bp >= 45) 0.167 vs G1 0.133; DECISION.md)",
+                    "one copula loading per rate (RHO_CIN_LOADINGS) instead of one RHO_CIN; arm 0.5, chromosomal 0.4, focal 0.8, pass 0.8: focal and passenger events share a segmental mechanism; whole-chromosome partly decoupled (distinct mechanism, Davoli 2017) at 0.4 because full decoupling (0) drove the realised chromosome-focal count correlation to -0.37 and Spearman(bp, fga) to 0.21 in the 5e6 pilot (DECISION.md)",
                 ],
-                "pairing": "draws and draw order unchanged: for the same prior seed every block draw (delta, driver set), pi, q, m, length_mean, p_term, cin_level, u_pass and the *_indep rates are bit-identical to v4; arm_rate and focal_driver_rate too (same loading 0.5); chromosomal_rate (loading 0) and pass_rate / pass_rate_indep (new floor) differ. V4_SETTINGS reproduces every v4 field exactly",
+                "pairing": "draws and draw order unchanged: for the same prior seed every block draw (delta, driver set), pi, q, m, length_mean, p_term, cin_level, u_pass and the *_indep rates are bit-identical to v4; arm_rate too (same loading 0.5); chromosomal_rate, focal_driver_rate (new loadings) and pass_rate / pass_rate_indep (new range) differ. V4_SETTINGS reproduces every v4 field exactly",
                 "unchanged": "every range except PASS_RATE_RANGE, pi U(0.02, 0.12), q, m, eta cap 0.6, p_term U(0.25, 0.75), MAX_REGION_CN 10, MAX_PLOIDY 8, MIN_PLOIDY 1.5, cap ratio 0.9, min_detectable 5e6, patches D-D..D-I, the D-J edge overlay (all-or-none loss rejection, known gain bias: diagnostics/REPORT.md Q4.1), passenger loss / terminal shares and lengths, events schema 3",
             },
             "v3_to_v4_changes": {
