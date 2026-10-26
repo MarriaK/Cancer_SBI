@@ -14,7 +14,8 @@ Tiny tumours (min_detectable 2e4, ~2 s per run). Nothing here touches the cluste
 
 Prior v4 (2026-10-23) adapted a few assertions here that v4 made obsolete (PRIOR_VERSION 4, events schema 3, two
 extra prior draws after p_term, the caller's new keyword arguments); each such place says "v4:". The v4
-behaviour itself is tested in test_gene_simulator_v4.py.
+behaviour itself is tested in test_gene_simulator_v4.py. Prior v4.1 (2026-10-26) changed only the version tag
+asserted here (PRIOR_VERSION 5; "v4.1:"); V3_SETTINGS still restores v3 (now on top of V4_SETTINGS).
 """
 import importlib
 import json
@@ -71,8 +72,8 @@ def test_patches_installed_and_selftests_pass_at_import():
     assert mutation.gen_focal_event is sgs._gen_focal_event_v3
     assert sgs._is_upstream_gen_focal(sgs._ORIG_GEN_FOCAL)
     assert sgs._P_TERM == 0.0
-    # v4: PRIOR_VERSION is 4 since 2026-10-23 (D-I / D-H constants unchanged)
-    assert sgs.PRIOR_VERSION == 4 and sgs.GAIN_SAT_EXTRA == 1 and sgs.TERMINAL_MAG == 1 and sgs.TERM_EXT_MEAN == 2.0
+    # v4: PRIOR_VERSION is 4 since 2026-10-23 (D-I / D-H constants unchanged); v4.1: 5 since 2026-10-26
+    assert sgs.PRIOR_VERSION == 5 and sgs.GAIN_SAT_EXTRA == 1 and sgs.TERMINAL_MAG == 1 and sgs.TERM_EXT_MEAN == 2.0
     for name in ("region_gain_dosage_saturation", "focal_terminal_events", "region_fitness_rounded_ploidy"):
         assert name in sgs.SISTEM_PATCHES
     # the self-tests are re-runnable and leave the global RNG untouched
@@ -179,7 +180,8 @@ class _RecordingRng:
 
 
 def _theta_with(constants, seed):
-    """v4: the v3 prior is the v4 code with sgs.V3_SETTINGS (v3 ranges, RHO_CIN = 0); `constants` go on top."""
+    """v4: the v3 prior is the v4 code with sgs.V3_SETTINGS (v3 ranges, RHO_CIN = 0; v4.1: all RHO_CIN_LOADINGS 0);
+    `constants` go on top."""
     _, _, nregions = sgs.genome_grid()
     constants = {**sgs.V3_SETTINGS, **constants}
     saved = {k: getattr(sgs, k) for k in constants}
@@ -303,7 +305,7 @@ def test_v3_output_has_terminal_column_and_passes_checker(tmp_path, monkeypatch)
     M = json.loads((root / "manifest.json").read_text())
     # v4: prior_version 4, p_term floor 0.25, focal floor 3e-5, schema 3 (11 columns, 'node' after 'terminal');
     # the v3 values stay recorded under prior.v3_ranges
-    assert M["prior_version"] == 4
+    assert M["prior_version"] == 5                                                     # v4.1: 5
     assert M["prior"]["p_term"] == ["uniform", 0.25, 0.75] and M["prior"]["v3_ranges"]["PTERM_RANGE"] == [0.35, 0.75]
     assert M["prior"]["q"] == ["uniform", 0.30, 0.55]
     assert M["prior"]["focal_driver_rate"] == ["loguniform", 3e-5, 1e-3]
@@ -324,7 +326,7 @@ def test_v3_output_has_terminal_column_and_passes_checker(tmp_path, monkeypatch)
     text = (out / "gene_pilot_checks.txt").read_text()
     assert rc == 0, text
     assert "[PASS] C4" in text and "[INFO] C8" in text and "by schema {3: 1}" in text       # v4: schema 3
-    assert "prior_version 4" in text and "pooled driver_count_mismatches 0" in text
+    assert "prior_version 5" in text and "pooled driver_count_mismatches 0" in text      # v4.1: 5
 
 
 @pytest.mark.skipif(not (V2_ROOT / "manifest.json").is_file(), reason="v2 calibration data not on this machine")

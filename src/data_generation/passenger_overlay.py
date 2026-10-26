@@ -45,6 +45,9 @@ OVERLAY RULES (apply_passenger_overlay)
     (n_rejected_altered), else the clone's ploidy (mean block_cn) would leave [min_ploidy, max_ploidy]
     (n_rejected_ploidy; SISTEM's check_viability bounds, inclusive). The first failing rule in that order is
     the one counted; an event rejected for one affected clone is rejected for all.
+    Known artefact, kept unchanged in prior v4.1: because one 1-copy descendant vetoes a loss, edges with many
+    descendants take mostly gains (loss share 0.20 on edges with > 1000 descendants vs nominal 0.75), see
+    research_notes/v4_1_design_2026-10-26/diagnostics/REPORT.md Q4.1 and the v4.1 design review.
     Passengers never change fitness: they are neutral by construction (fitness is not recomputed) and
     viability is enforced by rejection only.
 

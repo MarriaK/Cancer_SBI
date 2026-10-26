@@ -8,7 +8,7 @@ layout, retry loop (up to 5 attempts per trial), per-trial seeding and CLI
 |---|---|---|
 | Simulator | `simulate_arm_selection.py` (was `dataSimulator_MPI.py`) | `simulate_gene_selection.py` |
 | SISTEM library | `FittedArmLibrary`, 44 arm coefficients | `FittedRegionLibrary`, one coefficient per 5 Mb block (D = 589) |
-| Prior | Normal(0, 0.2) on arm deltas; rates uniform; focal rate and length fixed | sparse spike-and-slab on block deltas; event rates, focal rate and focal length log-uniform and drawn per theta; prior v3 (2026-10-22): q ~ U(0.30, 0.55), focal rate logU(1e-4, 1e-3), plus the nuisance parameter p_term ~ U(0.35, 0.75) drawn last; prior v4 (2026-10-23, below): lower rate floors, p_term floor 0.25, rates coupled by a shared instability level, neutral passenger overlay (see script docstring; `prior_version` in manifest and parameters.pkl) |
+| Prior | Normal(0, 0.2) on arm deltas; rates uniform; focal rate and length fixed | sparse spike-and-slab on block deltas; event rates, focal rate and focal length log-uniform and drawn per theta; prior v3 (2026-10-22): q ~ U(0.30, 0.55), focal rate logU(1e-4, 1e-3), plus the nuisance parameter p_term ~ U(0.35, 0.75) drawn last; prior v4 (2026-10-23, below): lower rate floors, p_term floor 0.25, rates coupled by a shared instability level, neutral passenger overlay; prior v4.1 (2026-10-26, `prior_version` 5, below): trunk 1000, passenger floor 1e-4, one copula loading per rate with the whole-chromosome rate decoupled (see script docstring; `prior_version` in manifest and parameters.pkl) |
 | Per-trial output | `results.pkl` (largest-clone + bulk arm CN ratios), `CNratios_all.pkl.gz` | `results.pkl` (bookkeeping only), `clones.npz` (per-clone block CNs + popsize, ploidy, fitness, nWGD, n_altered_drivers, the bulk profile, and the TRUE event history: `event_counts` per clone per category and the unique `events` table of all surviving lineages, 10 columns since prior v3 incl. `terminal`, 11 since prior v4 incl. `node`, plus the genealogy arrays; read columns by name via `event_columns`; largest clone = argmax popsize) |
 | Checker | `update_checker.py` | `check_gene_selection_outputs.py` |
 | Repair | `fixed_dataSimulation.py` | none yet |
@@ -49,7 +49,7 @@ self-tests each one, and records them in `manifest["sistem_patches"]`:
    Passenger calls and `p_term = 0` delegate with no extra RNG draw. Recorded as `terminal = 1`
    in the events table. Adopted only together with patch 5; advisor sign-off pending.
 
-**Prior v4 (2026-10-23, Stage 1 provisional; `PRIOR_VERSION = 4`).** Design and review:
+**Prior v4 (2026-10-23, Stage 1 provisional; `PRIOR_VERSION = 4`; restored by `V4_SETTINGS` since v4.1).** Design and review:
 `cancer/research_notes/v4_design_2026-10-23/review/REVIEW.md` (P1, P6, P7). The Stage 1 harness overrides the
 constants per arm; `V3_RANGES` (and `V3_SETTINGS`, which adds `RHO_CIN = 0`, `PASSENGERS_ENABLED = False`)
 restore v3.
@@ -91,6 +91,25 @@ restore v3.
   `overlay_inputs(growth)`; `pack_summary(growth, overlay)` builds the saved dict.
 - *Checker.* Reads schemas 1-3; new C9 reports passenger counts, loss, terminal and root (trunk) shares, rejections,
   and fails on any 0-copy block.
+
+**Prior v4.1 (2026-10-26; `PRIOR_VERSION = 5`).** Decision: `cancer/research_notes/v4_1_design_2026-10-26/DECISION.md`
+(scope revised after the design review: the pi floor / driver guard and the per-clone overlay rule were dropped).
+Same draws in the same order as v4; three settings changed:
+
+- `PASS_TRUNK_GENS` 2000 -> 1000 (arm-end share) and `PASS_RATE_RANGE` logU(5e-4, 1.5e-2) -> logU(1e-4, 1.5e-2).
+- `RHO_CIN` (one weight for every rate) is replaced by `RHO_CIN_LOADINGS`, one copula loading per rate
+  (`arm_rate`, `chromosomal_rate`, `focal_driver_rate`, `pass_rate`). Provisional v4.1 values 0.5 / 0 / 0.5 / 0.5:
+  the whole-chromosome rate is decoupled (loading 0, so its realised value is its `chromosomal_rate_indep` draw
+  exactly); a factorial will set the final loadings. Harnesses override it with
+  `setattr(sgs, "RHO_CIN_LOADINGS", {...})` (all four keys; the module value is read-only); setting the removed
+  `RHO_CIN` makes `sample_theta` raise instead of being silently ignored. parameters.pkl and manifest.json record
+  `rho_cin_loadings` (v4 outputs: scalar `rho_cin`).
+- Pairing: delta, the driver set, pi, q, m, length_mean, p_term, cin_level, u_pass, the `*_indep` rates and the
+  realised arm and focal rates are bit-identical to v4 for the same prior seed; the chromosomal rate and
+  `pass_rate` differ. `V4_SETTINGS` (setattr each item) restores v4 exactly, `V3_SETTINGS` v3; `PRIOR_VERSION`
+  stays 5 under either (it tags the code; the settings in effect are recorded).
+- Unchanged: the edge overlay keeps the all-or-none loss rejection; its gain bias on deep edges is a known artefact
+  (v4.1 `diagnostics/REPORT.md` Q4.1). The checker knows prior_version 5 and checks it like 4.
 
 Research and measurements: `cancer/reports/Fixing the ploidy collapse in SISTEM.md`;
 prior v3 and patches 5-6: `cancer/research_notes/v3_design_2026-10-21/` (`workflow_result.json`

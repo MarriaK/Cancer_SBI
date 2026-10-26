@@ -95,7 +95,8 @@ C9  Passenger overlay (prior v4, deviation D-J) and the 0-copy sanity check.
     have a block at 0 copies (patch D-F; the overlay rejects such losses).
     FAIL on any of these; else INFO (schema < 3: no passengers, INFO).
 
-The header reports manifest prior_version (1-4 are known) and the per-theta
+The header reports manifest prior_version (1-5 are known; 5 = prior v4.1, same output
+contract and checks as 4: only prior settings changed) and the per-theta
 table shows p_term (prior v3+) and pass_rate (prior v4; "-" for older outputs).
 """
 
@@ -119,7 +120,7 @@ CLONE_ARRAYS = ["block_cn", "popsize", "ploidy", "fitness", "nWGD", "n_altered_d
 EVENT_ARRAYS = ["events", "event_columns", "event_categories"]   # optional (absent in the oldest outputs)
 GENEALOGY_ARRAYS = ["node_parent", "node_birth_gen", "node_clone", "clone_node"]   # schema 3 (prior v4)
 PASSENGER_CATEGORIES = ("passenger_gain", "passenger_loss")
-KNOWN_PRIOR_VERSIONS = (1, 2, 3, 4)
+KNOWN_PRIOR_VERSIONS = (1, 2, 3, 4, 5)       # 5 = prior v4.1: v4 output contract, every check as for 4
 
 
 def sim_sort_key(name: str) -> tuple:

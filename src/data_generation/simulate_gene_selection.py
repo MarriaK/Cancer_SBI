@@ -7,6 +7,16 @@ NPE training. Everything not listed below is kept identical to the arm-model
 script simulate_arm_selection.py (MPI layout, directory structure, retry loop,
 seeding scheme), so the two files can be diffed side by side.
 
+Prior, version 4.1 = PRIOR_VERSION 5 (2026-10-26; research_notes/v4_1_design_2026-10-26/DECISION.md, scope revised
+after the design review):
+    Version 4 below with three changes, same draws in the same order: PASS_TRUNK_GENS 2000 -> 1000;
+    PASS_RATE_RANGE logU(5e-4, 1.5e-2) -> logU(1e-4, 1.5e-2); the single copula weight RHO_CIN is replaced by one
+    loading per rate, RHO_CIN_LOADINGS (provisional: arm 0.5, focal 0.5, pass 0.5, chromosomal 0 = decoupled,
+    so the realised chromosomal_rate IS its *_indep draw). Pairing: for the same prior seed delta, the driver
+    set, pi, q, m, length_mean, p_term, cin_level, u_pass, the *_indep rates and (same loading) arm_rate and
+    focal_driver_rate are bit-identical to v4; chromosomal_rate and pass_rate differ. V4_SETTINGS restores v4
+    exactly; V3_SETTINGS restores v3 exactly. The pi range, the driver set rules and the D-J overlay are v4's.
+
 Prior, version 4 (2026-10-23, Stage 1 provisional; one draw per theta id, rng = default_rng(base_seed + sim_id*1000)):
     Same draw order and count as v3 through p_term, then two NEW draws: cin_level L ~ U(0,1), u_pass ~ U(0,1).
     arm_rate ~ logU(3e-6, 3e-4) [v3 1e-5]; chromosomal_rate ~ logU(3e-7, 1e-4) [v3 1e-6];
@@ -17,7 +27,8 @@ Prior, version 4 (2026-10-23, Stage 1 provisional; one draw per theta id, rng = 
     untouched). pass_rate ~ the same copula on u_pass over PASS_RATE_RANGE = logU(5e-4, 1.5e-2) passenger
     events per lineage per generation (cin_copula_quantile). With RHO_CIN = 0 the realised rates ARE the drawn
     ones. theta keeps the pre-copula draws as *_indep. Passengers: deviation D-J below.
-    Pairing: with V3_RANGES restored and RHO_CIN = 0, every v3 field equals v3's for the same prior seed;
+    Pairing: with V3_RANGES restored and RHO_CIN = 0 (since v4.1: V3_SETTINGS, all loadings 0), every v3 field
+    equals v3's for the same prior seed;
     with the v4 floors, block positions, driver set, |log(1+delta)|, q, pi, m, length_mean, the uniform
     quantile of p_term and the uniform quantiles of the PRE-copula *_indep rates are paired. Under RHO_CIN > 0
     the realised rates are NOT paired with v3 (they also depend on cin_level).
@@ -114,7 +125,8 @@ Approved deviations from the user's spec:
              on every genealogy edge, applied to all surviving descendants in block_cn space; neutral by
              construction (fitness and driver bookkeeping are not touched; rejected if a block would hit 0 copies,
              a driver block would exceed MAX_REGION_CN, the altered-driver cap would be exceeded, or ploidy would
-             leave [MIN_PLOIDY, MAX_PLOIDY]). It never alters growth.
+             leave [MIN_PLOIDY, MAX_PLOIDY]). It never alters growth. Known artefact (kept in v4.1): one
+             1-copy descendant vetoes a loss, so deep edges take mostly gains (v4.1 diagnostics/REPORT.md Q4.1).
          RNGs: the global NumPy stream drives growth only; trunk and overlay use their own Generators,
          default_rng([trial_seed, OVERLAY_SEED_OFFSET, 0]) and default_rng([trial_seed, OVERLAY_SEED_OFFSET, 1])
          (seed sequences: no collision across trials, unlike additive offsets). grow() = growth (+ trunk);
@@ -135,6 +147,7 @@ import subprocess
 
 import dataclasses
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Union
 
 import numpy as np
@@ -700,7 +713,7 @@ assert GROWTH_EVENT_CATEGORIES == ("focal_amplification", "focal_deletion", "arm
                                    "chromosomal_duplication", "chromosomal_deletion", "WGD")   # v3 order kept
 
 # Prior ranges (spec "PRIOR"); each is (low, high) of a uniform
-PRIOR_VERSION = 4                           # bump whenever sample_theta's distribution or draw order changes
+PRIOR_VERSION = 5                           # bump whenever sample_theta's distribution or draw order changes (5 = prior v4.1)
 ARM_RATE_RANGE = (3e-6, 3e-4)               # log-uniform; v4 floor 3e-6; v2 = v3 = (1e-5, 3e-4); v1 U(1e-5, 1e-4) (arm script)
 CHROM_RATE_RANGE = (3e-7, 1e-4)             # log-uniform; v4 floor 3e-7; v2 = v3 = (1e-6, 1e-4); v1 U(1e-6, 1e-5) (arm script)
 FOCAL_RATE_RANGE = (3e-5, 1e-3)             # log-uniform; v4 floor 3e-5; v3 (1e-4, 1e-3); v2 (1e-4, 2e-3); v1 fixed 5e-4
@@ -710,18 +723,24 @@ Q_RANGE = (0.30, 0.55)                      # spec: P(sign = +1) q; v3 = v4; v1 
 M_RANGE = (0.05, 0.15)                      # spec: mean of Exponential effect size m
 ETA_CAP = 0.6                               # spec: eta = min(Exp(mean=m), 0.6)
 PTERM_RANGE = (0.25, 0.75)                  # v4 floor 0.25; v3 (0.35, 0.75); drawn after the blocks (D-H nuisance); v1/v2 none (= 0)
-# Prior v4 (Stage 1 provisional defaults; the Stage 1 harness overrides them per arm)
-RHO_CIN = 0.5                               # Gaussian-copula weight of the shared instability level L (0 = independent rates, as v3)
-PASS_RATE_RANGE = (5e-4, 1.5e-2)            # log-uniform (through the copula): passenger events per lineage per generation
+# Shared instability level L (prior v4; per event type since v4.1). Gaussian-copula loading of L per coupled rate
+# (0 = that rate is independent of L: its realised value IS its *_indep draw, exactly). Prior v4 used ONE weight,
+# RHO_CIN = 0.5, for all four; v4.1 decouples the whole-chromosome rate (DECISION.md: real chromosome-focal
+# correlation ~0, distinct mechanisms). Provisional v4.1 values: a factorial sets the final ones. Override with
+# setattr(sgs, "RHO_CIN_LOADINGS", {...}) giving all four keys (sample_theta rejects missing or extra keys).
+CIN_RATE_KEYS = ("arm_rate", "chromosomal_rate", "focal_driver_rate", "pass_rate")
+RHO_CIN_LOADINGS = MappingProxyType(     # read-only: replace the whole mapping, never edit it in place
+    {"arm_rate": 0.5, "chromosomal_rate": 0.0, "focal_driver_rate": 0.5, "pass_rate": 0.5})
+PASS_RATE_RANGE = (1e-4, 1.5e-2)            # log-uniform (through the copula): passenger events per lineage per generation;
+                                            # v4.1 floor 1e-4; v4 (5e-4, 1.5e-2)
 # The v3 values of every range v4 changed. setattr(sgs, k, v) for each item restores the v3 prior ranges;
-# also set RHO_CIN = 0 (and PASSENGERS_ENABLED = False) for the full v3 model: V3_SETTINGS.
+# V3_SETTINGS (below the passenger constants) restores the full v3 model.
 V3_RANGES = {
     "ARM_RATE_RANGE": (1e-5, 3e-4),
     "CHROM_RATE_RANGE": (1e-6, 1e-4),
     "FOCAL_RATE_RANGE": (1e-4, 1e-3),
     "PTERM_RANGE": (0.35, 0.75),
 }
-V3_SETTINGS = {**V3_RANGES, "RHO_CIN": 0.0, "PASSENGERS_ENABLED": False}
 
 # D-J passenger overlay (prior v4; passenger_overlay.PassengerParams fields)
 PASSENGERS_ENABLED = True                   # False: no overlay (block_cn = growth block_cn), schema 3 still written
@@ -729,11 +748,22 @@ PASS_LOSS_SHARE = 0.75                      # P(loss) per passenger event
 PASS_TERM_SHARE = 0.30                      # P(terminal, telomere-anchored) per passenger event
 PASS_LEN_MEAN = 2.0                         # interstitial length, blocks: max(1, round(Exp(mean)))
 PASS_TERM_LEN_MEAN = 4.0                    # terminal length, blocks: max(1, round(Exp(mean))), at most arm - 1
-PASS_TRUNK_GENS = 2000.0                    # generations of pre-growth trunk (before the founding cell, never simulated by
+PASS_TRUNK_GENS = 1000.0                    # generations of pre-growth trunk (before the founding cell, never simulated by
                                             # growth): grow() puts Poisson(pass_rate * PASS_TRUNK_GENS) passengers on the founder
-                                            # genome before growth, clonal in every cell. Fixed design constant for Stage 1
-                                            # (the sweep varies it)
+                                            # genome before growth, clonal in every cell. v4.1 1000 (arm-end share); v4 2000
 OVERLAY_SEED_OFFSET = 7_000_003             # namespace constant of the passenger seed sequences (passenger_seeds)
+
+# The v4 values of every setting v4.1 changed: setattr(sgs, k, v) for each item restores prior v4 exactly (every theta
+# field, the trunk and the overlay). PRIOR_VERSION stays 5: it tags the code and output contract, not the prior; the
+# manifest and parameters.pkl record the settings in effect.
+V4_SETTINGS = {
+    "PASS_TRUNK_GENS": 2000.0,
+    "PASS_RATE_RANGE": (5e-4, 1.5e-2),
+    "RHO_CIN_LOADINGS": MappingProxyType({k: 0.5 for k in CIN_RATE_KEYS}),   # v4: one weight RHO_CIN = 0.5 for every rate
+}
+# The full v3 model: the v4 settings + the v3 ranges, no shared level, no passengers.
+V3_SETTINGS = {**V4_SETTINGS, **V3_RANGES, "RHO_CIN_LOADINGS": MappingProxyType({k: 0.0 for k in CIN_RATE_KEYS}),
+               "PASSENGERS_ENABLED": False}
 
 
 def passenger_seeds(trial_seed):
@@ -784,10 +814,11 @@ def _log_uniform(rng, lo, hi):
 
 COPULA_EPS = 1e-12      # quantiles are clipped to [eps, 1-eps] before Phi^-1 (u = 0 or a rounding u = 1 would give +-inf)
 COPULA_RULE = ("u_i = (log r_i - log lo_i)/(log hi_i - log lo_i) for arm_rate, chromosomal_rate, focal_driver_rate "
-               "(u_pass for pass_rate); z'_i = sqrt(RHO_CIN)*Phi^-1(L) + sqrt(1-RHO_CIN)*Phi^-1(u_i); u'_i = Phi(z'_i); "
+               "(u_pass for pass_rate); z'_i = sqrt(rho_i)*Phi^-1(L) + sqrt(1-rho_i)*Phi^-1(u_i); u'_i = Phi(z'_i); "
                "rate_i = exp(log lo_i + u'_i*(log hi_i - log lo_i)); quantiles clipped to [1e-12, 1-1e-12]; "
-               "Phi = scipy.special.ndtr, Phi^-1 = scipy.special.ndtri; RHO_CIN = 0: realised rates are the drawn ones "
-               "exactly (no transform); length_mean is not coupled")
+               "Phi = scipy.special.ndtr, Phi^-1 = scipy.special.ndtri; rho_i = RHO_CIN_LOADINGS[i] (since prior v4.1; "
+               "v4 used one RHO_CIN for all four); rho_i = 0: realised rate i is the drawn one exactly (no transform); "
+               "two rates i, j have normal-scale correlation sqrt(rho_i * rho_j); length_mean is not coupled")
 
 
 def loguniform_quantile(r, lo, hi):
@@ -802,10 +833,11 @@ def loguniform_from_quantile(u, lo, hi):
 
 def cin_copula_quantile(u, L, rho):
     """Gaussian copula with the shared instability level L: Phi(sqrt(rho) Phi^-1(L) + sqrt(1-rho) Phi^-1(u)).
-    Each output is U(0,1) marginally; two outputs sharing L have normal-scale correlation rho. rho == 0
-    returns u unchanged (exactly). Vectorised over u and L."""
+    Each output is U(0,1) marginally; two outputs sharing L with loadings rho_i, rho_j have normal-scale
+    correlation sqrt(rho_i rho_j) (rho for equal loadings). rho == 0 returns u unchanged (exactly). Vectorised
+    over u and L."""
     if not 0.0 <= rho <= 1.0:
-        raise ValueError(f"RHO_CIN must be in [0, 1], got {rho}")
+        raise ValueError(f"copula loading must be in [0, 1], got {rho}")
     if rho == 0:
         return u
     u = np.clip(u, COPULA_EPS, 1 - COPULA_EPS)
@@ -813,8 +845,31 @@ def cin_copula_quantile(u, L, rho):
     return ndtr(np.sqrt(rho) * ndtri(L) + np.sqrt(1.0 - rho) * ndtri(u))
 
 
+def rho_cin_loadings():
+    """RHO_CIN_LOADINGS as floats, validated: exactly the CIN_RATE_KEYS, each in [0, 1]. Raises if the removed
+    scalar RHO_CIN was set on the module (prior v4 harnesses), which would otherwise be silently ignored."""
+    if "RHO_CIN" in globals():
+        raise RuntimeError("RHO_CIN was replaced by RHO_CIN_LOADINGS in prior v4.1 (one loading per rate); "
+                           "set e.g. {k: 0.5 for k in CIN_RATE_KEYS} for the v4 coupling")
+    lo = dict(RHO_CIN_LOADINGS)
+    if set(lo) != set(CIN_RATE_KEYS):
+        raise ValueError(f"RHO_CIN_LOADINGS needs exactly the keys {CIN_RATE_KEYS}, got {sorted(lo)}")
+    out = {k: float(lo[k]) for k in CIN_RATE_KEYS}
+    for k, v in out.items():
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"RHO_CIN_LOADINGS[{k!r}] must be in [0, 1], got {v}")
+    return out
+
+
+def _couple(r, rg, cin_level, rho):
+    """Realised rate of a pre-copula draw r on log-uniform range rg: r itself (exactly) at rho 0, else the copula."""
+    if rho == 0:
+        return r
+    return float(loguniform_from_quantile(cin_copula_quantile(loguniform_quantile(r, *rg), cin_level, rho), *rg))
+
+
 def sample_theta(rng, nregions, chrom_order):
-    """One prior draw (PRIOR_VERSION 4). The rng is consumed in this fixed order:
+    """One prior draw (PRIOR_VERSION 5 = prior v4.1). The rng is consumed in this fixed order:
     arm_rate, chromosomal_rate, focal_driver_rate, length_mean (each log-uniform: exp of a
     uniform on the log bounds), pi, q, m, then blocks in chrom_order / r order
     (per block: one uniform for z; if z == 1, one exponential for eta and one
@@ -822,9 +877,15 @@ def sample_theta(rng, nregions, chrom_order):
     L = rng.uniform() and u_pass = rng.uniform() LAST.
     Draw order and count through p_term are version 3's (and up to the blocks version 2's), so for the
     same prior seed the block positions, driver set and eta = |log(1+delta)| equal versions 2 and 3, and
-    with V3_RANGES and RHO_CIN = 0 every v3 field is reproduced exactly. The three event rates are then
+    with V3_SETTINGS (v3 ranges, all loadings 0, no passengers) every v3 field is reproduced exactly. The three event rates are then
     coupled through the shared level L (cin_copula_quantile; COPULA_RULE); the pre-copula draws are kept
     as *_indep. pass_rate = the same copula on u_pass over PASS_RATE_RANGE.
+    Prior v4.1: each rate has its own loading RHO_CIN_LOADINGS[k] (v4: one RHO_CIN = 0.5 for all; v4.1
+    provisional: chromosomal_rate 0, the others 0.5), so a loading changes only its own rate. The draws and their
+    order are v4's: for the same prior seed every block draw (delta, driver set), pi, q, m, length_mean, p_term,
+    cin_level, u_pass and the *_indep rates are bit-identical to v4; only realised rates whose loading changed
+    (v4.1: chromosomal_rate) and pass_rate / pass_rate_indep (PASS_RATE_RANGE floor 1e-4) differ. With
+    V4_SETTINGS every v4 field is reproduced exactly, with V3_SETTINGS every v3 field.
     Every block is a driver candidate, including the last one of each chromosome: the SISTEM off-by-one
     that made it unreachable by focal events is patched at import (deviation D-D, apply_sistem_patches).
     p_term (D-H), cin_level and pass_rate are nuisance parameters, not inference targets.
@@ -856,14 +917,10 @@ def sample_theta(rng, nregions, chrom_order):
 
     indep = {"arm_rate": (arm_rate, ARM_RATE_RANGE), "chromosomal_rate": (chromosomal_rate, CHROM_RATE_RANGE),
              "focal_driver_rate": (focal_driver_rate, FOCAL_RATE_RANGE)}
-    rho = float(RHO_CIN)
-    if rho == 0:                                # exact branch: realised rates ARE the draws (v3 behaviour)
-        realised = {k: r for k, (r, _) in indep.items()}
-    else:
-        realised = {k: float(loguniform_from_quantile(cin_copula_quantile(loguniform_quantile(r, *rg), cin_level, rho), *rg))
-                    for k, (r, rg) in indep.items()}
+    rho = rho_cin_loadings()                    # v4.1: one loading per rate; loading 0 = exact (realised IS the draw)
+    realised = {k: _couple(r, rg, cin_level, rho[k]) for k, (r, rg) in indep.items()}
     pass_rate_indep = float(loguniform_from_quantile(u_pass, *PASS_RATE_RANGE))
-    pass_rate = float(loguniform_from_quantile(cin_copula_quantile(u_pass, cin_level, rho), *PASS_RATE_RANGE))
+    pass_rate = float(loguniform_from_quantile(cin_copula_quantile(u_pass, cin_level, rho["pass_rate"]), *PASS_RATE_RANGE))
 
     return {
         "arm_rate": realised["arm_rate"],                       # realised (post-copula) rates drive SISTEM
@@ -956,8 +1013,9 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
 
     Prior v4 (D-J): when PASSENGERS_ENABLED, each successful attempt gets the passenger overlay with
     theta['pass_rate'] and rng default_rng(trial_seed + OVERLAY_SEED_OFFSET), trial_seed = (rank_seed + t) %
-    SEED_MODULUS; parameters.pkl records cin_level, pass_rate, the *_indep rates, rho_cin, passengers_enabled
-    and passenger_params; results.pkl the overlay and trunk counters and both seed lists (passenger_seeds)."""
+    SEED_MODULUS; parameters.pkl records cin_level, pass_rate, the *_indep rates, rho_cin_loadings (v4: the scalar
+    rho_cin), passengers_enabled and passenger_params; results.pkl the overlay and trunk counters and both seed lists
+    (passenger_seeds)."""
     global _P_TERM
     os.makedirs(out_dir, exist_ok=True)
     chrom_lens, arm_ratios, nregions = genome_grid()
@@ -995,7 +1053,7 @@ def simulate_gene_model(theta, out_dir, num_trials, prior_seed, sim_id, skip_com
         "arm_rate_indep": theta["arm_rate_indep"],
         "chromosomal_rate_indep": theta["chromosomal_rate_indep"],
         "focal_driver_rate_indep": theta["focal_driver_rate_indep"],
-        "rho_cin": float(RHO_CIN),              # module settings at run time (the Stage 1 harness overrides them per arm)
+        "rho_cin_loadings": rho_cin_loadings(), # module settings at run time (harnesses override them); v4.1: per rate (v4 "rho_cin")
         "passengers_enabled": bool(PASSENGERS_ENABLED),
         "passenger_params": dataclasses.asdict(passenger_params(theta["pass_rate"])),
         "delta_dict": delta_dict,
@@ -1628,15 +1686,28 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
             "arm_rate": ["loguniform", *ARM_RATE_RANGE],
             "chromosomal_rate": ["loguniform", *CHROM_RATE_RANGE],
             "focal_driver_rate": ["loguniform", *FOCAL_RATE_RANGE],
-            "rates_note": "marginals log-uniform on these ranges; since prior v4 the three rates are coupled through cin_level (copula_rule); parameters.pkl holds the realised rates and the pre-copula draws as *_indep",
+            "rates_note": "marginals log-uniform on these ranges; since prior v4 the rates are coupled through cin_level (copula_rule), since v4.1 with one loading per rate (rho_cin_loadings); parameters.pkl holds the realised rates and the pre-copula draws as *_indep",
             "length_mean_blocks": ["loguniform", *LENGTH_MEAN_RANGE],
             "cin_level": ["uniform", 0.0, 1.0],
-            "rho_cin": float(RHO_CIN),
+            "rho_cin_loadings": rho_cin_loadings(),
+            "rho_cin_loadings_note": "Gaussian-copula loading of cin_level per rate (prior v4.1; provisional, a factorial sets the final values); 0 = the realised rate is its *_indep draw exactly; v4 used one rho_cin = 0.5 for all four (v4_settings)",
             "pass_rate": ["loguniform", *PASS_RATE_RANGE],
-            "pass_rate_note": "expected passenger events per lineage per generation (D-J overlay), through the same copula as the rates from u_pass; ~2,600 generations -> ~1.3 to ~39 per lineage",
+            "pass_rate_note": "expected passenger events per lineage per generation (D-J overlay), through the same copula as the rates from u_pass (loading rho_cin_loadings['pass_rate']); ~2,600 generations -> ~0.26 to ~39 per lineage",
             "copula_rule": COPULA_RULE,
             "draw_order": "arm, chrom, focal, length_mean, pi, q, m, blocks, p_term, cin_level, u_pass (last)",
             "v3_ranges": {k: list(v) for k, v in V3_RANGES.items()},
+            "v4_settings": {k: (list(v) if isinstance(v, tuple) else dict(v) if isinstance(v, MappingProxyType) else v)
+                            for k, v in V4_SETTINGS.items()},
+            "v4_to_v41_changes": {
+                "adopted": "2026-10-26, prior v4.1 = prior_version 5 (research_notes/v4_1_design_2026-10-26/DECISION.md, scope revised after the design review: no pi / driver-guard change, overlay unchanged); setattr(sgs, k, v) for each item of v4_settings restores v4 exactly",
+                "changes": [
+                    "PASS_TRUNK_GENS 2000 -> 1000: restores the arm-end share (sweep B1 - B0 +0.044 [0.016, 0.072]; diagnostics projection 0.632-0.642) without moving driver Spearman or sign recovery (DECISION.md table)",
+                    "PASS_RATE_RANGE logU(5e-4, 1.5e-2) -> logU(1e-4, 1.5e-2): pre-registered fallback; tumours without segmental-instability mechanisms (DECISION.md table, biology)",
+                    "one copula loading per rate (RHO_CIN_LOADINGS) instead of one RHO_CIN; provisional arm 0.5, focal 0.5, pass 0.5, chromosomal 0 (decoupled): real chromosome-focal correlation ~0, distinct mechanisms (Davoli 2017), GBM needs many whole-chromosome events with few segmental ones (DECISION.md, rho); final loadings from a factorial",
+                ],
+                "pairing": "draws and draw order unchanged: for the same prior seed every block draw (delta, driver set), pi, q, m, length_mean, p_term, cin_level, u_pass and the *_indep rates are bit-identical to v4; arm_rate and focal_driver_rate too (same loading 0.5); chromosomal_rate (loading 0) and pass_rate / pass_rate_indep (new floor) differ. V4_SETTINGS reproduces every v4 field exactly",
+                "unchanged": "every range except PASS_RATE_RANGE, pi U(0.02, 0.12), q, m, eta cap 0.6, p_term U(0.25, 0.75), MAX_REGION_CN 10, MAX_PLOIDY 8, MIN_PLOIDY 1.5, cap ratio 0.9, min_detectable 5e6, patches D-D..D-I, the D-J edge overlay (all-or-none loss rejection, known gain bias: diagnostics/REPORT.md Q4.1), passenger loss / terminal shares and lengths, events schema 3",
+            },
             "v3_to_v4_changes": {
                 "adopted": "2026-10-23, Stage 1 provisional (research_notes/v4_design_2026-10-23/review/REVIEW.md sections 4-5); the Stage 1 harness overrides these per arm",
                 "changes": [
@@ -1749,6 +1820,7 @@ def write_manifest(output_dir, base_seed, ntrials, ntrials_range):
             "min_ploidy": MIN_PLOIDY, "max_ploidy": MAX_PLOIDY,
             "rng": f"trunk: np.random.default_rng([trial_seed, {OVERLAY_SEED_OFFSET}, 0]); overlay: np.random.default_rng([trial_seed, {OVERLAY_SEED_OFFSET}, 1]); trial_seed = (rank_seed + t) % (2**32-1); neither consumes the global growth stream (results.pkl trunk_seed, overlay_seed)",
             "rules": dict(po.OVERLAY_RULES),
+            "known_artefact": "all-or-none loss rejection: a loss is rejected if any descendant would reach 0 copies, so edges with many descendants take mostly gains (loss share 0.20 on edges with > 1000 descendants vs nominal 0.75); kept unchanged in prior v4.1 (research_notes/v4_1_design_2026-10-26/diagnostics/REPORT.md Q4.1)",
             "outputs": "block_cn, bulk, ploidy after the overlay; fitness and n_altered_drivers at the end of growth (pre-overlay); "
                        "results.pkl n_passengers_proposed/applied/rejected(+_zero/_cap/_altered/_ploidy) for edge events, "
                        "n_trunk_proposed/applied/rejected/rejected_by for the founder trunk, overlay_seconds",

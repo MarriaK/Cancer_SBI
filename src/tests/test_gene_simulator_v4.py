@@ -8,6 +8,11 @@
   4. End to end at min_detectable 2e4: overlay off == overlay at rate 0; passenger rows; genealogy arrays; schema 3;
      GENE_SIM_STRICT=1 (driver_counts are compared with the PRE-overlay block_cn inside grow()).
   5. Checker passes on the v4 output and still reads v2 and v3 calibration outputs (read-only).
+
+Prior v4.1 (2026-10-26, PRIOR_VERSION 5) changed the module defaults; prior v4 is now the current code with
+sgs.V4_SETTINGS, so every test here runs under V4_SETTINGS (autouse fixture _v4_settings; the module-scoped e2e
+fixture applies them itself). RHO_CIN became RHO_CIN_LOADINGS (all four loadings = the old RHO_CIN). Assertions
+that changed say "v4.1:". v4.1 itself: test_gene_simulator_v41.py.
 """
 import json
 import os
@@ -36,6 +41,18 @@ V2_ROOT = PROJ / "data_sim" / "gene_calib_v2"
 V3_ROOT = PROJ / "data_sim" / "gene_calib_v3"
 TINY_MIN_DET = 2e4
 SIM_ID = 1
+
+
+@pytest.fixture(autouse=True)
+def _v4_settings(monkeypatch):
+    """v4.1: prior v4 = the current code with sgs.V4_SETTINGS (restored after each test)."""
+    for k, v in sgs.V4_SETTINGS.items():
+        monkeypatch.setattr(sgs, k, v)
+
+
+def _loadings(rho):
+    """v4.1: the v4 scalar RHO_CIN = rho as per-rate loadings."""
+    return {k: rho for k in sgs.CIN_RATE_KEYS}
 
 
 def _prior_seed(sim_id, base=sgs.DEFAULT_SEED):
@@ -91,7 +108,8 @@ def test_pairing_v4_with_v3_settings_reproduces_v3_exactly(prior_seed, monkeypat
     rng3 = np.random.default_rng(prior_seed)
     th3 = _sample_theta_v3_reference(rng3, nregions, sgs.CHROM_ORDER)
     assert sgs.V3_RANGES["PTERM_RANGE"] == (0.35, 0.75)
-    th4 = _v4_theta(prior_seed, monkeypatch, **{**sgs.V3_RANGES, "PTERM_RANGE": (0.35, 0.75), "RHO_CIN": 0})
+    th4 = _v4_theta(prior_seed, monkeypatch, **{**sgs.V3_RANGES, "PTERM_RANGE": (0.35, 0.75),
+                                                "RHO_CIN_LOADINGS": _loadings(0.0)})       # v4.1: RHO_CIN = 0
     for k in V3_SCALARS:
         assert th4[k] == th3[k], k                                  # exact, same machine
     assert th4["delta_dict"] == th3["delta_dict"]                   # exact floats, exact driver set and signs
@@ -121,7 +139,7 @@ def test_pairing_v4_defaults_keep_quantiles_and_driver_set(prior_seed, monkeypat
     _, _, nregions = sgs.genome_grid()
     th3 = _sample_theta_v3_reference(np.random.default_rng(prior_seed), nregions, sgs.CHROM_ORDER)
     th4 = _v4_theta(prior_seed)                                     # module defaults (v4 floors, RHO_CIN 0.5)
-    assert sgs.RHO_CIN == 0.5 and sgs.PTERM_RANGE == (0.25, 0.75)
+    assert sgs.RHO_CIN_LOADINGS == _loadings(0.5) and sgs.PTERM_RANGE == (0.25, 0.75)     # v4.1: RHO_CIN 0.5
     for k in ("length_mean", "pi", "q", "m"):
         assert th4[k] == th3[k], k
     d3, d4 = _flat(th3["delta_dict"]), _flat(th4["delta_dict"])
@@ -172,11 +190,11 @@ def test_sample_theta_copula_20000_draws(monkeypatch):
         q = sgs.loguniform_quantile(np.array([t[k] for t in th]), *rg)
         assert stats.kstest(q, "uniform").pvalue > 0.01, k
     la, lf = (np.log([t[k] for t in th]) for k in ("arm_rate", "focal_driver_rate"))
-    assert abs(np.corrcoef(la, lf)[0, 1] - sgs.RHO_CIN) < 0.05
+    assert abs(np.corrcoef(la, lf)[0, 1] - sgs.RHO_CIN_LOADINGS["arm_rate"]) < 0.05      # v4.1: both loadings 0.5
     lai = np.log([t["arm_rate_indep"] for t in th])
     assert abs(np.corrcoef(lai, np.log([t["focal_driver_rate_indep"] for t in th]))[0, 1]) < 0.03
     # RHO_CIN = 0: realised == indep exactly
-    monkeypatch.setattr(sgs, "RHO_CIN", 0.0)
+    monkeypatch.setattr(sgs, "RHO_CIN_LOADINGS", _loadings(0.0))                          # v4.1: RHO_CIN = 0
     rng = np.random.default_rng(8)
     for _ in range(500):
         t = sgs.sample_theta(rng, nreg, order)
@@ -428,6 +446,8 @@ def e2e_runs(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     tmp = tmp_path_factory.mktemp("v4e2e")
     try:
+        for k, v in sgs.V4_SETTINGS.items():                          # v4.1: module scope, before _v4_settings runs
+            mp.setattr(sgs, k, v)
         th = _theta()
         off = _e2e(tmp, "off", dict(th), mp, False)
         zero = _e2e(tmp, "rate0", {**th, "pass_rate": 0.0}, mp, True)
@@ -446,7 +466,9 @@ def test_e2e_overlay_off_equals_rate_zero(e2e_runs):
         assert np.array_equal(z_off[k], z_0[k]), k
     assert res_off["passengers_enabled"] is False and res_0["passengers_enabled"] is True
     assert res_off["n_passengers_proposed"] == res_0["n_passengers_proposed"] == 0
-    assert P_off["passengers_enabled"] is False and P_off["prior_version"] == 4
+    # v4.1: prior_version tags the code (5); the v4 coupling is recorded as per-rate loadings
+    assert P_off["passengers_enabled"] is False and P_off["prior_version"] == sgs.PRIOR_VERSION == 5
+    assert P_off["rho_cin_loadings"] == _loadings(0.5)
 
 
 def test_e2e_passengers_rows_genealogy_schema(e2e_runs):
@@ -500,7 +522,7 @@ def test_e2e_passengers_rows_genealogy_schema(e2e_runs):
     assert np.array_equal(z["n_altered_drivers_post"], (z["block_cn"][:, dmask] != ref[:, None]).sum(1).astype(np.int16))
     M = json.loads((root_on / "manifest.json").read_text())
     assert M["prior"]["draw_order"].endswith("cin_level, u_pass (last)") and M["passenger_overlay"]["enabled"] is True
-    assert M["events"]["schema_version"] == 3 and M["prior"]["rho_cin"] == 0.5
+    assert M["events"]["schema_version"] == 3 and M["prior"]["rho_cin_loadings"] == _loadings(0.5)   # v4.1: loadings
 
 
 def test_e2e_grow_then_overlay_does_not_mutate_growth(tmp_path, monkeypatch):
@@ -651,7 +673,7 @@ def test_checker_passes_on_v4_output(e2e_runs, tmp_path):
     rc = chk.main(["--root", str(root), "--out-dir", str(out)])
     text = (out / "gene_pilot_checks.txt").read_text()
     assert rc == 0, text
-    assert "prior_version 4" in text and "by schema {3: 1}" in text and "[INFO] C9" in text
+    assert "prior_version 5" in text and "by schema {3: 1}" in text and "[INFO] C9" in text     # v4.1: version 5
     assert "with passenger categories (schema 3) 1" in text and "0-copy blocks: trials 0, clones 0" in text
     assert "WARNING: unknown prior_version" not in text
 
